@@ -62,7 +62,7 @@ struct TopoGridFile {
         let start = data.startIndex + headerSize
         values.withUnsafeMutableBytes { raw in
             let bytes = raw.bindMemory(to: UInt8.self)
-            _ = data.copyBytes(to: bytes, from: start..<(start + count * 4))
+            data.copyBytes(to: bytes, from: start..<(start + count * 4))
         }
         return TopoGridFile(columns: columns, rows: rows, cell: cell, qMin: qMin, xMin: xMin,
                             heightMode: heightMode, values: values)

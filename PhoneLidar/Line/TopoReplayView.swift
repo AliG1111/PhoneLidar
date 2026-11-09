@@ -80,6 +80,7 @@ struct TopoReplayView: View {
             let replay = TopoReplayModel(folder: folder, title: title, created: created, source: source)
             model = replay
             replay.start()
+            replay.togglePlay()
         case .failure(let error):
             failure = error.localizedDescription
         }
