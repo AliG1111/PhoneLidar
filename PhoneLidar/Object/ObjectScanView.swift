@@ -15,16 +15,13 @@ struct ObjectScanView: View {
             if let session = controller.session {
                 ObjectCaptureView(session: session)
                     .ignoresSafeArea()
-                CaptureOverlay(session: session, onCancel: cancel)
+                CaptureOverlay(session: session, state: controller.captureState, onCancel: cancel)
             } else {
                 statusView
             }
         }
         .statusBarHidden()
         .onAppear { controller.start(store: store) }
-        .onChange(of: controller.stateName) { _, newValue in
-            controller.stateChanged(to: newValue, store: store)
-        }
     }
 
     @ViewBuilder
@@ -77,6 +74,7 @@ struct ObjectScanView: View {
 
 private struct CaptureOverlay: View {
     let session: ObjectCaptureSession
+    let state: ObjectCaptureSession.CaptureState
     let onCancel: () -> Void
 
     var body: some View {
@@ -99,7 +97,7 @@ private struct CaptureOverlay: View {
             }
 
             HStack(spacing: 12) {
-                switch session.state {
+                switch state {
                 case .ready:
                     Button("Detect object") { _ = session.startDetecting() }
                         .buttonStyle(.borderedProminent)
@@ -128,7 +126,7 @@ private struct CaptureOverlay: View {
     }
 
     private var hint: String {
-        switch session.state {
+        switch state {
         case .ready:
             return "Point at the object. Tap Detect object (or Area mode for something too big for a box)."
         case .detecting:
@@ -157,30 +155,20 @@ final class ObjectCaptureController {
     var phase: Phase = .starting
     var progress: Double = 0
     var session: ObjectCaptureSession?
+    /// Copy of session.state, kept current from session.stateUpdates so the overlay redraws on every change.
+    var captureState: ObjectCaptureSession.CaptureState = .initializing
     var savedID: UUID?
 
     @ObservationIgnored private var folder: (name: String, url: URL)?
     @ObservationIgnored private var started = false
     @ObservationIgnored private var photogrammetry: PhotogrammetrySession?
-
-    /// Observable string form of the capture state so the view can react with onChange.
-    var stateName: String {
-        guard let session else { return "none" }
-        switch session.state {
-        case .initializing: return "initializing"
-        case .ready: return "ready"
-        case .detecting: return "detecting"
-        case .capturing: return "capturing"
-        case .finishing: return "finishing"
-        case .completed: return "completed"
-        case .failed: return "failed"
-        @unknown default: return "unknown"
-        }
-    }
+    @ObservationIgnored private var store: ScanStore?
+    @ObservationIgnored private var stateTask: Task<Void, Never>?
 
     func start(store: ScanStore) {
         guard !started else { return }
         started = true
+        self.store = store
         guard ObjectCaptureSession.isSupported else {
             phase = .failed("Object Capture needs an iPhone with LiDAR (12 Pro or newer Pro) on iOS 17 or later.")
             return
@@ -197,30 +185,46 @@ final class ObjectCaptureController {
             configuration.checkpointDirectory = checkpoint
 
             let newSession = ObjectCaptureSession()
-            try newSession.start(imagesDirectory: images, configuration: configuration)
+            newSession.start(imagesDirectory: images, configuration: configuration)
             session = newSession
+            captureState = newSession.state
             phase = .capturing
+
+            // Follow the capture state: start reconstruction when the photos are saved.
+            stateTask = Task { [weak self] in
+                for await state in newSession.stateUpdates {
+                    self?.captureStateChanged(state)
+                }
+            }
         } catch {
             phase = .failed(error.localizedDescription)
         }
     }
 
-    func stateChanged(to name: String, store: ScanStore) {
-        switch name {
-        case "completed":
-            Task { await reconstruct(store: store) }
-        case "failed":
+    private func captureStateChanged(_ state: ObjectCaptureSession.CaptureState) {
+        captureState = state
+        switch state {
+        case .completed:
+            stopListening()
+            Task { await reconstruct() }
+        case .failed(let error):
+            stopListening()
             if phase == .capturing {
                 session = nil
-                phase = .failed("The capture session stopped. Try again with more light and slower movement.")
+                phase = .failed("The capture session stopped (\(error.localizedDescription)). Try again with more light and slower movement.")
             }
         default:
             break
         }
     }
 
-    func reconstruct(store: ScanStore) async {
-        guard phase == .capturing, let folder else { return }
+    private func stopListening() {
+        stateTask?.cancel()
+        stateTask = nil
+    }
+
+    func reconstruct() async {
+        guard phase == .capturing, let folder, let store else { return }
         phase = .reconstructing
         // The capture session must be released before photogrammetry can start on iOS.
         session = nil
@@ -274,6 +278,7 @@ final class ObjectCaptureController {
     }
 
     func cancel() {
+        stopListening()
         session?.cancel()
         session = nil
         photogrammetry?.cancel()
