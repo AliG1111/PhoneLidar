@@ -1,0 +1,7 @@
+# Generated on the build machine by XcodeGen
+*.xcodeproj/
+build/
+DerivedData/
+Payload/
+*.ipa
+.DS_Store

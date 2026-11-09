@@ -1,0 +1,149 @@
+name: Build iOS app
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+    inputs:
+      testflight:
+        description: "Also sign and upload to TestFlight (needs the 4 Apple secrets - see README)"
+        type: boolean
+        default: false
+
+jobs:
+  # Always runs. Produces an unsigned .ipa you can install with Sideloadly on Windows (free Apple ID).
+  unsigned-ipa:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Set build number
+        run: |
+          sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"${BUILD_NUMBER}\"/" project.yml
+          grep CURRENT_PROJECT_VERSION project.yml
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build app (unsigned)
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          xcodebuild \
+            -project PhoneLidar.xcodeproj \
+            -scheme PhoneLidar \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            -quiet \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee logs/xcodebuild.log
+
+      - name: Package .ipa
+        run: |
+          APP="build/DerivedData/Build/Products/Release-iphoneos/PhoneLidar.app"
+          test -d "$APP"
+          mkdir -p dist/Payload
+          cp -R "$APP" dist/Payload/
+          cd dist
+          zip -qry "PhoneLidar-unsigned-${BUILD_NUMBER}.ipa" Payload
+          rm -rf Payload
+          ls -lh
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoneLidar-unsigned-ipa-${{ github.run_number }}
+          path: dist/*.ipa
+          retention-days: 30
+
+      - name: Put compile errors on the summary page
+        if: failure()
+        run: |
+          {
+            echo "## Build errors"
+            echo '```'
+            grep -E "error:" logs/xcodebuild.log | sort -u | head -60 || echo "No 'error:' lines found - download the build log artifact."
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: logs/
+          retention-days: 14
+
+  # Optional. Runs only when started by hand with "testflight" ticked.
+  # Needs a paid Apple Developer Program membership and the secrets listed in the README.
+  testflight:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.testflight }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+      APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+      CERTIFICATE_PRIVATE_KEY: ${{ secrets.CERTIFICATE_PRIVATE_KEY }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: |
+          brew install xcodegen
+          pip install codemagic-cli-tools
+
+      - name: Set build number and generate project
+        run: |
+          sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"${BUILD_NUMBER}\"/" project.yml
+          xcodegen generate
+
+      - name: Create / fetch signing certificate and profile
+        run: |
+          keychain initialize
+          BUNDLE_ID=$(xcode-project detect-bundle-id --project PhoneLidar.xcodeproj)
+          echo "Bundle ID: $BUNDLE_ID"
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          keychain add-certificates
+          xcode-project use-profiles --project PhoneLidar.xcodeproj
+
+      - name: Build signed .ipa
+        run: xcode-project build-ipa --project PhoneLidar.xcodeproj --scheme PhoneLidar
+
+      - name: Upload to App Store Connect (TestFlight)
+        run: |
+          IPA=$(ls build/ios/ipa/*.ipa | head -n 1)
+          echo "Uploading $IPA"
+          app-store-connect publish --path "$IPA"
+
+      - name: Keep signed .ipa
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoneLidar-signed-ipa-${{ github.run_number }}
+          path: build/ios/ipa/*.ipa
+          if-no-files-found: ignore
+          retention-days: 30
