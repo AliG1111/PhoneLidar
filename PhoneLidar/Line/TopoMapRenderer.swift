@@ -27,7 +27,8 @@ enum TopoMapRenderer {
             ]
             let arrow: String = direction == .rightToLeft ? "←" : "→"
             let edge: String = direction == .rightToLeft ? "left" : "right"
-            let titleText = "Topographic map — distance from camera   (material travel \(arrow), leading edge on the \(edge))"
+            let what = stats.heightMode == true ? "height above the flat-surface baseline" : "distance from camera"
+            let titleText = "Topographic map — \(what)   (material travel \(arrow), leading edge on the \(edge))"
             (titleText as NSString).draw(at: CGPoint(x: 20, y: 18), withAttributes: title)
 
             UIColor(white: 0.85, alpha: 1).setFill()
@@ -43,13 +44,16 @@ enum TopoMapRenderer {
                 UIColor(red: CGFloat(c.0) / 255, green: CGFloat(c.1) / 255, blue: CGFloat(c.2) / 255, alpha: 1).setFill()
                 context.fill(CGRect(x: 20 + CGFloat(i), y: barY, width: 1, height: 26))
             }
-            (String(format: "Far %.0f mm", stats.colorFar) as NSString)
+            let heights = stats.heightMode == true
+            (String(format: heights ? "Low %.1f mm" : "Far %.0f mm", stats.colorFar) as NSString)
                 .draw(at: CGPoint(x: 20, y: barY + 32), withAttributes: body)
-            let nearText = String(format: "Near %.0f mm", stats.colorNear) as NSString
+            let nearText = String(format: heights ? "High %.1f mm" : "Near %.0f mm", stats.colorNear) as NSString
             let nearSize = nearText.size(withAttributes: body)
             nearText.draw(at: CGPoint(x: 20 + barWidth - nearSize.width, y: barY + 32), withAttributes: body)
 
-            let line1 = String(format: "Mean %.1f mm   Std dev %.2f mm   Variance %.2f mm²   Range %.1f mm   Cells %.0f mm",
+            let line1 = String(format: heights
+                               ? "Mean height %.2f mm   Std dev %.2f mm   Variance %.2f mm²   Range %.1f mm   Cells %.0f mm"
+                               : "Mean %.1f mm   Std dev %.2f mm   Variance %.2f mm²   Range %.1f mm   Cells %.0f mm",
                                stats.mean, stats.stdDev, stats.variance, stats.range, stats.cellSize)
             var line2 = String(format: "Across std dev %.2f mm   Along std dev %.2f mm   Length %.2f m",
                                stats.acrossStdDev, stats.alongStdDev, stats.lengthMM / 1000)

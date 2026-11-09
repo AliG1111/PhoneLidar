@@ -81,7 +81,11 @@ private struct PlaybackContent: View {
             probePanel
                 .frame(height: 142)
 
-            DepthLegend(near: model.colorRange?.lowerBound, far: model.colorRange?.upperBound)
+            if model.heightMode {
+                DepthLegend(lowHeight: model.displayRange?.lowerBound, highHeight: model.displayRange?.upperBound)
+            } else {
+                DepthLegend(near: model.displayRange?.lowerBound, far: model.displayRange?.upperBound)
+            }
 
             SpeedTimeline(points: model.graphPoints, duration: model.duration,
                           maxSpeed: model.speedMax ?? 1, cursor: model.currentTime)
@@ -137,7 +141,9 @@ private struct PlaybackContent: View {
                 VStack(spacing: 6) {
                     Image(systemName: "hand.tap")
                         .font(.title2)
-                    Text("Touch or drag anywhere on the playback picture to read the distance at that point: current, min and max.")
+                    Text(model.heightMode
+                         ? "Touch or drag anywhere on the playback picture to read the height above the baseline at that point: current, min and max."
+                         : "Touch or drag anywhere on the playback picture to read the distance at that point: current, min and max.")
                         .multilineTextAlignment(.center)
                 }
                 .font(.caption)
@@ -170,13 +176,13 @@ private struct PlaybackContent: View {
             .font(.caption)
 
             HStack(alignment: .top, spacing: 8) {
-                probeValue(title: "Current",
+                probeValue(title: model.heightMode ? "Current height" : "Current",
                            value: model.probeCurrent,
                            detail: model.frame.map { String(format: "frame %ld", $0.index) } ?? "")
                 Button {
                     if let stats = model.probeStats { model.seek(to: stats.minimumTime) }
                 } label: {
-                    probeValue(title: "Min (closest)",
+                    probeValue(title: model.heightMode ? "Min (lowest)" : "Min (closest)",
                                value: model.probeStats?.minimum,
                                detail: model.probeStats.map { String(format: "at %.2f s ▸", $0.minimumTime) } ?? "")
                 }
@@ -185,7 +191,7 @@ private struct PlaybackContent: View {
                 Button {
                     if let stats = model.probeStats { model.seek(to: stats.maximumTime) }
                 } label: {
-                    probeValue(title: "Max (farthest)",
+                    probeValue(title: model.heightMode ? "Max (highest)" : "Max (farthest)",
                                value: model.probeStats?.maximum,
                                detail: model.probeStats.map { String(format: "at %.2f s ▸", $0.maximumTime) } ?? "")
                 }
@@ -200,7 +206,8 @@ private struct PlaybackContent: View {
                     .font(.caption2.monospacedDigit())
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                ProbeTimeline(stats: stats, duration: model.duration, cursor: model.currentTime)
+                ProbeTimeline(stats: stats, duration: model.duration, cursor: model.currentTime,
+                              heightMode: model.heightMode)
                     .frame(height: 26)
             } else if model.probeComputing {
                 HStack(spacing: 6) {
@@ -316,7 +323,7 @@ struct ProbeStats {
         var sum = 0.0
         var count = 0
         var points: [CGPoint] = []
-        for (i, z) in values.enumerated() where z.isFinite && z > 0 && i < frames.count {
+        for (i, z) in values.enumerated() where z.isFinite && i < frames.count {
             let t = frames[i].time
             if z < minimum { minimum = z; minimumTime = t }
             if z > maximum { maximum = z; maximumTime = t }
@@ -327,7 +334,7 @@ struct ProbeStats {
         guard count > 0 else { return nil }
         let mean = sum / Double(count)
         var squares = 0.0
-        for z in values where z.isFinite && z > 0 {
+        for z in values where z.isFinite {
             let d = Double(z) - mean
             squares += d * d
         }
@@ -362,6 +369,10 @@ final class PlaybackModel {
     let graphPoints: [CGPoint]
     let speedMax: Double?
     let colorRange: ClosedRange<Float>?
+    /// Values are heights above the flat-surface baseline saved with the recording.
+    let heightMode: Bool
+    /// Colour range of the picture on screen (low/near … high/far).
+    var displayRange: ClosedRange<Float>?
 
     var currentTime: Double = 0
     var isPlaying = false
@@ -376,10 +387,12 @@ final class PlaybackModel {
     var probe: CGPoint?
     var probePixel: ProbePixel?
     var probeCurrent: Float?
+    var probeCurrentDistance: Float?
     var probeStats: ProbeStats?
     var probeComputing = false
 
     @ObservationIgnored private let reader: DepthFileReader?
+    @ObservationIgnored private let baseline: Baseline?
     @ObservationIgnored private let smoothed: [Double?]
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var endObserver: NSObjectProtocol?
@@ -397,6 +410,9 @@ final class PlaybackModel {
         let info = try JSONDecoder.iso.decode(LineRecordingInfo.self, from: data)
         self.info = info
         reader = try? DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
+        let savedBaseline = Baseline.load(from: folder)
+        baseline = savedBaseline?.matches(width: info.depthWidth, height: info.depthHeight) == true ? savedBaseline : nil
+        heightMode = baseline != nil
         let item = AVPlayerItem(url: folder.appendingPathComponent("Video.mov"))
         player = AVPlayer(playerItem: item)
         duration = max(info.frames.last?.time ?? 0, 0.01)
@@ -417,8 +433,12 @@ final class PlaybackModel {
         var range: ClosedRange<Float>?
         if let statsData = try? Data(contentsOf: folder.appendingPathComponent("TopoStats.json")),
            let stats = try? JSONDecoder.iso.decode(TopoStats.self, from: statsData),
-           stats.colorFar > stats.colorNear {
-            range = Float(stats.colorNear)...Float(stats.colorFar)
+           (stats.heightMode == true) == heightMode {
+            if heightMode, stats.colorNear > stats.colorFar {
+                range = Float(stats.colorFar)...Float(stats.colorNear)       // low … high
+            } else if !heightMode, stats.colorFar > stats.colorNear {
+                range = Float(stats.colorNear)...Float(stats.colorFar)       // near … far
+            }
         }
         colorRange = range
 
@@ -485,11 +505,24 @@ final class PlaybackModel {
             return
         }
         currentDepth = depth
-        depth.withUnsafeBufferPointer { buffer in
-            let range = colorRange ?? DepthColors.percentileRange(buffer, step: 3)
-            if let range {
-                depthImage = DepthColors.image(millimetres: buffer, width: reader.width, height: reader.height,
-                                               near: range.lowerBound, far: range.upperBound)
+        if let baseline {
+            let heights = baseline.heights(depth)
+            heights.withUnsafeBufferPointer { buffer in
+                let range = colorRange ?? DepthColors.finiteRange(buffer, step: 3)
+                displayRange = range
+                if let range {
+                    depthImage = DepthColors.heightImage(buffer, width: reader.width, height: reader.height,
+                                                         low: range.lowerBound, high: range.upperBound)
+                }
+            }
+        } else {
+            depth.withUnsafeBufferPointer { buffer in
+                let range = colorRange ?? DepthColors.percentileRange(buffer, step: 3)
+                displayRange = range
+                if let range {
+                    depthImage = DepthColors.image(millimetres: buffer, width: reader.width, height: reader.height,
+                                                   near: range.lowerBound, far: range.upperBound)
+                }
             }
         }
         updateProbeCurrent()
@@ -534,6 +567,11 @@ final class PlaybackModel {
         probeComputing = true
         let frames = info.frames
         let count = min(frames.count, reader.frameCount)
+        let baseDistance = baseline?.sample(u: pixel.u, v: pixel.v, radius: 1)
+        if heightMode && baseDistance == nil {
+            probeComputing = false
+            return
+        }
         Task { @MainActor [weak self] in
             let values = await Task.detached(priority: .userInitiated) { () -> [Float] in
                 var out = [Float](repeating: .nan, count: count)
@@ -542,7 +580,11 @@ final class PlaybackModel {
                     // Each iteration writes its own element, so sharing the pointer across threads is safe.
                     let target = SharedFloats(base: buffer.baseAddress!)
                     DispatchQueue.concurrentPerform(iterations: count) { i in
-                        target.base[i] = reader.sample(i, u: pixel.u, v: pixel.v, radius: 1) ?? .nan
+                        if let z = reader.sample(i, u: pixel.u, v: pixel.v, radius: 1) {
+                            target.base[i] = baseDistance.map { $0 - z } ?? z
+                        } else {
+                            target.base[i] = .nan
+                        }
                     }
                 }
                 return out
@@ -557,6 +599,7 @@ final class PlaybackModel {
         probe = nil
         probePixel = nil
         probeCurrent = nil
+        probeCurrentDistance = nil
         probeStats = nil
         probeComputing = false
         probeGeneration += 1
@@ -565,16 +608,27 @@ final class PlaybackModel {
     private func updateProbeCurrent() {
         guard let pixel = probePixel, let depth = currentDepth else {
             probeCurrent = nil
+            probeCurrentDistance = nil
             return
         }
-        probeCurrent = DepthFileReader.sample(depth, width: info.depthWidth, height: info.depthHeight,
+        let distance = DepthFileReader.sample(depth, width: info.depthWidth, height: info.depthHeight,
                                               u: pixel.u, v: pixel.v, radius: 1)
+        probeCurrentDistance = distance
+        if let baseline {
+            if let distance, let base = baseline.sample(u: pixel.u, v: pixel.v, radius: 1) {
+                probeCurrent = base - distance
+            } else {
+                probeCurrent = nil
+            }
+        } else {
+            probeCurrent = distance
+        }
     }
 
     /// Where the probe is, relative to the picture centre, in mm on the surface.
     var probePositionText: String {
         guard let pixel = probePixel else { return "" }
-        guard let f = frame, let z = probeCurrent ?? probeStats.map({ Float($0.mean) }), f.fx > 0, f.fy > 0 else {
+        guard let f = frame, let z = probeCurrentDistance ?? Float(f.medianDepth), z > 0, f.fx > 0, f.fy > 0 else {
             return "Point (\(pixel.u), \(pixel.v))"
         }
         // Screen right = decreasing depth rows; screen down = increasing depth columns.
@@ -587,14 +641,12 @@ final class PlaybackModel {
 
     /// Legend colour for a distance (dark blue far … dark red near).
     func color(for value: Float?) -> Color {
-        guard let value, let range = colorRange ?? currentRange else { return .gray }
-        let c = DepthColors.lut[DepthColors.index(distance: value, near: range.lowerBound, far: range.upperBound)]
+        guard let value, let range = displayRange else { return .gray }
+        let index = heightMode
+            ? DepthColors.index(value: value, low: range.lowerBound, high: range.upperBound)
+            : DepthColors.index(distance: value, near: range.lowerBound, far: range.upperBound)
+        let c = DepthColors.lut[index]
         return Color(red: Double(c.0) / 255, green: Double(c.1) / 255, blue: Double(c.2) / 255)
-    }
-
-    private var currentRange: ClosedRange<Float>? {
-        guard let depth = currentDepth else { return nil }
-        return depth.withUnsafeBufferPointer { DepthColors.percentileRange($0, step: 6) }
     }
 }
 
@@ -645,16 +697,19 @@ struct ProbeTimeline: View {
     let stats: ProbeStats
     let duration: Double
     let cursor: Double
+    /// Heights: highest at the top. Distances: closest (smallest) at the top.
+    var heightMode = false
 
     var body: some View {
         Canvas { context, size in
             guard duration > 0 else { return }
             let lo = Double(stats.minimum)
             let span = max(Double(stats.maximum) - lo, 0.5)
+            let invert = heightMode
             func point(_ t: Double, _ z: Double) -> CGPoint {
-                // Closest (minimum distance) at the top.
-                CGPoint(x: Double(size.width) * min(max(t / duration, 0), 1),
-                        y: Double(size.height) * min(max((z - lo) / span, 0), 1))
+                let f = min(max((z - lo) / span, 0), 1)
+                return CGPoint(x: Double(size.width) * min(max(t / duration, 0), 1),
+                               y: Double(size.height) * (invert ? 1 - f : f))
             }
             if stats.series.count >= 2 {
                 var path = Path()
@@ -666,10 +721,11 @@ struct ProbeTimeline: View {
             }
             let minPoint = point(stats.minimumTime, Double(stats.minimum))
             let maxPoint = point(stats.maximumTime, Double(stats.maximum))
+            // Red = closest/highest, blue = farthest/lowest (same as the colour scale).
             context.fill(Path(ellipseIn: CGRect(x: minPoint.x - 3, y: minPoint.y - 3, width: 6, height: 6)),
-                         with: .color(.red))
+                         with: .color(heightMode ? .blue : .red))
             context.fill(Path(ellipseIn: CGRect(x: maxPoint.x - 3, y: maxPoint.y - 3, width: 6, height: 6)),
-                         with: .color(.blue))
+                         with: .color(heightMode ? .red : .blue))
             let x = Double(size.width) * min(max(cursor / duration, 0), 1)
             var line = Path()
             line.move(to: CGPoint(x: x, y: 0))

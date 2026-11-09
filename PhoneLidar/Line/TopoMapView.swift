@@ -21,7 +21,11 @@ struct TopoMapView: View {
                         .frame(height: 280)
                         .listRowInsets(EdgeInsets())
                     if let stats {
-                        DepthLegend(near: Float(stats.colorNear), far: Float(stats.colorFar))
+                        if stats.heightMode == true {
+                            DepthLegend(lowHeight: Float(stats.colorFar), highHeight: Float(stats.colorNear))
+                        } else {
+                            DepthLegend(near: Float(stats.colorNear), far: Float(stats.colorFar))
+                        }
                     }
                     Label(direction == .rightToLeft
                           ? "Material travelled right → left; leading edge at the left. Pinch to zoom."
@@ -39,17 +43,21 @@ struct TopoMapView: View {
                         .foregroundStyle(.secondary)
                 }
             } header: {
-                Text("Topographic map (dark blue = farthest, dark red = closest)")
+                Text(heightMode
+                     ? "Topographic map (height above baseline: dark blue = lowest, dark red = highest)"
+                     : "Topographic map (dark blue = farthest, dark red = closest)")
             }
 
             if let stats {
-                Section("Surface distance from camera") {
+                Section(heightMode ? "Surface height above baseline" : "Surface distance from camera") {
                     row("Mean", "%.2f mm", stats.mean)
                     row("Standard deviation", "%.3f mm", stats.stdDev)
                     row("Variance", "%.3f mm²", stats.variance)
-                    row("Coefficient of variation", "%.3f %%", stats.cvPercent)
-                    row("Minimum (closest)", "%.1f mm", stats.minimum)
-                    row("Maximum (farthest)", "%.1f mm", stats.maximum)
+                    if !heightMode {
+                        row("Coefficient of variation", "%.3f %%", stats.cvPercent)
+                    }
+                    row(heightMode ? "Minimum (lowest)" : "Minimum (closest)", "%.1f mm", stats.minimum)
+                    row(heightMode ? "Maximum (highest)" : "Maximum (farthest)", "%.1f mm", stats.maximum)
                     row("Range", "%.1f mm", stats.range)
                     row("P1 / P99", String(format: "%.1f / %.1f mm", stats.p1, stats.p99))
                     row("P5 / median / P95", String(format: "%.1f / %.1f / %.1f mm", stats.p5, stats.median, stats.p95))
@@ -69,14 +77,17 @@ struct TopoMapView: View {
                          + "LiDAR readings that landed in the same cell.")
                 }
                 if let profiles, profiles.across.count >= 2 {
-                    Section("Across-width profile (up = closer to camera)") {
-                        ProfileChart(points: profiles.across, xLabel: "Across (mm)")
+                    Section(heightMode ? "Across-width profile (height above baseline)"
+                                       : "Across-width profile (up = closer to camera)") {
+                        ProfileChart(points: profiles.across, xLabel: "Across (mm)", heightMode: heightMode)
                             .frame(height: 180)
                     }
                 }
                 if let profiles, profiles.along.count >= 2 {
-                    Section("Along-travel profile (up = closer to camera)") {
-                        ProfileChart(points: Self.thinned(profiles.along, to: 800), xLabel: "Along (mm)")
+                    Section(heightMode ? "Along-travel profile (height above baseline)"
+                                       : "Along-travel profile (up = closer to camera)") {
+                        ProfileChart(points: Self.thinned(profiles.along, to: 800), xLabel: "Along (mm)",
+                                     heightMode: heightMode)
                             .frame(height: 180)
                     }
                 }
@@ -107,13 +118,17 @@ struct TopoMapView: View {
                 }
                 .disabled(building)
             } footer: {
-                Text("TopoMap.png, TopoMap.csv, TopoStats.csv and the profile CSV files are in the scan's file list.")
+                Text(heightMode
+                     ? "Values are heights above the flat-surface baseline saved with this recording (Baseline.bin). TopoMap.png, TopoMap.csv, TopoStats.csv and the profile CSV files are in the scan's file list."
+                     : "No baseline was saved with this recording, so values are distances from the camera. TopoMap.png, TopoMap.csv, TopoStats.csv and the profile CSV files are in the scan's file list.")
             }
         }
         .navigationTitle("Topographic map")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { load() }
     }
+
+    private var heightMode: Bool { stats?.heightMode == true }
 
     private func row(_ title: String, _ format: String, _ value: Double) -> some View {
         row(title, String(format: format, value))
@@ -183,16 +198,17 @@ struct TopoMapView: View {
 struct ProfileChart: View {
     let points: [ProfilePoint]
     let xLabel: String
+    var heightMode = false
 
     var body: some View {
         Chart(points) { point in
             LineMark(x: .value(xLabel, point.position),
-                     y: .value("Distance (mm)", point.value))
+                     y: .value(heightMode ? "Height (mm)" : "Distance (mm)", point.value))
                 .interpolationMethod(.linear)
         }
-        .chartYScale(domain: .automatic(includesZero: false, reversed: true))
+        .chartYScale(domain: .automatic(includesZero: false, reversed: !heightMode))
         .chartXAxisLabel { Text(xLabel) }
-        .chartYAxisLabel { Text("Distance (mm)") }
+        .chartYAxisLabel { Text(heightMode ? "Height above baseline (mm)" : "Distance (mm)") }
     }
 }
 

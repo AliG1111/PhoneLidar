@@ -63,6 +63,9 @@ struct TopoStats: Codable {
     var colorFar: Double
     var frames: Int
     var duration: Double
+    /// True when values are heights above a flat-surface baseline (colorFar = dark-blue/low end,
+    /// colorNear = dark-red/high end). False/nil: distances from the camera.
+    var heightMode: Bool? = nil
 }
 
 /// Stitches the recorded depth frames into a top-down distance map using the measured travel,
@@ -78,6 +81,12 @@ enum TopoMapBuilder {
     static func build(folder: URL, info: LineRecordingInfo) throws -> Output {
         let reader = try DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
         let frames = Array(info.frames.prefix(reader.frameCount))
+        // A baseline saved with the recording turns distances into heights above the flat surface.
+        let baseline = Baseline.load(from: folder).flatMap {
+            $0.matches(width: reader.width, height: reader.height) ? $0 : nil
+        }
+        let heightMode = baseline != nil
+        let baseValues = baseline?.values ?? []
         guard frames.count >= 2 else { throw LineError.notEnoughData }
         let w = reader.width
         let h = reader.height
@@ -129,37 +138,45 @@ enum TopoMapBuilder {
         var means = [Float](repeating: 0, count: cellCount)
         var m2s = [Float](repeating: 0, count: cellCount)
         var hits = [UInt16](repeating: 0, count: cellCount)
-        let zRef = Float(zTypical)
-        means.withUnsafeMutableBufferPointer { meanBuf in
-            m2s.withUnsafeMutableBufferPointer { m2Buf in
-                hits.withUnsafeMutableBufferPointer { hitBuf in
-                    for (i, f) in frames.enumerated() {
-                        guard let depth = reader.frame(i) else { continue }
-                        let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
-                        guard fx > 0, fy > 0 else { continue }
-                        let offset = sign * f.travel
-                        depth.withUnsafeBufferPointer { zBuf in
-                            for v in border..<(h - border) {
-                                let yFactor = (Double(v) - cy) / fy
-                                let rowBase = v * w
-                                for u in border..<(w - border) {
-                                    let z = zBuf[rowBase + u]
-                                    if z <= 0 { continue }
-                                    let zd = Double(z)
-                                    let q = offset - yFactor * zd
-                                    let x = (Double(u) - cx) / fx * zd
-                                    let col = Int((q - qMin) / cell)
-                                    let row = Int((x - xMin) / cell)
-                                    if col < 0 || col >= cols || row < 0 || row >= rows { continue }
-                                    let idx = row * cols + col
-                                    let n = hitBuf[idx]
-                                    if n == UInt16.max { continue }
-                                    let k = Float(n) + 1
-                                    let d = z - zRef
-                                    let delta = d - meanBuf[idx]
-                                    meanBuf[idx] += delta / k
-                                    m2Buf[idx] += delta * (d - meanBuf[idx])
-                                    hitBuf[idx] = n + 1
+        let zRef: Float = heightMode ? 0 : Float(zTypical)
+        baseValues.withUnsafeBufferPointer { baseBuf in
+            means.withUnsafeMutableBufferPointer { meanBuf in
+                m2s.withUnsafeMutableBufferPointer { m2Buf in
+                    hits.withUnsafeMutableBufferPointer { hitBuf in
+                        for (i, f) in frames.enumerated() {
+                            guard let depth = reader.frame(i) else { continue }
+                            let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
+                            guard fx > 0, fy > 0 else { continue }
+                            let offset = sign * f.travel
+                            depth.withUnsafeBufferPointer { zBuf in
+                                for v in border..<(h - border) {
+                                    let yFactor = (Double(v) - cy) / fy
+                                    let rowBase = v * w
+                                    for u in border..<(w - border) {
+                                        let z = zBuf[rowBase + u]
+                                        if z <= 0 { continue }
+                                        var value = z
+                                        if heightMode {
+                                            let b = baseBuf[rowBase + u]
+                                            if b <= 0 { continue }
+                                            value = b - z
+                                        }
+                                        let zd = Double(z)
+                                        let q = offset - yFactor * zd
+                                        let x = (Double(u) - cx) / fx * zd
+                                        let col = Int((q - qMin) / cell)
+                                        let row = Int((x - xMin) / cell)
+                                        if col < 0 || col >= cols || row < 0 || row >= rows { continue }
+                                        let idx = row * cols + col
+                                        let n = hitBuf[idx]
+                                        if n == UInt16.max { continue }
+                                        let k = Float(n) + 1
+                                        let d = value - zRef
+                                        let delta = d - meanBuf[idx]
+                                        meanBuf[idx] += delta / k
+                                        m2Buf[idx] += delta * (d - meanBuf[idx])
+                                        hitBuf[idx] = n + 1
+                                    }
                                 }
                             }
                         }
@@ -263,9 +280,17 @@ enum TopoMapBuilder {
             speedStd = (speeds.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(speeds.count)).squareRoot()
         }
 
-        let near = percentile(0.01)
-        var far = percentile(0.99)
-        if far <= near { far = near + 1 }
+        let p1Value = percentile(0.01)
+        let p99Value = percentile(0.99)
+        let near: Double
+        let far: Double
+        if heightMode {
+            far = p1Value                          // dark blue = lowest
+            near = max(p99Value, p1Value + 0.5)    // dark red = highest
+        } else {
+            near = p1Value                         // dark red = closest
+            far = max(p99Value, p1Value + 1)       // dark blue = farthest
+        }
 
         let stats = TopoStats(
             cellSize: cell, columns: cols, rows: rows,
@@ -274,10 +299,10 @@ enum TopoMapBuilder {
             cellsWithData: values.count,
             meanHitsPerCell: hitTotal / count,
             mean: mean, variance: variance, stdDev: variance.squareRoot(),
-            cvPercent: mean > 0 ? 100 * variance.squareRoot() / mean : 0,
+            cvPercent: !heightMode && mean > 0 ? 100 * variance.squareRoot() / mean : 0,
             minimum: Double(sorted.first ?? 0), maximum: Double(sorted.last ?? 0),
             range: Double((sorted.last ?? 0) - (sorted.first ?? 0)),
-            p1: near, p5: percentile(0.05), median: percentile(0.5), p95: percentile(0.95), p99: percentile(0.99),
+            p1: p1Value, p5: percentile(0.05), median: percentile(0.5), p95: percentile(0.95), p99: percentile(0.99),
             acrossStdDev: acrossSpread.std, acrossRange: acrossSpread.range,
             alongStdDev: alongSpread.std, alongRange: alongSpread.range,
             residualStdDev: residualN > 0 ? (residualSq / Double(residualN)).squareRoot() : 0,
@@ -286,7 +311,8 @@ enum TopoMapBuilder {
             speedMin: speeds.min(), speedMax: speeds.max(),
             speedTrackedPercent: 100 * Double(speeds.count) / Double(frames.count),
             colorNear: near, colorFar: far,
-            frames: frames.count, duration: frames.last?.time ?? 0)
+            frames: frames.count, duration: frames.last?.time ?? 0,
+            heightMode: heightMode)
         let profiles = TopoProfiles(across: across, along: along)
 
         // Colour image (downsampled if very long).
@@ -313,7 +339,10 @@ enum TopoMapBuilder {
                     }
                 }
                 guard n > 0 else { continue }
-                let color = DepthColors.lut[DepthColors.index(distance: total / Float(n), near: nearF, far: farF)]
+                let index = heightMode
+                    ? DepthColors.index(value: total / Float(n), low: farF, high: nearF)
+                    : DepthColors.index(distance: total / Float(n), near: nearF, far: farF)
+                let color = DepthColors.lut[index]
                 let o = (iy * imageWidth + ix) * 4
                 rgba[o] = color.0
                 rgba[o + 1] = color.1
@@ -330,9 +359,10 @@ enum TopoMapBuilder {
         try writeGridCSV(to: folder.appendingPathComponent("TopoMap.csv"), rows: rows, cols: cols, cell: cell,
                          xMin: xMin, zRef: zRef, means: means, hits: hits)
         try statsCSV(stats).write(to: folder.appendingPathComponent("TopoStats.csv"), atomically: true, encoding: .utf8)
-        try profileCSV(across, header: "across_mm")
+        let valueName = heightMode ? "mean_height_mm" : "mean_distance_mm"
+        try profileCSV(across, header: "across_mm", valueName: valueName)
             .write(to: folder.appendingPathComponent("AcrossProfile.csv"), atomically: true, encoding: .utf8)
-        try profileCSV(along, header: "along_mm")
+        try profileCSV(along, header: "along_mm", valueName: valueName)
             .write(to: folder.appendingPathComponent("AlongProfile.csv"), atomically: true, encoding: .utf8)
         try JSONEncoder.pretty.encode(stats).write(to: folder.appendingPathComponent("TopoStats.json"), options: .atomic)
         try JSONEncoder().encode(profiles).write(to: folder.appendingPathComponent("TopoProfiles.json"), options: .atomic)
@@ -346,7 +376,9 @@ enum TopoMapBuilder {
         var lines = [
             String(format: "Scanned %.2f m long × %.2f m wide, %.0f mm cells, %.0f%% coverage",
                    s.lengthMM / 1000, s.widthMM / 1000, s.cellSize, s.coveragePercent),
-            String(format: "Distance mean %.1f mm, std dev %.2f mm, variance %.2f mm²",
+            String(format: s.heightMode == true
+                   ? "Height above baseline mean %.2f mm, std dev %.2f mm, variance %.2f mm²"
+                   : "Distance mean %.1f mm, std dev %.2f mm, variance %.2f mm²",
                    s.mean, s.stdDev, s.variance),
             String(format: "Range %.1f mm (min %.1f, max %.1f); P5–P95 %.1f mm",
                    s.range, s.minimum, s.maximum, s.p95 - s.p5),
@@ -361,7 +393,13 @@ enum TopoMapBuilder {
         } else {
             lines.append("Speed: no texture lock (map uses zero travel)")
         }
-        lines.append(String(format: "Colours: dark red %.0f mm (near) → dark blue %.0f mm (far)", s.colorNear, s.colorFar))
+        if s.heightMode == true {
+            lines.append(String(format: "Colours: dark blue %.1f mm (low) → dark red %.1f mm (high) above the baseline",
+                                s.colorFar, s.colorNear))
+        } else {
+            lines.append(String(format: "Colours: dark red %.0f mm (near) → dark blue %.0f mm (far); no baseline",
+                                s.colorNear, s.colorFar))
+        }
         return lines
     }
 
@@ -370,8 +408,10 @@ enum TopoMapBuilder {
             guard let v else { return "" }
             return String(format: "%.\(digits)f", v)
         }
+        let p = s.heightMode == true ? "height" : "distance"
         let rows: [[String]] = [
             ["metric", "value", "unit"],
+            ["values", s.heightMode == true ? "height_above_flat_baseline" : "distance_from_camera", ""],
             ["frames", "\(s.frames)", ""],
             ["duration", f(s.duration, 2), "s"],
             ["cell_size", f(s.cellSize, 1), "mm"],
@@ -380,18 +420,18 @@ enum TopoMapBuilder {
             ["coverage", f(s.coveragePercent, 1), "%"],
             ["cells_with_data", "\(s.cellsWithData)", ""],
             ["readings_per_cell_mean", f(s.meanHitsPerCell, 1), ""],
-            ["distance_mean", f(s.mean, 2), "mm"],
-            ["distance_variance", f(s.variance, 3), "mm^2"],
-            ["distance_std_dev", f(s.stdDev, 3), "mm"],
-            ["distance_cv", f(s.cvPercent, 3), "%"],
-            ["distance_min", f(s.minimum, 1), "mm"],
-            ["distance_max", f(s.maximum, 1), "mm"],
-            ["distance_range", f(s.range, 1), "mm"],
-            ["distance_p1", f(s.p1, 1), "mm"],
-            ["distance_p5", f(s.p5, 1), "mm"],
-            ["distance_median", f(s.median, 1), "mm"],
-            ["distance_p95", f(s.p95, 1), "mm"],
-            ["distance_p99", f(s.p99, 1), "mm"],
+            [p + "_mean", f(s.mean, 2), "mm"],
+            [p + "_variance", f(s.variance, 3), "mm^2"],
+            [p + "_std_dev", f(s.stdDev, 3), "mm"],
+            [p + "_cv", f(s.cvPercent, 3), "%"],
+            [p + "_min", f(s.minimum, 1), "mm"],
+            [p + "_max", f(s.maximum, 1), "mm"],
+            [p + "_range", f(s.range, 1), "mm"],
+            [p + "_p1", f(s.p1, 1), "mm"],
+            [p + "_p5", f(s.p5, 1), "mm"],
+            [p + "_median", f(s.median, 1), "mm"],
+            [p + "_p95", f(s.p95, 1), "mm"],
+            [p + "_p99", f(s.p99, 1), "mm"],
             ["across_profile_std_dev", f(s.acrossStdDev, 3), "mm"],
             ["across_profile_range", f(s.acrossRange, 2), "mm"],
             ["along_profile_std_dev", f(s.alongStdDev, 3), "mm"],
@@ -403,14 +443,14 @@ enum TopoMapBuilder {
             ["speed_min", f(s.speedMin, 1), "mm/s"],
             ["speed_max", f(s.speedMax, 1), "mm/s"],
             ["speed_tracked", f(s.speedTrackedPercent, 1), "%"],
-            ["colour_near_dark_red", f(s.colorNear, 1), "mm"],
-            ["colour_far_dark_blue", f(s.colorFar, 1), "mm"]
+            ["colour_dark_red", f(s.colorNear, 1), "mm"],
+            ["colour_dark_blue", f(s.colorFar, 1), "mm"]
         ]
         return CSV.make(rows)
     }
 
-    static func profileCSV(_ points: [ProfilePoint], header: String) -> String {
-        var rows: [[String]] = [[header, "mean_distance_mm", "cells"]]
+    static func profileCSV(_ points: [ProfilePoint], header: String, valueName: String) -> String {
+        var rows: [[String]] = [[header, valueName, "cells"]]
         for p in points {
             rows.append([String(format: "%.1f", p.position), String(format: "%.2f", p.value), "\(p.cells)"])
         }
