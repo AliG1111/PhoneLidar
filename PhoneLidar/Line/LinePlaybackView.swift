@@ -272,6 +272,10 @@ private struct PlaybackContent: View {
 
 // MARK: - Probe data
 
+private struct SharedFloats: @unchecked Sendable {
+    let base: UnsafeMutablePointer<Float>
+}
+
 struct ProbePixel: Equatable {
     var u: Int   // depth-map column (across the material)
     var v: Int   // depth-map row (along the travel)
@@ -521,9 +525,10 @@ final class PlaybackModel {
                 var out = [Float](repeating: .nan, count: count)
                 guard count > 0 else { return out }
                 out.withUnsafeMutableBufferPointer { buffer in
-                    let base = buffer.baseAddress!
+                    // Each iteration writes its own element, so sharing the pointer across threads is safe.
+                    let target = SharedFloats(base: buffer.baseAddress!)
                     DispatchQueue.concurrentPerform(iterations: count) { i in
-                        base[i] = reader.sample(i, u: pixel.u, v: pixel.v, radius: 1) ?? .nan
+                        target.base[i] = reader.sample(i, u: pixel.u, v: pixel.v, radius: 1) ?? .nan
                     }
                 }
                 return out
