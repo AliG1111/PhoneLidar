@@ -21,6 +21,9 @@ struct HomeView: View {
                     newScanRow(.object,
                                detail: "Photo-textured 3D model of a part or assembly. Walk around it to capture.",
                                supported: ObjectCaptureSession.isSupported)
+                    newScanRow(.line,
+                               detail: "Phone fixed above moving material (portrait, travel right → left). Records LiDAR depth + video, measures speed, plays back, and builds a topographic map with variance statistics.",
+                               supported: LineCapturePipeline.isSupported)
                 } header: {
                     Text("New scan")
                 } footer: {
@@ -56,6 +59,8 @@ struct HomeView: View {
                         MeshScanView(onFinish: finished)
                     case .object:
                         ObjectScanView(onFinish: finished)
+                    case .line:
+                        LineScanView(onFinish: finished)
                     }
                 }
                 .environment(store)
