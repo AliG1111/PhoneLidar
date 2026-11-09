@@ -53,6 +53,11 @@ struct ScanDetailView: View {
                         Label("Topographic map + variance statistics", systemImage: "map")
                     }
                     NavigationLink {
+                        TopoReplayView(folder: folder, title: scan.name, created: scan.created)
+                    } label: {
+                        Label("Topographic replay (real time, adjustable speed)", systemImage: "mountain.2")
+                    }
+                    NavigationLink {
                         LinePlaybackView(folder: folder)
                     } label: {
                         Label("Play back recording (with speed)", systemImage: "play.rectangle")
