@@ -117,6 +117,9 @@ private struct PlaybackContent: View {
                 VStack(alignment: .trailing, spacing: 0) {
                     Text(String(format: "frame %ld  ·  %.0f mm away", frame.index, frame.medianDepth))
                     Text(String(format: "travel %.0f mm  ·  lock %.0f%%", frame.travel, frame.quality * 100))
+                    if let tx = frame.tiltX, let ty = frame.tiltY {
+                        Text(String(format: "level ↔ %+.1f°  ↕ %+.1f°", tx, ty))
+                    }
                 }
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)

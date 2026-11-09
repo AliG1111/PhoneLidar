@@ -29,6 +29,7 @@ struct LineScanView: View {
             VStack(spacing: 10) {
                 topBar
                 speedPanel
+                levelPanel
                 Spacer()
                 DepthLegend(near: model.depthRange?.lowerBound, far: model.depthRange?.upperBound)
                     .foregroundStyle(.white)
@@ -103,6 +104,50 @@ struct LineScanView: View {
         .padding(10)
         .frame(maxWidth: .infinity)
         .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var levelPanel: some View {
+        HStack(spacing: 12) {
+            BubbleLevel(x: model.levelX, y: model.levelY,
+                        surfaceX: model.surfaceTiltX, surfaceY: model.surfaceTiltY)
+                .frame(width: 88, height: 88)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Circle().fill(BubbleLevel.color(for: model.levelX, model.levelY)).frame(width: 9, height: 9)
+                    Text(model.levelZeroed ? "Phone vs zero" : "Phone vs gravity")
+                        .font(.caption.weight(.semibold))
+                }
+                Text(Self.levelText(model.levelX, model.levelY))
+                    .font(.caption.monospacedDigit())
+                HStack(spacing: 6) {
+                    Circle().stroke(Color.orange, lineWidth: 2).frame(width: 9, height: 9)
+                    Text("Phone vs surface (LiDAR)")
+                        .font(.caption.weight(.semibold))
+                }
+                Text(Self.levelText(model.surfaceTiltX, model.surfaceTiltY))
+                    .font(.caption.monospacedDigit())
+                HStack(spacing: 8) {
+                    Button(model.levelZeroed ? "Re-zero" : "Zero here") { model.zeroLevel() }
+                    if model.levelZeroed {
+                        Button("Reset") { model.resetLevel() }
+                    }
+                }
+                .font(.caption2)
+                .buttonStyle(.bordered)
+                .tint(.white)
+                .disabled(model.tiltX == nil)
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.white)
+        .padding(8)
+        .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// "↔ +0.3°  ↕ −0.8°  (0.9°)": ↔ = left/right edge, ↕ = top/bottom edge; + = right / top edge high.
+    static func levelText(_ x: Double?, _ y: Double?) -> String {
+        guard let x, let y else { return "↔ —   ↕ —" }
+        return String(format: "↔ %+.1f°   ↕ %+.1f°   (%.1f°)", x, y, (x * x + y * y).squareRoot())
     }
 
     private var controls: some View {
@@ -203,6 +248,17 @@ final class LineScanModel {
     var overlayOpacity: Double = 0.55
     var thermal: ProcessInfo.ThermalState = .nominal
     var speedHistory: [Double] = []
+    var tiltX: Double?
+    var tiltY: Double?
+    var surfaceTiltX: Double?
+    var surfaceTiltY: Double?
+    var levelZeroed = UserDefaults.standard.bool(forKey: "lineLevelZeroed")
+    var levelZeroX = UserDefaults.standard.double(forKey: "lineLevelZeroX")
+    var levelZeroY = UserDefaults.standard.double(forKey: "lineLevelZeroY")
+
+    /// Level shown on the bubble: gravity tilt minus the saved zero (if any).
+    var levelX: Double? { tiltX.map { $0 - (levelZeroed ? levelZeroX : 0) } }
+    var levelY: Double? { tiltY.map { $0 - (levelZeroed ? levelZeroY : 0) } }
 
     let pipeline = LineCapturePipeline()
     @ObservationIgnored var onSaved: ((UUID) -> Void)?
@@ -250,6 +306,28 @@ final class LineScanModel {
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
+    /// Use the current orientation as level (e.g. phone laid flat on the floor or conveyor first).
+    func zeroLevel() {
+        guard let x = tiltX, let y = tiltY else { return }
+        levelZeroX = x
+        levelZeroY = y
+        levelZeroed = true
+        saveLevelZero()
+    }
+
+    func resetLevel() {
+        levelZeroed = false
+        levelZeroX = 0
+        levelZeroY = 0
+        saveLevelZero()
+    }
+
+    private func saveLevelZero() {
+        UserDefaults.standard.set(levelZeroed, forKey: "lineLevelZeroed")
+        UserDefaults.standard.set(levelZeroX, forKey: "lineLevelZeroX")
+        UserDefaults.standard.set(levelZeroY, forKey: "lineLevelZeroY")
+    }
+
     func setFiltered(_ filtered: Bool) {
         filteredDepth = filtered
         pipeline.setFiltering(filtered)
@@ -280,6 +358,12 @@ final class LineScanModel {
         if let v = update.speed {
             speedHistory.append(v)
             if speedHistory.count > 300 { speedHistory.removeFirst(speedHistory.count - 300) }
+        }
+        tiltX = update.tiltX
+        tiltY = update.tiltY
+        if update.surfaceTiltX != nil {
+            surfaceTiltX = update.surfaceTiltX
+            surfaceTiltY = update.surfaceTiltY
         }
         thermal = ProcessInfo.processInfo.thermalState
     }
@@ -417,5 +501,71 @@ struct SpeedSparkline: View {
             }
             context.stroke(path, with: .color(.green), lineWidth: 1.5)
         }
+    }
+}
+
+/// Bubble level for a phone lying screen-up. The bubble moves toward the high side, like a spirit level.
+/// Filled bubble = phone vs gravity (or vs the saved zero); orange ring = phone vs the surface below (LiDAR).
+struct BubbleLevel: View {
+    let x: Double?
+    let y: Double?
+    let surfaceX: Double?
+    let surfaceY: Double?
+    /// Degrees of tilt that reach the rim.
+    var range: Double = 3
+
+    static func color(for x: Double?, _ y: Double?) -> Color {
+        guard let x, let y else { return .gray }
+        let tilt = (x * x + y * y).squareRoot()
+        if tilt <= 0.5 { return .green }
+        if tilt <= 2 { return .yellow }
+        return .red
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let size = min(geometry.size.width, geometry.size.height)
+            let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            ZStack {
+                Circle().fill(Color.black.opacity(0.35))
+                Circle().stroke(Color.white.opacity(0.85), lineWidth: 1.5)
+                // Rings at 0.5° and 1.5°.
+                Circle().stroke(Color.green.opacity(0.9), lineWidth: 1)
+                    .frame(width: size * 0.5 / range, height: size * 0.5 / range)
+                Circle().stroke(Color.white.opacity(0.4), lineWidth: 1)
+                    .frame(width: size * 1.5 / range, height: size * 1.5 / range)
+                Rectangle().fill(Color.white.opacity(0.35)).frame(width: 1, height: size)
+                Rectangle().fill(Color.white.opacity(0.35)).frame(width: size, height: 1)
+                if let sx = surfaceX, let sy = surfaceY {
+                    Circle().stroke(Color.orange, lineWidth: 2)
+                        .frame(width: 14, height: 14)
+                        .position(point(sx, sy, size: size, center: center, inset: 7))
+                }
+                if let x, let y {
+                    Circle()
+                        .fill(Self.color(for: x, y))
+                        .overlay(Circle().stroke(Color.black.opacity(0.6), lineWidth: 1))
+                        .frame(width: 16, height: 16)
+                        .position(point(x, y, size: size, center: center, inset: 8))
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .accessibilityElement()
+        .accessibilityLabel("Bubble level")
+    }
+
+    /// +x (right edge high) moves right; +y (top edge high) moves up. Clamped to the rim.
+    private func point(_ x: Double, _ y: Double, size: CGFloat, center: CGPoint, inset: CGFloat) -> CGPoint {
+        var nx = x / range
+        var ny = y / range
+        let length = (nx * nx + ny * ny).squareRoot()
+        if length > 1 {
+            nx /= length
+            ny /= length
+        }
+        let radius = Double(size / 2 - inset)
+        return CGPoint(x: Double(center.x) + nx * radius, y: Double(center.y) - ny * radius)
     }
 }

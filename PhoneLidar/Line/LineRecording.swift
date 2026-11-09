@@ -48,6 +48,12 @@ struct LineFrameInfo: Codable {
     var fy: Float
     var cx: Float
     var cy: Float
+    /// Phone tilt from gravity, degrees (+X right edge high, +Y top edge high).
+    var tiltX: Double? = nil
+    var tiltY: Double? = nil
+    /// Phone tilt relative to the surface below, from the LiDAR plane fit.
+    var surfaceTiltX: Double? = nil
+    var surfaceTiltY: Double? = nil
 }
 
 /// Saved as Recording.json next to Video.mov and Depth.bin.
@@ -399,7 +405,8 @@ final class LineRecorder {
 
     private func framesCSV() -> String {
         var rows: [[String]] = [["frame", "time_s", "speed_mm_s", "speed_m_min", "travel_mm",
-                                 "shift_px", "cross_shift_px", "track_quality", "median_distance_mm"]]
+                                 "shift_px", "cross_shift_px", "track_quality", "median_distance_mm",
+                                 "tilt_x_deg", "tilt_y_deg", "surface_tilt_x_deg", "surface_tilt_y_deg"]]
         for f in frames {
             rows.append([
                 "\(f.index)",
@@ -410,7 +417,11 @@ final class LineRecorder {
                 f.shiftPixels.map { String(format: "%.2f", $0) } ?? "",
                 f.crossShiftPixels.map { String(format: "%.2f", $0) } ?? "",
                 String(format: "%.3f", f.quality),
-                String(format: "%.1f", f.medianDepth)
+                String(format: "%.1f", f.medianDepth),
+                f.tiltX.map { String(format: "%.2f", $0) } ?? "",
+                f.tiltY.map { String(format: "%.2f", $0) } ?? "",
+                f.surfaceTiltX.map { String(format: "%.2f", $0) } ?? "",
+                f.surfaceTiltY.map { String(format: "%.2f", $0) } ?? ""
             ])
         }
         return CSV.make(rows)
