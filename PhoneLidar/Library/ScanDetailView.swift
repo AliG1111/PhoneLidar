@@ -44,6 +44,22 @@ struct ScanDetailView: View {
                 }
             }
 
+            if scan.kind == .line {
+                let folder = store.folderURL(for: scan)
+                Section("Line scan") {
+                    NavigationLink {
+                        TopoMapView(folder: folder)
+                    } label: {
+                        Label("Topographic map + variance statistics", systemImage: "map")
+                    }
+                    NavigationLink {
+                        LinePlaybackView(folder: folder)
+                    } label: {
+                        Label("Play back recording (with speed)", systemImage: "play.rectangle")
+                    }
+                }
+            }
+
             if !scan.summary.isEmpty {
                 Section("Summary") {
                     ForEach(Array(scan.summary.enumerated()), id: \.offset) { item in
@@ -115,6 +131,9 @@ struct ScanDetailView: View {
         case "usdz", "obj", "ply": return "cube"
         case "csv": return "tablecells"
         case "json": return "curlybraces"
+        case "mov": return "film"
+        case "png": return "photo"
+        case "bin": return "externaldrive"
         default: return "doc"
         }
     }

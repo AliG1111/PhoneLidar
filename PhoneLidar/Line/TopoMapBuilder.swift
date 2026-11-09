@@ -1,0 +1,456 @@
+import Foundation
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
+
+struct ProfilePoint: Codable, Identifiable {
+    /// mm (across: from the image centre line, along: from the left edge of the map)
+    var position: Double
+    /// mean distance from the camera, mm
+    var value: Double
+    var cells: Int
+
+    var id: Double { position }
+}
+
+struct TopoProfiles: Codable {
+    var across: [ProfilePoint]
+    var along: [ProfilePoint]
+}
+
+/// Variance statistics of a topographic map. Distances are mm from the camera.
+struct TopoStats: Codable {
+    var cellSize: Double
+    var columns: Int
+    var rows: Int
+    var lengthMM: Double
+    var widthMM: Double
+    var coveragePercent: Double
+    var cellsWithData: Int
+    var meanHitsPerCell: Double
+
+    var mean: Double
+    var variance: Double
+    var stdDev: Double
+    var cvPercent: Double
+    var minimum: Double
+    var maximum: Double
+    var range: Double
+    var p1: Double
+    var p5: Double
+    var median: Double
+    var p95: Double
+    var p99: Double
+
+    /// Variation of the across-width profile (lane-to-lane differences).
+    var acrossStdDev: Double
+    var acrossRange: Double
+    /// Variation of the along-travel profile (waves along the material).
+    var alongStdDev: Double
+    var alongRange: Double
+    /// What is left after removing both profiles (local roughness / undulation).
+    var residualStdDev: Double
+    /// Pooled scatter of repeated LiDAR readings of the same cell (measurement noise estimate).
+    var repeatStdDev: Double
+
+    var speedMean: Double?
+    var speedStdDev: Double?
+    var speedMin: Double?
+    var speedMax: Double?
+    var speedTrackedPercent: Double
+
+    var colorNear: Double
+    var colorFar: Double
+    var frames: Int
+    var duration: Double
+}
+
+/// Stitches the recorded depth frames into a top-down distance map using the measured travel,
+/// averaging every reading that lands in the same cell.
+enum TopoMapBuilder {
+    struct Output {
+        var stats: TopoStats
+        var profiles: TopoProfiles
+        var summary: [String]
+        var mapImage: CGImage
+    }
+
+    static func build(folder: URL, info: LineRecordingInfo) throws -> Output {
+        let reader = try DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
+        let frames = Array(info.frames.prefix(reader.frameCount))
+        guard frames.count >= 2 else { throw LineError.notEnoughData }
+        let w = reader.width
+        let h = reader.height
+        let depths = frames.map(\.medianDepth).filter { $0 > 0 }.sorted()
+        guard !depths.isEmpty else { throw LineError.notEnoughData }
+        let zTypical = depths[depths.count / 2]
+        let border = max(2, min(w, h) / 32)
+        guard w > 2 * border + 4, h > 2 * border + 4 else { throw LineError.badFile }
+        let sign = Double(info.direction.bufferSign)
+
+        // Map coordinates (mm): q runs left → right as seen on the portrait screen and stays fixed
+        // to the material (q = sign·travel − y); x runs top → bottom of the screen (across the material).
+        var qMin = Double.infinity
+        var qMax = -Double.infinity
+        var xMin = Double.infinity
+        var xMax = -Double.infinity
+        for f in frames {
+            let z = f.medianDepth > 0 ? f.medianDepth : zTypical
+            let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
+            guard fx > 0, fy > 0 else { continue }
+            let yLo = (Double(border) - cy) * z / fy
+            let yHi = (Double(h - 1 - border) - cy) * z / fy
+            let xLo = (Double(border) - cx) * z / fx
+            let xHi = (Double(w - 1 - border) - cx) * z / fx
+            qMin = min(qMin, sign * f.travel - yHi)
+            qMax = max(qMax, sign * f.travel - yLo)
+            xMin = min(xMin, xLo)
+            xMax = max(xMax, xHi)
+        }
+        guard qMin.isFinite, qMax > qMin, xMin.isFinite, xMax > xMin else { throw LineError.notEnoughData }
+        let pad = (xMax - xMin) * 0.06         // room for relief nearer/farther than the typical distance
+        xMin -= pad
+        xMax += pad
+        qMin -= pad
+        qMax += pad
+
+        let middle = frames[frames.count / 2]
+        var cell = max(2.0, (zTypical / Double(max(middle.fx, 1))).rounded())   // ≈ one depth pixel on the surface
+        var cols = Int(((qMax - qMin) / cell).rounded(.up)) + 1
+        var rows = Int(((xMax - xMin) / cell).rounded(.up)) + 1
+        while cols * rows > 3_000_000 {
+            cell *= 1.25
+            cols = Int(((qMax - qMin) / cell).rounded(.up)) + 1
+            rows = Int(((xMax - xMin) / cell).rounded(.up)) + 1
+        }
+        let cellCount = cols * rows
+
+        // Per-cell running mean and variance (Welford) of distance − zRef.
+        var means = [Float](repeating: 0, count: cellCount)
+        var m2s = [Float](repeating: 0, count: cellCount)
+        var hits = [UInt16](repeating: 0, count: cellCount)
+        let zRef = Float(zTypical)
+        means.withUnsafeMutableBufferPointer { meanBuf in
+            m2s.withUnsafeMutableBufferPointer { m2Buf in
+                hits.withUnsafeMutableBufferPointer { hitBuf in
+                    for (i, f) in frames.enumerated() {
+                        guard let depth = reader.frame(i) else { continue }
+                        let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
+                        guard fx > 0, fy > 0 else { continue }
+                        let offset = sign * f.travel
+                        depth.withUnsafeBufferPointer { zBuf in
+                            for v in border..<(h - border) {
+                                let yFactor = (Double(v) - cy) / fy
+                                let rowBase = v * w
+                                for u in border..<(w - border) {
+                                    let z = zBuf[rowBase + u]
+                                    if z <= 0 { continue }
+                                    let zd = Double(z)
+                                    let q = offset - yFactor * zd
+                                    let x = (Double(u) - cx) / fx * zd
+                                    let col = Int((q - qMin) / cell)
+                                    let row = Int((x - xMin) / cell)
+                                    if col < 0 || col >= cols || row < 0 || row >= rows { continue }
+                                    let idx = row * cols + col
+                                    let n = hitBuf[idx]
+                                    if n == UInt16.max { continue }
+                                    let k = Float(n) + 1
+                                    let d = z - zRef
+                                    let delta = d - meanBuf[idx]
+                                    meanBuf[idx] += delta / k
+                                    m2Buf[idx] += delta * (d - meanBuf[idx])
+                                    hitBuf[idx] = n + 1
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cell values, profiles and overall statistics.
+        var values: [Float] = []
+        values.reserveCapacity(cellCount / 2)
+        var rowSum = [Double](repeating: 0, count: rows)
+        var rowN = [Int](repeating: 0, count: rows)
+        var colSum = [Double](repeating: 0, count: cols)
+        var colN = [Int](repeating: 0, count: cols)
+        var hitTotal = 0.0
+        var repeatVarianceSum = 0.0
+        var repeatN = 0
+        var sum = 0.0
+        for r in 0..<rows {
+            for c in 0..<cols {
+                let idx = r * cols + c
+                let n = hits[idx]
+                if n == 0 { continue }
+                let z = zRef + means[idx]
+                values.append(z)
+                let zd = Double(z)
+                sum += zd
+                rowSum[r] += zd
+                rowN[r] += 1
+                colSum[c] += zd
+                colN[c] += 1
+                hitTotal += Double(n)
+                if n >= 3 {
+                    repeatVarianceSum += Double(m2s[idx]) / Double(n - 1)
+                    repeatN += 1
+                }
+            }
+        }
+        guard values.count >= 10 else { throw LineError.notEnoughData }
+        let count = Double(values.count)
+        let mean = sum / count
+        var sq = 0.0
+        for v in values {
+            let d = Double(v) - mean
+            sq += d * d
+        }
+        let variance = sq / count
+        let sorted = values.sorted()
+        func percentile(_ p: Double) -> Double {
+            Double(sorted[min(sorted.count - 1, max(0, Int((Double(sorted.count - 1) * p).rounded())))])
+        }
+
+        let minRowCells = max(1, (rowN.max() ?? 0) / 10)
+        let minColCells = max(1, (colN.max() ?? 0) / 10)
+        var rowMean = [Double?](repeating: nil, count: rows)
+        var colMean = [Double?](repeating: nil, count: cols)
+        var across: [ProfilePoint] = []
+        var along: [ProfilePoint] = []
+        for r in 0..<rows where rowN[r] >= minRowCells {
+            let m = rowSum[r] / Double(rowN[r])
+            rowMean[r] = m
+            across.append(ProfilePoint(position: xMin + (Double(r) + 0.5) * cell, value: m, cells: rowN[r]))
+        }
+        for c in 0..<cols where colN[c] >= minColCells {
+            let m = colSum[c] / Double(colN[c])
+            colMean[c] = m
+            along.append(ProfilePoint(position: (Double(c) + 0.5) * cell, value: m, cells: colN[c]))
+        }
+        func spread(_ points: [ProfilePoint]) -> (std: Double, range: Double) {
+            guard points.count >= 2 else { return (0, 0) }
+            let m = points.reduce(0) { $0 + $1.value } / Double(points.count)
+            let v = points.reduce(0) { $0 + ($1.value - m) * ($1.value - m) } / Double(points.count)
+            let lo = points.map(\.value).min() ?? 0
+            let hi = points.map(\.value).max() ?? 0
+            return (v.squareRoot(), hi - lo)
+        }
+        let acrossSpread = spread(across)
+        let alongSpread = spread(along)
+
+        var residualSq = 0.0
+        var residualN = 0
+        for r in 0..<rows {
+            guard let rm = rowMean[r] else { continue }
+            for c in 0..<cols {
+                guard let cm = colMean[c] else { continue }
+                let idx = r * cols + c
+                if hits[idx] == 0 { continue }
+                let e = Double(zRef + means[idx]) - rm - cm + mean
+                residualSq += e * e
+                residualN += 1
+            }
+        }
+
+        let speeds = frames.compactMap(\.speed)
+        var speedMean: Double?
+        var speedStd: Double?
+        if !speeds.isEmpty {
+            let m = speeds.reduce(0, +) / Double(speeds.count)
+            speedMean = m
+            speedStd = (speeds.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(speeds.count)).squareRoot()
+        }
+
+        let near = percentile(0.01)
+        var far = percentile(0.99)
+        if far <= near { far = near + 1 }
+
+        let stats = TopoStats(
+            cellSize: cell, columns: cols, rows: rows,
+            lengthMM: Double(cols) * cell, widthMM: Double(rows) * cell,
+            coveragePercent: 100 * count / Double(cellCount),
+            cellsWithData: values.count,
+            meanHitsPerCell: hitTotal / count,
+            mean: mean, variance: variance, stdDev: variance.squareRoot(),
+            cvPercent: mean > 0 ? 100 * variance.squareRoot() / mean : 0,
+            minimum: Double(sorted.first ?? 0), maximum: Double(sorted.last ?? 0),
+            range: Double((sorted.last ?? 0) - (sorted.first ?? 0)),
+            p1: near, p5: percentile(0.05), median: percentile(0.5), p95: percentile(0.95), p99: percentile(0.99),
+            acrossStdDev: acrossSpread.std, acrossRange: acrossSpread.range,
+            alongStdDev: alongSpread.std, alongRange: alongSpread.range,
+            residualStdDev: residualN > 0 ? (residualSq / Double(residualN)).squareRoot() : 0,
+            repeatStdDev: repeatN > 0 ? (repeatVarianceSum / Double(repeatN)).squareRoot() : 0,
+            speedMean: speedMean, speedStdDev: speedStd,
+            speedMin: speeds.min(), speedMax: speeds.max(),
+            speedTrackedPercent: 100 * Double(speeds.count) / Double(frames.count),
+            colorNear: near, colorFar: far,
+            frames: frames.count, duration: frames.last?.time ?? 0)
+        let profiles = TopoProfiles(across: across, along: along)
+
+        // Colour image (downsampled if very long).
+        let factor = max(1, Int((Double(cols) / 12_000).rounded(.up)))
+        let imageWidth = max(1, cols / factor)
+        let imageHeight = max(1, rows / factor)
+        var rgba = [UInt8](repeating: 0, count: imageWidth * imageHeight * 4)
+        let nearF = Float(near), farF = Float(far)
+        for iy in 0..<imageHeight {
+            for ix in 0..<imageWidth {
+                var total: Float = 0
+                var n = 0
+                for dy in 0..<factor {
+                    let r = iy * factor + dy
+                    if r >= rows { break }
+                    for dx in 0..<factor {
+                        let c = ix * factor + dx
+                        if c >= cols { break }
+                        let idx = r * cols + c
+                        if hits[idx] > 0 {
+                            total += zRef + means[idx]
+                            n += 1
+                        }
+                    }
+                }
+                guard n > 0 else { continue }
+                let color = DepthColors.lut[DepthColors.index(distance: total / Float(n), near: nearF, far: farF)]
+                let o = (iy * imageWidth + ix) * 4
+                rgba[o] = color.0
+                rgba[o + 1] = color.1
+                rgba[o + 2] = color.2
+                rgba[o + 3] = 255
+            }
+        }
+        guard let image = DepthColors.makeImage(rgba: rgba, width: imageWidth, height: imageHeight) else {
+            throw LineError.notEnoughData
+        }
+
+        // Files.
+        writePNG(image, to: folder.appendingPathComponent("TopoMapGrid.png"))
+        try writeGridCSV(to: folder.appendingPathComponent("TopoMap.csv"), rows: rows, cols: cols, cell: cell,
+                         xMin: xMin, zRef: zRef, means: means, hits: hits)
+        try statsCSV(stats).write(to: folder.appendingPathComponent("TopoStats.csv"), atomically: true, encoding: .utf8)
+        try profileCSV(across, header: "across_mm")
+            .write(to: folder.appendingPathComponent("AcrossProfile.csv"), atomically: true, encoding: .utf8)
+        try profileCSV(along, header: "along_mm")
+            .write(to: folder.appendingPathComponent("AlongProfile.csv"), atomically: true, encoding: .utf8)
+        try JSONEncoder.pretty.encode(stats).write(to: folder.appendingPathComponent("TopoStats.json"), options: .atomic)
+        try JSONEncoder().encode(profiles).write(to: folder.appendingPathComponent("TopoProfiles.json"), options: .atomic)
+
+        return Output(stats: stats, profiles: profiles, summary: summaryLines(stats), mapImage: image)
+    }
+
+    // MARK: - Text
+
+    static func summaryLines(_ s: TopoStats) -> [String] {
+        var lines = [
+            String(format: "Scanned %.2f m long × %.2f m wide, %.0f mm cells, %.0f%% coverage",
+                   s.lengthMM / 1000, s.widthMM / 1000, s.cellSize, s.coveragePercent),
+            String(format: "Distance mean %.1f mm, std dev %.2f mm, variance %.2f mm²",
+                   s.mean, s.stdDev, s.variance),
+            String(format: "Range %.1f mm (min %.1f, max %.1f); P5–P95 %.1f mm",
+                   s.range, s.minimum, s.maximum, s.p95 - s.p5),
+            String(format: "Across-width profile: std dev %.2f mm, range %.1f mm", s.acrossStdDev, s.acrossRange),
+            String(format: "Along-travel profile: std dev %.2f mm, range %.1f mm", s.alongStdDev, s.alongRange),
+            String(format: "Local residual std dev %.2f mm; repeat-reading noise %.2f mm; %.1f readings per cell",
+                   s.residualStdDev, s.repeatStdDev, s.meanHitsPerCell)
+        ]
+        if let m = s.speedMean, let sd = s.speedStdDev {
+            lines.append(String(format: "Speed mean %.0f mm/s (%.2f m/min), std dev %.1f mm/s, tracked %.0f%% of frames",
+                                m, m * 0.06, sd, s.speedTrackedPercent))
+        } else {
+            lines.append("Speed: no texture lock (map uses zero travel)")
+        }
+        lines.append(String(format: "Colours: dark red %.0f mm (near) → dark blue %.0f mm (far)", s.colorNear, s.colorFar))
+        return lines
+    }
+
+    static func statsCSV(_ s: TopoStats) -> String {
+        func f(_ v: Double?, _ digits: Int = 2) -> String {
+            guard let v else { return "" }
+            return String(format: "%.\(digits)f", v)
+        }
+        let rows: [[String]] = [
+            ["metric", "value", "unit"],
+            ["frames", "\(s.frames)", ""],
+            ["duration", f(s.duration, 2), "s"],
+            ["cell_size", f(s.cellSize, 1), "mm"],
+            ["map_length", f(s.lengthMM, 0), "mm"],
+            ["map_width", f(s.widthMM, 0), "mm"],
+            ["coverage", f(s.coveragePercent, 1), "%"],
+            ["cells_with_data", "\(s.cellsWithData)", ""],
+            ["readings_per_cell_mean", f(s.meanHitsPerCell, 1), ""],
+            ["distance_mean", f(s.mean, 2), "mm"],
+            ["distance_variance", f(s.variance, 3), "mm^2"],
+            ["distance_std_dev", f(s.stdDev, 3), "mm"],
+            ["distance_cv", f(s.cvPercent, 3), "%"],
+            ["distance_min", f(s.minimum, 1), "mm"],
+            ["distance_max", f(s.maximum, 1), "mm"],
+            ["distance_range", f(s.range, 1), "mm"],
+            ["distance_p1", f(s.p1, 1), "mm"],
+            ["distance_p5", f(s.p5, 1), "mm"],
+            ["distance_median", f(s.median, 1), "mm"],
+            ["distance_p95", f(s.p95, 1), "mm"],
+            ["distance_p99", f(s.p99, 1), "mm"],
+            ["across_profile_std_dev", f(s.acrossStdDev, 3), "mm"],
+            ["across_profile_range", f(s.acrossRange, 2), "mm"],
+            ["along_profile_std_dev", f(s.alongStdDev, 3), "mm"],
+            ["along_profile_range", f(s.alongRange, 2), "mm"],
+            ["residual_std_dev", f(s.residualStdDev, 3), "mm"],
+            ["repeat_reading_std_dev", f(s.repeatStdDev, 3), "mm"],
+            ["speed_mean", f(s.speedMean, 1), "mm/s"],
+            ["speed_std_dev", f(s.speedStdDev, 2), "mm/s"],
+            ["speed_min", f(s.speedMin, 1), "mm/s"],
+            ["speed_max", f(s.speedMax, 1), "mm/s"],
+            ["speed_tracked", f(s.speedTrackedPercent, 1), "%"],
+            ["colour_near_dark_red", f(s.colorNear, 1), "mm"],
+            ["colour_far_dark_blue", f(s.colorFar, 1), "mm"]
+        ]
+        return CSV.make(rows)
+    }
+
+    static func profileCSV(_ points: [ProfilePoint], header: String) -> String {
+        var rows: [[String]] = [[header, "mean_distance_mm", "cells"]]
+        for p in points {
+            rows.append([String(format: "%.1f", p.position), String(format: "%.2f", p.value), "\(p.cells)"])
+        }
+        return CSV.make(rows)
+    }
+
+    @inline(__always)
+    private static func tenths(_ v: Float) -> String {
+        let t = Int((v * 10).rounded())
+        let a = abs(t)
+        return (t < 0 ? "-" : "") + "\(a / 10).\(a % 10)"
+    }
+
+    /// Rows = across (top → bottom of the screen), columns = along (left → right). Blank = no data.
+    private static func writeGridCSV(to url: URL, rows: Int, cols: Int, cell: Double, xMin: Double,
+                                     zRef: Float, means: [Float], hits: [UInt16]) throws {
+        let writer = try TextFileWriter(url: url)
+        var header = ["across_mm \\ along_mm"]
+        header.reserveCapacity(cols + 1)
+        for c in 0..<cols { header.append(String(format: "%.0f", (Double(c) + 0.5) * cell)) }
+        try writer.line(header.joined(separator: ","))
+        var fields = [String]()
+        fields.reserveCapacity(cols + 1)
+        for r in 0..<rows {
+            fields.removeAll(keepingCapacity: true)
+            fields.append(String(format: "%.0f", xMin + (Double(r) + 0.5) * cell))
+            for c in 0..<cols {
+                let idx = r * cols + c
+                fields.append(hits[idx] > 0 ? tenths(zRef + means[idx]) : "")
+            }
+            try writer.line(fields.joined(separator: ","))
+        }
+        try writer.close()
+    }
+
+    @discardableResult
+    static func writePNG(_ image: CGImage, to url: URL) -> Bool {
+        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)
+        else { return false }
+        CGImageDestinationAddImage(destination, image, nil)
+        return CGImageDestinationFinalize(destination)
+    }
+}

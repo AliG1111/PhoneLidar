@@ -5,6 +5,7 @@ enum ScanKind: String, Codable, CaseIterable, Identifiable {
     case room
     case mesh
     case object
+    case line
 
     var id: String { rawValue }
 
@@ -13,6 +14,7 @@ enum ScanKind: String, Codable, CaseIterable, Identifiable {
         case .room: return "Room scan"
         case .mesh: return "Equipment scan (LiDAR mesh)"
         case .object: return "Object capture"
+        case .line: return "Line scan (moving material)"
         }
     }
 
@@ -21,6 +23,7 @@ enum ScanKind: String, Codable, CaseIterable, Identifiable {
         case .room: return "square.split.bottomrightquarter"
         case .mesh: return "cube.transparent"
         case .object: return "cube.fill"
+        case .line: return "barcode.viewfinder"
         }
     }
 }
