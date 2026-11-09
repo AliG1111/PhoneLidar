@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreGraphics
+import CoreMotion
 
 /// Snapshot sent to the screen after every processed frame.
 struct LiveUpdate {
@@ -14,6 +15,12 @@ struct LiveUpdate {
     var depthRange: ClosedRange<Float>?
     var recordedFrames: Int
     var elapsed: Double
+    /// Phone tilt from gravity, degrees. +X = right edge high, +Y = top edge high (screen up, portrait).
+    var tiltX: Double?
+    var tiltY: Double?
+    /// Tilt of the phone relative to the surface below, from a plane fitted to the LiDAR depth (same signs).
+    var surfaceTiltX: Double?
+    var surfaceTiltY: Double?
 }
 
 /// LiDAR depth camera + synchronized video. Measures surface speed from the video texture,
@@ -40,6 +47,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     private var configured = false
 
     // Data-queue state
+    private let motion = CMMotionManager()
+    private var surfaceTilt: (x: Double, y: Double)?
     private let estimator = SpeedEstimator()
     private var lastTime: CMTime?
     private var travel: Double = 0
@@ -126,6 +135,10 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     }
 
     func start(shortShutter: Bool) {
+        if motion.isDeviceMotionAvailable && !motion.isDeviceMotionActive {
+            motion.deviceMotionUpdateInterval = 1.0 / 30
+            motion.startDeviceMotionUpdates()
+        }
         sessionQueue.async { [self] in
             if !session.isRunning { session.startRunning() }
             // Let auto exposure settle before switching to a short shutter.
@@ -136,6 +149,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     }
 
     func stop() {
+        if motion.isDeviceMotionActive { motion.stopDeviceMotionUpdates() }
         sessionQueue.async { [self] in
             if session.isRunning { session.stopRunning() }
         }
@@ -304,11 +318,25 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                                          shortShutter: pending.shortShutter, direction: pending.direction,
                                          travelOffset: travel)
         }
+        // Level: gravity tilt every frame, LiDAR surface tilt every second frame.
+        var tiltX: Double?
+        var tiltY: Double?
+        if let g = motion.deviceMotion?.gravity {
+            tiltX = asin(max(-1, min(1, -g.x))) * 180 / .pi
+            tiltY = asin(max(-1, min(1, -g.y))) * 180 / .pi
+        }
+        if frameCounter % 2 == 1 {
+            surfaceTilt = Self.surfaceTilt(millimetres, width: dw, height: dh,
+                                           fx: Double(k.fx), fy: Double(k.fy), cx: Double(k.cx), cy: Double(k.cy))
+        }
+
         if let active = recorder {
             let info = LineFrameInfo(index: 0, time: 0, speed: rawSpeed, travel: travel,
                                      shiftPixels: shift?.along, crossShiftPixels: shift?.across,
                                      quality: shift?.quality ?? 0, medianDepth: median,
-                                     fx: k.fx, fy: k.fy, cx: k.cx, cy: k.cy)
+                                     fx: k.fx, fy: k.fy, cx: k.cx, cy: k.cy,
+                                     tiltX: tiltX, tiltY: tiltY,
+                                     surfaceTiltX: surfaceTilt?.x, surfaceTiltY: surfaceTilt?.y)
             active.append(sampleBuffer: sampleBuffer, depthMillimetres: millimetres, info: info)
         }
 
@@ -316,7 +344,58 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                              medianDepth: median, travel: travel, angle: angle,
                              depthImage: image, depthRange: range,
                              recordedFrames: recorder?.frames.count ?? 0,
-                             elapsed: recorder?.elapsed ?? 0))
+                             elapsed: recorder?.elapsed ?? 0,
+                             tiltX: tiltX, tiltY: tiltY,
+                             surfaceTiltX: surfaceTilt?.x, surfaceTiltY: surfaceTilt?.y))
+    }
+
+    /// Fits a plane Z = a·X + b·Y + c to the depth points (mm, camera coordinates) and converts its slope
+    /// to phone tilt relative to that surface. Depth columns run down the portrait screen, rows run right → left.
+    static func surfaceTilt(_ millimetres: [Float], width: Int, height: Int,
+                            fx: Double, fy: Double, cx: Double, cy: Double) -> (x: Double, y: Double)? {
+        guard fx > 0, fy > 0, width > 16, height > 16 else { return nil }
+        var n = 0.0, sx = 0.0, sy = 0.0, sz = 0.0
+        var sxx = 0.0, syy = 0.0, sxy = 0.0, sxz = 0.0, syz = 0.0
+        let border = max(2, min(width, height) / 16)
+        var v = border
+        while v < height - border {
+            var u = border
+            while u < width - border {
+                let z = Double(millimetres[v * width + u])
+                if z > 0 {
+                    let x = (Double(u) - cx) * z / fx      // toward the bottom of the screen
+                    let y = (Double(v) - cy) * z / fy      // toward the left of the screen
+                    n += 1; sx += x; sy += y; sz += z
+                    sxx += x * x; syy += y * y; sxy += x * y; sxz += x * z; syz += y * z
+                }
+                u += 4
+            }
+            v += 4
+        }
+        guard n >= 50 else { return nil }
+        // Solve the 3×3 normal equations for (a, b, c) with Cramer's rule.
+        let m = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, n]]
+        let r = [sxz, syz, sz]
+        func det(_ a: [[Double]]) -> Double {
+            a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+                - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+                + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+        }
+        let d = det(m)
+        guard abs(d) > 1e-9 else { return nil }
+        var ma = m
+        var mb = m
+        for i in 0..<3 {
+            ma[i][0] = r[i]
+            mb[i][1] = r[i]
+        }
+        let a = det(ma) / d      // dZ per mm toward the screen bottom
+        let b = det(mb) / d      // dZ per mm toward the screen left
+        // Farther at the bottom = bottom edge high = top edge low; farther at the left = left edge high.
+        let tiltY = -atan(a) * 180 / .pi
+        let tiltX = -atan(b) * 180 / .pi
+        guard tiltX.isFinite, tiltY.isFinite else { return nil }
+        return (tiltX, tiltY)
     }
 
     /// Depth-map intrinsics in depth pixels.
