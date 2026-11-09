@@ -9,6 +9,7 @@ struct TopoReplayView: View {
     let title: String
     let created: Date?
 
+    @Environment(ScanStore.self) private var store
     @State private var model: TopoReplayModel?
     @State private var status = "Loading recording…"
     @State private var failure: String?
@@ -16,7 +17,7 @@ struct TopoReplayView: View {
     var body: some View {
         Group {
             if let model {
-                TopoReplayContent(model: model)
+                TopoReplayContent(model: model, filesChanged: refreshFileList)
             } else if let failure {
                 ContentUnavailableView("Cannot replay this recording", systemImage: "exclamationmark.triangle",
                                        description: Text(failure))
@@ -36,6 +37,14 @@ struct TopoReplayView: View {
         .onDisappear {
             model?.stop()
             OrientationLock.allow(.portrait, rotateTo: .portrait)
+        }
+    }
+
+    /// New files (TopoGrid.bin, saved images) appear in the scan's file list.
+    private func refreshFileList() {
+        let target = folder.standardizedFileURL.path
+        if let record = store.scans.first(where: { store.folderURL(for: $0).standardizedFileURL.path == target }) {
+            try? store.save(record)
         }
     }
 
@@ -61,6 +70,7 @@ struct TopoReplayView: View {
             case .success(let output):
                 TopoMapRenderer.writeComposite(map: output.mapImage, stats: output.stats, direction: info.direction,
                                                to: folder.appendingPathComponent("TopoMap.png"))
+                refreshFileList()
             case .failure(let error):
                 failure = "The topographic map could not be built: \(error.localizedDescription)"
                 return
@@ -96,6 +106,7 @@ private struct ShareFile: Identifiable {
 
 private struct TopoReplayContent: View {
     @Bindable var model: TopoReplayModel
+    let filesChanged: @MainActor () -> Void
     @State private var showSettings = false
     @State private var shareFile: ShareFile?
 
@@ -112,7 +123,10 @@ private struct TopoReplayContent: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
-                    if let url = model.saveImage() { shareFile = ShareFile(url: url) }
+                    if let url = model.saveImage() {
+                        filesChanged()
+                        shareFile = ShareFile(url: url)
+                    }
                 } label: {
                     Image(systemName: "square.and.arrow.down")
                 }

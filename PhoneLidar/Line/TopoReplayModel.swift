@@ -22,8 +22,8 @@ final class TopoReplayModel {
     }
 
     nonisolated static let speedPresets: [Double] = [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]
-    nonisolated static let defaultElevation = 32.0
-    nonisolated static let defaultShear = 0.32
+    nonisolated static let defaultElevation = 42.0
+    nonisolated static let defaultShear = 0.36
 
     let folder: URL
     let title: String
@@ -50,7 +50,7 @@ final class TopoReplayModel {
     /// Height of the value range (base → top) as a fraction of the strip width.
     var heightScale = 0.8
     /// Window length as a multiple of the strip width.
-    var lengthFactor = 2.5
+    var lengthFactor = 2.0
     var target: Double
     var tolerance: Double
 
