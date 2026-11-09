@@ -39,10 +39,14 @@ private struct PlaybackContent: View {
     @Bindable var model: PlaybackModel
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
+            speedStrip
+
+            // Playback picture. Nothing is drawn over it except the crosshair, so every part of it can be
+            // touched; touches in the black bars around the picture snap to its nearest edge.
             GeometryReader { geometry in
                 let picture = PlaybackModel.fitRect(in: geometry.size, aspect: model.displayAspect)
-                ZStack(alignment: .top) {
+                ZStack {
                     Color.black
                     if model.mode != .depth {
                         PlayerLayerView(player: model.player)
@@ -54,13 +58,13 @@ private struct PlaybackContent: View {
                             .scaledToFit()
                             .opacity(model.mode == .depth ? 1 : model.blend)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .allowsHitTesting(false)
                     }
                     if let probe = model.probe {
                         ProbeMarker()
                             .position(x: picture.minX + probe.x * picture.width,
                                       y: picture.minY + probe.y * picture.height)
                     }
-                    // Touch layer: tap or drag to place the probe, playing or paused.
                     Color.clear
                         .contentShape(Rectangle())
                         .gesture(
@@ -68,76 +72,83 @@ private struct PlaybackContent: View {
                                 .onChanged { value in model.moveProbe(to: value.location, in: picture) }
                                 .onEnded { _ in model.finishProbe() }
                         )
-                    VStack(spacing: 0) {
-                        speedBadge
-                        Spacer(minLength: 0)
-                        if model.probe != nil {
-                            probeCard
-                        } else {
-                            Label("Touch the picture to read distance at a point", systemImage: "hand.tap")
-                                .font(.caption2)
-                                .foregroundStyle(.white)
-                                .padding(6)
-                                .background(Color.black.opacity(0.5), in: Capsule())
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .padding(8)
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .frame(maxHeight: .infinity)
 
+            // Fixed height so the picture never resizes while a point is being selected.
+            probePanel
+                .frame(height: 142)
+
             DepthLegend(near: model.colorRange?.lowerBound, far: model.colorRange?.upperBound)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text("Speed over the recording")
-                    Spacer()
-                    if let max = model.speedMax {
-                        Text(String(format: "0 – %.0f mm/s", max))
-                    }
+            SpeedTimeline(points: model.graphPoints, duration: model.duration,
+                          maxSpeed: model.speedMax ?? 1, cursor: model.currentTime)
+                .frame(height: 40)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6))
+                .overlay(alignment: .topLeading) {
+                    Text(model.speedMax.map { String(format: "speed 0 – %.0f mm/s", $0) } ?? "speed")
+                        .font(.system(size: 9).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(3)
+                        .allowsHitTesting(false)
                 }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                SpeedTimeline(points: model.graphPoints, duration: model.duration,
-                              maxSpeed: model.speedMax ?? 1, cursor: model.currentTime)
-                    .frame(height: 56)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6))
-            }
 
             transport
         }
-        .padding()
+        .padding(.horizontal)
+        .padding(.vertical, 6)
     }
 
     // MARK: Speed
 
-    private var speedBadge: some View {
-        VStack(spacing: 2) {
+    private var speedStrip: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(SpeedText.main(model.smoothedSpeed))
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(.title2.weight(.bold))
                 .monospacedDigit()
-            Text(SpeedText.perMinute(model.smoothedSpeed))
+            Text(model.smoothedSpeed.map { String(format: "%.2f m/min", $0 * 0.06) } ?? "no texture lock")
                 .font(.caption)
                 .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 4)
             if let frame = model.frame {
-                Text(String(format: "frame %ld  ·  %.0f mm away  ·  travel %.0f mm  ·  lock %.0f%%",
-                            frame.index, frame.medianDepth, frame.travel, frame.quality * 100))
-                    .font(.caption2)
-                    .monospacedDigit()
+                VStack(alignment: .trailing, spacing: 0) {
+                    Text(String(format: "frame %ld  ·  %.0f mm away", frame.index, frame.medianDepth))
+                    Text(String(format: "travel %.0f mm  ·  lock %.0f%%", frame.travel, frame.quality * 100))
+                }
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
             }
         }
-        .foregroundStyle(.white)
-        .padding(8)
-        .background(Color.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
-        .allowsHitTesting(false)
     }
 
     // MARK: Probe
 
-    private var probeCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private var probePanel: some View {
+        Group {
+            if model.probe != nil {
+                probeContent
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "hand.tap")
+                        .font(.title2)
+                    Text("Touch or drag anywhere on the playback picture to read the distance at that point: current, min and max.")
+                        .multilineTextAlignment(.center)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var probeContent: some View {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Image(systemName: "scope")
                 Text(model.probePositionText)
@@ -149,6 +160,7 @@ private struct PlaybackContent: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title3)
+                        .foregroundStyle(.secondary)
                 }
                 .accessibilityLabel("Remove probe")
             }
@@ -183,29 +195,29 @@ private struct PlaybackContent: View {
                             stats.mean, stats.stdDev, Double(stats.maximum - stats.minimum),
                             stats.validFrames, stats.totalFrames))
                     .font(.caption2.monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                 ProbeTimeline(stats: stats, duration: model.duration, cursor: model.currentTime)
-                    .frame(height: 34)
+                    .frame(height: 26)
             } else if model.probeComputing {
                 HStack(spacing: 6) {
-                    ProgressView().tint(.white)
+                    ProgressView()
                     Text("Reading this point in every frame…")
                 }
                 .font(.caption2)
             } else {
                 Text("Lift your finger to read min / max over the whole recording.")
                     .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
-        .foregroundStyle(.white)
-        .padding(8)
-        .background(Color.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func probeValue(title: String, value: Float?, detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 1) {
             Text(title)
                 .font(.caption2)
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(.secondary)
             HStack(spacing: 4) {
                 Circle()
                     .fill(model.color(for: value))
@@ -215,7 +227,7 @@ private struct PlaybackContent: View {
             }
             Text(detail)
                 .font(.caption2.monospacedDigit())
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
@@ -224,14 +236,14 @@ private struct PlaybackContent: View {
     // MARK: Transport
 
     private var transport: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             HStack(spacing: 12) {
                 Button {
                     model.togglePlay()
                 } label: {
                     Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title2)
-                        .frame(width: 44, height: 36)
+                        .frame(width: 44, height: 32)
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -242,13 +254,18 @@ private struct PlaybackContent: View {
                     .font(.caption.monospacedDigit())
                     .frame(width: 52, alignment: .trailing)
             }
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Picker("View", selection: $model.mode) {
                     ForEach(PlaybackModel.Mode.allCases) { mode in
                         Text(mode.rawValue).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
+
+                if model.mode == .blend {
+                    Slider(value: $model.blend, in: 0...1)
+                        .frame(maxWidth: 90)
+                }
 
                 Menu {
                     ForEach([0.1, 0.25, 0.5, 1.0, 2.0], id: \.self) { rate in
@@ -257,13 +274,7 @@ private struct PlaybackContent: View {
                 } label: {
                     Text(String(format: "%gx", Double(model.rate)))
                         .font(.callout.monospacedDigit())
-                        .frame(minWidth: 44)
-                }
-            }
-            if model.mode == .blend {
-                HStack {
-                    Image(systemName: "square.2.layers.3d")
-                    Slider(value: $model.blend, in: 0...1)
+                        .frame(minWidth: 40)
                 }
             }
         }
@@ -660,7 +671,7 @@ struct ProbeTimeline: View {
             var line = Path()
             line.move(to: CGPoint(x: x, y: 0))
             line.addLine(to: CGPoint(x: x, y: Double(size.height)))
-            context.stroke(line, with: .color(.white), lineWidth: 1)
+            context.stroke(line, with: .color(.primary), lineWidth: 1)
         }
     }
 }
