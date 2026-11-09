@@ -21,6 +21,26 @@ struct LiveUpdate {
     /// Tilt of the phone relative to the surface below, from a plane fitted to the LiDAR depth (same signs).
     var surfaceTiltX: Double?
     var surfaceTiltY: Double?
+    /// True when a flat-surface baseline is applied: the image and range are heights above it.
+    var heightMode = false
+    /// Median height above the baseline in the centre of the view, mm.
+    var centerHeight: Double?
+    /// Std dev across the view of the displayed values (heights or distances), mm: a flatness check.
+    var spread: Double?
+    /// 0…1 while a baseline calibration is being captured.
+    var calibrationProgress: Double?
+}
+
+/// Frames collected for a baseline calibration (handed to a background queue when complete).
+private struct CalibrationCapture: @unchecked Sendable {
+    var target: Int
+    var frames: [[Float]] = []
+    var tiltX: [Double] = []
+    var tiltY: [Double] = []
+    var width = 0
+    var height = 0
+    var filtered: Bool
+    var completion: @Sendable (Baseline?) -> Void
 }
 
 /// LiDAR depth camera + synchronized video. Measures surface speed from the video texture,
@@ -47,6 +67,10 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     private var configured = false
 
     // Data-queue state
+    private var baseline: Baseline?
+    private var calibration: CalibrationCapture?
+    private var lastSpread: Double?
+    private var lastCenterHeight: Double?
     private let motion = CMMotionManager()
     private var surfaceTilt: (x: Double, y: Double)?
     private let estimator = SpeedEstimator()
@@ -197,6 +221,21 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         }
     }
 
+    // MARK: - Baseline
+
+    func setBaseline(_ newBaseline: Baseline?) {
+        dataQueue.async { [self] in
+            baseline = newBaseline
+        }
+    }
+
+    /// Captures `frames` frames of the empty flat surface and builds a per-pixel baseline from them.
+    func captureBaseline(frames: Int, filtered: Bool, completion: @escaping @Sendable (Baseline?) -> Void) {
+        dataQueue.async { [self] in
+            calibration = CalibrationCapture(target: frames, filtered: filtered, completion: completion)
+        }
+    }
+
     // MARK: - Recording
 
     func startRecording(folder: URL, filtered: Bool, shortShutter: Bool, direction: TravelDirection) {
@@ -297,16 +336,63 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             angle = atan2(s.across, abs(s.along)) * 180 / .pi
         }
 
-        // Live colour image (every second frame).
+        // Live colour image (every second frame): heights above the baseline when one is set, else distance.
         var image: CGImage?
         var range: ClosedRange<Float>?
+        let activeBaseline = baseline?.matches(width: dw, height: dh) == true ? baseline : nil
         if frameCounter % 2 == 0 {
-            millimetres.withUnsafeBufferPointer { buffer in
-                if let r = DepthColors.percentileRange(buffer, step: 3) {
-                    range = r
-                    image = DepthColors.image(millimetres: buffer, width: dw, height: dh,
-                                              near: r.lowerBound, far: r.upperBound)
+            if let activeBaseline {
+                let heights = activeBaseline.heights(millimetres)
+                heights.withUnsafeBufferPointer { buffer in
+                    if let r = DepthColors.finiteRange(buffer, step: 3) {
+                        range = r
+                        image = DepthColors.heightImage(buffer, width: dw, height: dh,
+                                                        low: r.lowerBound, high: r.upperBound)
+                    }
+                    lastSpread = Self.spread(buffer, width: dw, height: dh)
                 }
+                lastCenterHeight = Self.centerMedian(heights, width: dw, height: dh, allowNegative: true)
+            } else {
+                millimetres.withUnsafeBufferPointer { buffer in
+                    if let r = DepthColors.percentileRange(buffer, step: 3) {
+                        range = r
+                        image = DepthColors.image(millimetres: buffer, width: dw, height: dh,
+                                                  near: r.lowerBound, far: r.upperBound)
+                    }
+                    lastSpread = Self.spread(buffer, width: dw, height: dh)
+                }
+                lastCenterHeight = nil
+            }
+        }
+
+        // Baseline calibration capture.
+        var calibrationProgress: Double?
+        if var capture = calibration {
+            if capture.frames.isEmpty {
+                capture.width = dw
+                capture.height = dh
+            }
+            if capture.width == dw && capture.height == dh {
+                capture.frames.append(millimetres)
+                if let g = motion.deviceMotion?.gravity {
+                    capture.tiltX.append(asin(max(-1, min(1, -g.x))) * 180 / .pi)
+                    capture.tiltY.append(asin(max(-1, min(1, -g.y))) * 180 / .pi)
+                }
+            }
+            calibrationProgress = Double(capture.frames.count) / Double(max(capture.target, 1))
+            if capture.frames.count >= capture.target {
+                calibration = nil
+                let done = capture
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let meanX = done.tiltX.isEmpty ? nil : done.tiltX.reduce(0, +) / Double(done.tiltX.count)
+                    let meanY = done.tiltY.isEmpty ? nil : done.tiltY.reduce(0, +) / Double(done.tiltY.count)
+                    let result = Baseline.build(frames: done.frames, width: done.width, height: done.height,
+                                                verify: done.target / 3, tiltX: meanX, tiltY: meanY,
+                                                filtered: done.filtered)
+                    done.completion(result)
+                }
+            } else {
+                calibration = capture
             }
         }
 
@@ -317,6 +403,10 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                                          depthWidth: dw, depthHeight: dh, filteredDepth: pending.filtered,
                                          shortShutter: pending.shortShutter, direction: pending.direction,
                                          travelOffset: travel)
+            // Keep the baseline with the recording so its map and playback use the same reference.
+            if recorder != nil, let activeBaseline {
+                try? activeBaseline.save(to: pending.folder)
+            }
         }
         // Level: gravity tilt every frame, LiDAR surface tilt every second frame.
         var tiltX: Double?
@@ -346,7 +436,34 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                              recordedFrames: recorder?.frames.count ?? 0,
                              elapsed: recorder?.elapsed ?? 0,
                              tiltX: tiltX, tiltY: tiltY,
-                             surfaceTiltX: surfaceTilt?.x, surfaceTiltY: surfaceTilt?.y))
+                             surfaceTiltX: surfaceTilt?.x, surfaceTiltY: surfaceTilt?.y,
+                             heightMode: activeBaseline != nil,
+                             centerHeight: lastCenterHeight,
+                             spread: lastSpread,
+                             calibrationProgress: calibrationProgress))
+    }
+
+    /// Std dev of the finite, positive-distance or any-height values in the central 80 % of the view.
+    static func spread(_ values: UnsafeBufferPointer<Float>, width: Int, height: Int) -> Double? {
+        var s = 0.0, ss = 0.0, n = 0.0
+        var y = height / 10
+        while y < height - height / 10 {
+            var x = width / 10
+            while x < width - width / 10 {
+                let v = values[y * width + x]
+                if v.isFinite && v != 0 {
+                    let d = Double(v)
+                    s += d
+                    ss += d * d
+                    n += 1
+                }
+                x += 3
+            }
+            y += 3
+        }
+        guard n > 20 else { return nil }
+        let m = s / n
+        return max(0, ss / n - m * m).squareRoot()
     }
 
     /// Fits a plane Z = a·X + b·Y + c to the depth points (mm, camera coordinates) and converts its slope
@@ -439,8 +556,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         return Double(samples[samples.count / 2])
     }
 
-    /// Median distance (mm) of the central half of the depth map.
-    static func centerMedian(_ millimetres: [Float], width: Int, height: Int) -> Double {
+    /// Median of the central half of the map: distances (> 0), or heights (any finite value) with allowNegative.
+    static func centerMedian(_ millimetres: [Float], width: Int, height: Int, allowNegative: Bool = false) -> Double {
         var samples: [Float] = []
         samples.reserveCapacity(width * height / 16)
         var y = height / 4
@@ -448,7 +565,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             var x = width / 4
             while x < width * 3 / 4 {
                 let z = millimetres[y * width + x]
-                if z > 0 { samples.append(z) }
+                if allowNegative ? z.isFinite : z > 0 { samples.append(z) }
                 x += 2
             }
             y += 2

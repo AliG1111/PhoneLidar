@@ -31,7 +31,13 @@ struct LineScanView: View {
                 speedPanel
                 levelPanel
                 Spacer()
-                DepthLegend(near: model.depthRange?.lowerBound, far: model.depthRange?.upperBound)
+                Group {
+                    if model.heightMode {
+                        DepthLegend(lowHeight: model.depthRange?.lowerBound, highHeight: model.depthRange?.upperBound)
+                    } else {
+                        DepthLegend(near: model.depthRange?.lowerBound, far: model.depthRange?.upperBound)
+                    }
+                }
                     .foregroundStyle(.white)
                     .padding(8)
                     .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
@@ -86,6 +92,12 @@ struct LineScanView: View {
                 .monospacedDigit()
             HStack(spacing: 14) {
                 Label(String(format: "%.0f mm", model.medianDepth), systemImage: "ruler")
+                if model.heightMode, let h = model.centerHeight {
+                    Label(String(format: "%+.1f mm high", h), systemImage: "arrow.up.to.line")
+                }
+                if let spread = model.spread {
+                    Label(String(format: "σ %.1f mm", spread), systemImage: "square.grid.3x3")
+                }
                 Label(String(format: "%.0f%% lock", model.quality * 100), systemImage: "scope")
                 if let angle = model.angle {
                     Label(String(format: "%+.1f°", angle), systemImage: "angle")
@@ -159,6 +171,7 @@ struct LineScanView: View {
                     .foregroundStyle(.yellow)
             }
             if model.phase == .ready {
+                baselineRow
                 Toggle("Raw LiDAR depth (unfiltered)", isOn: Binding(
                     get: { !model.filteredDepth },
                     set: { model.setFiltered(!$0) }))
@@ -195,6 +208,67 @@ struct LineScanView: View {
         .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
     }
 
+    private var baselineRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let progress = model.calibrationProgress {
+                HStack(spacing: 8) {
+                    ProgressView(value: progress).tint(.green)
+                    Text(String(format: "Hold still — reading the flat surface %.0f%%", progress * 100))
+                        .font(.caption)
+                }
+            } else if model.calibrating {
+                HStack(spacing: 8) {
+                    ProgressView().tint(.white)
+                    Text("Building baseline…").font(.caption)
+                }
+            } else if let baseline = model.baseline {
+                Label("Baseline set: showing height above the flat surface", systemImage: "checkmark.seal.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+                Text(String(format: "%.0f mm away · flat surface %.1f mm σ (%.1f mm range) → %.2f mm σ corrected",
+                            baseline.info.meanDistance, baseline.info.rawStdDev, baseline.info.rawRange,
+                            baseline.info.correctedStdDev))
+                    .font(.caption2.monospacedDigit())
+                if let moved = model.baselineMovedDegrees, moved > 0.3 {
+                    Label(String(format: "Phone tilt changed %.1f° since calibration — recalibrate", moved),
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                }
+                if baseline.info.filteredDepth != model.filteredDepth {
+                    Label("Calibrated with \(baseline.info.filteredDepth ? "filtered" : "raw") depth — recalibrate for this setting",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                }
+                HStack(spacing: 8) {
+                    Button("Recalibrate") { model.calibrateBaseline() }
+                    Button("Clear") { model.clearBaseline() }
+                }
+                .font(.caption)
+                .buttonStyle(.bordered)
+                .tint(.white)
+            } else {
+                Text("No baseline: colours and numbers are distance from the camera.")
+                    .font(.caption)
+                Button {
+                    model.calibrateBaseline()
+                } label: {
+                    Label("Calibrate baseline on the empty flat surface", systemImage: "scope")
+                }
+                .font(.caption)
+                .buttonStyle(.bordered)
+                .tint(.green)
+            }
+            if let message = model.calibrationMessage {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.yellow)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var recordButton: some View {
         Button {
             model.toggleRecording(store: store)
@@ -214,7 +288,7 @@ struct LineScanView: View {
                 }
             }
         }
-        .disabled(!(model.phase == .ready || model.phase == .recording))
+        .disabled(!(model.phase == .ready || model.phase == .recording) || model.calibrating)
         .accessibilityLabel(model.phase == .recording ? "Stop recording" : "Start recording")
     }
 }
@@ -255,6 +329,20 @@ final class LineScanModel {
     var levelZeroed = UserDefaults.standard.bool(forKey: "lineLevelZeroed")
     var levelZeroX = UserDefaults.standard.double(forKey: "lineLevelZeroX")
     var levelZeroY = UserDefaults.standard.double(forKey: "lineLevelZeroY")
+    var baseline: Baseline? = Baseline.load(from: Baseline.standardFolder)
+    var heightMode = false
+    var centerHeight: Double?
+    var spread: Double?
+    var calibrating = false
+    var calibrationProgress: Double?
+    var calibrationMessage: String?
+
+    /// How far the gravity tilt has moved since the baseline was captured (degrees).
+    var baselineMovedDegrees: Double? {
+        guard let info = baseline?.info, let bx = info.tiltX, let by = info.tiltY,
+              let x = tiltX, let y = tiltY else { return nil }
+        return ((x - bx) * (x - bx) + (y - by) * (y - by)).squareRoot()
+    }
 
     /// Level shown on the bubble: gravity tilt minus the saved zero (if any).
     var levelX: Double? { tiltX.map { $0 - (levelZeroed ? levelZeroX : 0) } }
@@ -294,6 +382,7 @@ final class LineScanModel {
         do {
             try pipeline.configure(filteredDepth: filteredDepth)
             pipeline.setDirection(direction)
+            pipeline.setBaseline(baseline)
             pipeline.start(shortShutter: shortShutter)
             phase = .ready
         } catch {
@@ -307,6 +396,42 @@ final class LineScanModel {
     }
 
     /// Use the current orientation as level (e.g. phone laid flat on the floor or conveyor first).
+    /// Point the mounted phone at the empty flat surface, keep it still, then call this (~3 s at 30 fps).
+    func calibrateBaseline() {
+        guard phase == .ready, !calibrating else { return }
+        calibrating = true
+        calibrationMessage = nil
+        calibrationProgress = 0
+        pipeline.captureBaseline(frames: 90, filtered: filteredDepth) { [weak self] result in
+            Task { @MainActor [weak self] in
+                self?.finishCalibration(result)
+            }
+        }
+    }
+
+    private func finishCalibration(_ result: Baseline?) {
+        calibrating = false
+        calibrationProgress = nil
+        guard let result else {
+            calibrationMessage = "Calibration failed: not enough LiDAR readings. Check the surface is in view and 0.3–4 m away."
+            return
+        }
+        do {
+            try result.save(to: Baseline.standardFolder)
+        } catch {
+            calibrationMessage = "Baseline in use but not saved: \(error.localizedDescription)"
+        }
+        baseline = result
+        pipeline.setBaseline(result)
+    }
+
+    func clearBaseline() {
+        Baseline.delete(from: Baseline.standardFolder)
+        baseline = nil
+        calibrationMessage = nil
+        pipeline.setBaseline(nil)
+    }
+
     func zeroLevel() {
         guard let x = tiltX, let y = tiltY else { return }
         levelZeroX = x
@@ -364,6 +489,14 @@ final class LineScanModel {
         if update.surfaceTiltX != nil {
             surfaceTiltX = update.surfaceTiltX
             surfaceTiltY = update.surfaceTiltY
+        }
+        heightMode = update.heightMode
+        centerHeight = update.centerHeight
+        spread = update.spread
+        if calibrating, let progress = update.calibrationProgress {
+            calibrationProgress = progress
+        } else if calibrating, calibrationProgress != nil, update.calibrationProgress == nil {
+            calibrationProgress = nil      // capture finished; baseline is being built
         }
         thermal = ProcessInfo.processInfo.thermalState
     }

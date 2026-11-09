@@ -28,6 +28,51 @@ enum DepthColors {
         return Int(min(max(t, 0), 1) * 255)
     }
 
+    /// Colour index for a height (or any value where bigger = closer): low → 0 (dark blue), high → 255 (dark red).
+    @inline(__always)
+    static func index(value v: Float, low: Float, high: Float) -> Int {
+        let span = max(high - low, 0.001)
+        let t = (v - low) / span
+        return Int(min(max(t, 0), 1) * 255)
+    }
+
+    /// RGBA image of heights (mm above the baseline). NaN = transparent. Low = dark blue, high = dark red.
+    static func heightImage(_ values: UnsafeBufferPointer<Float>, width: Int, height: Int,
+                            low: Float, high: Float) -> CGImage? {
+        guard width > 0, height > 0, values.count >= width * height else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        pixels.withUnsafeMutableBufferPointer { out in
+            for i in 0..<(width * height) {
+                let v = values[i]
+                guard v.isFinite else { continue }
+                let c = lut[index(value: v, low: low, high: high)]
+                out[i * 4] = c.0
+                out[i * 4 + 1] = c.1
+                out[i * 4 + 2] = c.2
+                out[i * 4 + 3] = 255
+            }
+        }
+        return makeImage(rgba: pixels, width: width, height: height)
+    }
+
+    /// Percentile range of the finite values (heights can be zero or negative).
+    static func finiteRange(_ values: UnsafeBufferPointer<Float>, low: Double = 0.02, high: Double = 0.98,
+                            step: Int = 1) -> ClosedRange<Float>? {
+        var samples: [Float] = []
+        samples.reserveCapacity(values.count / max(step, 1) + 1)
+        var i = 0
+        while i < values.count {
+            let v = values[i]
+            if v.isFinite { samples.append(v) }
+            i += max(step, 1)
+        }
+        guard samples.count >= 16 else { return nil }
+        samples.sort()
+        let lo = samples[Int(Double(samples.count - 1) * low)]
+        let hi = samples[Int(Double(samples.count - 1) * high)]
+        return hi > lo + 0.5 ? lo...hi : lo...(lo + 0.5)
+    }
+
     /// RGBA image of a distance grid in millimetres. Cells ≤ 0 are transparent.
     static func image(millimetres values: UnsafeBufferPointer<Float>, width: Int, height: Int,
                       near: Float, far: Float) -> CGImage? {
@@ -75,10 +120,30 @@ enum DepthColors {
     }
 }
 
-/// Horizontal colour legend: far (dark blue) on the left, near (dark red) on the right.
+/// Horizontal colour legend: dark blue on the left, dark red on the right.
+/// Distance mode: far → near. Height mode: low → high above the baseline.
 struct DepthLegend: View {
-    let near: Float?
-    let far: Float?
+    let blueValue: Float?
+    let redValue: Float?
+    let blueLabel: String
+    let redLabel: String
+    let decimals: Int
+
+    init(near: Float?, far: Float?) {
+        blueValue = far
+        redValue = near
+        blueLabel = "Far"
+        redLabel = "Near"
+        decimals = 0
+    }
+
+    init(lowHeight: Float?, highHeight: Float?) {
+        blueValue = lowHeight
+        redValue = highHeight
+        blueLabel = "Low"
+        redLabel = "High"
+        decimals = 1
+    }
 
     var body: some View {
         VStack(spacing: 2) {
@@ -86,15 +151,20 @@ struct DepthLegend: View {
                 .frame(height: 10)
                 .clipShape(RoundedRectangle(cornerRadius: 3))
             HStack {
-                Text(far.map { String(format: "Far %.0f mm", $0) } ?? "Far")
+                Text(text(blueLabel, blueValue))
                 Spacer()
-                if let near, let far {
-                    Text(String(format: "span %.0f mm", far - near))
+                if let blue = blueValue, let red = redValue {
+                    Text(String(format: "span %.\(decimals)f mm", abs(red - blue)))
                     Spacer()
                 }
-                Text(near.map { String(format: "Near %.0f mm", $0) } ?? "Near")
+                Text(text(redLabel, redValue))
             }
             .font(.caption2.monospacedDigit())
         }
+    }
+
+    private func text(_ label: String, _ value: Float?) -> String {
+        guard let value else { return label }
+        return label + " " + String(format: "%.\(decimals)f mm", value)
     }
 }
