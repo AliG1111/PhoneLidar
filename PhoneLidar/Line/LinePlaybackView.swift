@@ -3,6 +3,7 @@ import AVFoundation
 import UIKit
 
 /// Plays a line recording: camera footage, LiDAR depth overlay and speed at every frame.
+/// Touch the picture (playing or paused) to probe the distance at that point.
 struct LinePlaybackView: View {
     let folder: URL
 
@@ -39,21 +40,50 @@ private struct PlaybackContent: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            ZStack(alignment: .top) {
-                Color.black
-                if model.mode != .depth {
-                    PlayerLayerView(player: model.player)
-                }
-                if model.mode != .camera, let image = model.depthImage {
-                    Image(decorative: image, scale: 1, orientation: .right)
-                        .resizable()
-                        .interpolation(.none)
-                        .scaledToFit()
-                        .opacity(model.mode == .depth ? 1 : model.blend)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                speedBadge
+            GeometryReader { geometry in
+                let picture = PlaybackModel.fitRect(in: geometry.size, aspect: model.displayAspect)
+                ZStack(alignment: .top) {
+                    Color.black
+                    if model.mode != .depth {
+                        PlayerLayerView(player: model.player)
+                    }
+                    if model.mode != .camera, let image = model.depthImage {
+                        Image(decorative: image, scale: 1, orientation: .right)
+                            .resizable()
+                            .interpolation(.none)
+                            .scaledToFit()
+                            .opacity(model.mode == .depth ? 1 : model.blend)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    if let probe = model.probe {
+                        ProbeMarker()
+                            .position(x: picture.minX + probe.x * picture.width,
+                                      y: picture.minY + probe.y * picture.height)
+                    }
+                    // Touch layer: tap or drag to place the probe, playing or paused.
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in model.moveProbe(to: value.location, in: picture) }
+                                .onEnded { _ in model.finishProbe() }
+                        )
+                    VStack(spacing: 0) {
+                        speedBadge
+                        Spacer(minLength: 0)
+                        if model.probe != nil {
+                            probeCard
+                        } else {
+                            Label("Touch the picture to read distance at a point", systemImage: "hand.tap")
+                                .font(.caption2)
+                                .foregroundStyle(.white)
+                                .padding(6)
+                                .background(Color.black.opacity(0.5), in: Capsule())
+                                .allowsHitTesting(false)
+                        }
+                    }
                     .padding(8)
+                }
             }
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .frame(maxHeight: .infinity)
@@ -72,7 +102,7 @@ private struct PlaybackContent: View {
                 .foregroundStyle(.secondary)
                 SpeedTimeline(points: model.graphPoints, duration: model.duration,
                               maxSpeed: model.speedMax ?? 1, cursor: model.currentTime)
-                    .frame(height: 64)
+                    .frame(height: 56)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6))
             }
 
@@ -81,10 +111,12 @@ private struct PlaybackContent: View {
         .padding()
     }
 
+    // MARK: Speed
+
     private var speedBadge: some View {
         VStack(spacing: 2) {
             Text(SpeedText.main(model.smoothedSpeed))
-                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .font(.system(size: 30, weight: .bold, design: .rounded))
                 .monospacedDigit()
             Text(SpeedText.perMinute(model.smoothedSpeed))
                 .font(.caption)
@@ -99,7 +131,97 @@ private struct PlaybackContent: View {
         .foregroundStyle(.white)
         .padding(8)
         .background(Color.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+        .allowsHitTesting(false)
     }
+
+    // MARK: Probe
+
+    private var probeCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "scope")
+                Text(model.probePositionText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Spacer()
+                Button {
+                    model.clearProbe()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                }
+                .accessibilityLabel("Remove probe")
+            }
+            .font(.caption)
+
+            HStack(alignment: .top, spacing: 8) {
+                probeValue(title: "Current",
+                           value: model.probeCurrent,
+                           detail: model.frame.map { String(format: "frame %ld", $0.index) } ?? "")
+                Button {
+                    if let stats = model.probeStats { model.seek(to: stats.minimumTime) }
+                } label: {
+                    probeValue(title: "Min (closest)",
+                               value: model.probeStats?.minimum,
+                               detail: model.probeStats.map { String(format: "at %.2f s ▸", $0.minimumTime) } ?? "")
+                }
+                .buttonStyle(.plain)
+                .disabled(model.probeStats == nil)
+                Button {
+                    if let stats = model.probeStats { model.seek(to: stats.maximumTime) }
+                } label: {
+                    probeValue(title: "Max (farthest)",
+                               value: model.probeStats?.maximum,
+                               detail: model.probeStats.map { String(format: "at %.2f s ▸", $0.maximumTime) } ?? "")
+                }
+                .buttonStyle(.plain)
+                .disabled(model.probeStats == nil)
+            }
+
+            if let stats = model.probeStats {
+                Text(String(format: "Mean %.1f mm  ·  std dev %.2f mm  ·  range %.1f mm  ·  %ld of %ld frames",
+                            stats.mean, stats.stdDev, Double(stats.maximum - stats.minimum),
+                            stats.validFrames, stats.totalFrames))
+                    .font(.caption2.monospacedDigit())
+                ProbeTimeline(stats: stats, duration: model.duration, cursor: model.currentTime)
+                    .frame(height: 34)
+            } else if model.probeComputing {
+                HStack(spacing: 6) {
+                    ProgressView().tint(.white)
+                    Text("Reading this point in every frame…")
+                }
+                .font(.caption2)
+            } else {
+                Text("Lift your finger to read min / max over the whole recording.")
+                    .font(.caption2)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(8)
+        .background(Color.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func probeValue(title: String, value: Float?, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.8))
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(model.color(for: value))
+                    .frame(width: 8, height: 8)
+                Text(value.map { String(format: "%.1f mm", $0) } ?? "—")
+                    .font(.callout.weight(.semibold).monospacedDigit())
+            }
+            Text(detail)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.8))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    // MARK: Transport
 
     private var transport: some View {
         VStack(spacing: 8) {
@@ -148,6 +270,65 @@ private struct PlaybackContent: View {
     }
 }
 
+// MARK: - Probe data
+
+private struct SharedFloats: @unchecked Sendable {
+    let base: UnsafeMutablePointer<Float>
+}
+
+struct ProbePixel: Equatable {
+    var u: Int   // depth-map column (across the material)
+    var v: Int   // depth-map row (along the travel)
+}
+
+/// Distance at one point of the picture across the whole recording.
+struct ProbeStats {
+    var minimum: Float
+    var minimumTime: Double
+    var maximum: Float
+    var maximumTime: Double
+    var mean: Double
+    var stdDev: Double
+    var validFrames: Int
+    var totalFrames: Int
+    /// (time s, distance mm), thinned for drawing.
+    var series: [CGPoint]
+
+    static func make(values: [Float], frames: [LineFrameInfo]) -> ProbeStats? {
+        var minimum = Float.infinity
+        var maximum = -Float.infinity
+        var minimumTime = 0.0
+        var maximumTime = 0.0
+        var sum = 0.0
+        var count = 0
+        var points: [CGPoint] = []
+        for (i, z) in values.enumerated() where z.isFinite && z > 0 && i < frames.count {
+            let t = frames[i].time
+            if z < minimum { minimum = z; minimumTime = t }
+            if z > maximum { maximum = z; maximumTime = t }
+            sum += Double(z)
+            count += 1
+            points.append(CGPoint(x: t, y: Double(z)))
+        }
+        guard count > 0 else { return nil }
+        let mean = sum / Double(count)
+        var squares = 0.0
+        for z in values where z.isFinite && z > 0 {
+            let d = Double(z) - mean
+            squares += d * d
+        }
+        if points.count > 600 {
+            let all = points
+            let step = Int((Double(all.count) / 600).rounded(.up))
+            points = stride(from: 0, to: all.count, by: step).map { all[$0] }
+        }
+        return ProbeStats(minimum: minimum, minimumTime: minimumTime,
+                          maximum: maximum, maximumTime: maximumTime,
+                          mean: mean, stdDev: (squares / Double(count)).squareRoot(),
+                          validFrames: count, totalFrames: values.count, series: points)
+    }
+}
+
 // MARK: - Model
 
 @MainActor
@@ -177,11 +358,25 @@ final class PlaybackModel {
     var frame: LineFrameInfo?
     var smoothedSpeed: Double?
 
+    /// Probe position in the portrait picture, 0…1 (x left → right, y top → bottom).
+    var probe: CGPoint?
+    var probePixel: ProbePixel?
+    var probeCurrent: Float?
+    var probeStats: ProbeStats?
+    var probeComputing = false
+
     @ObservationIgnored private let reader: DepthFileReader?
     @ObservationIgnored private let smoothed: [Double?]
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var endObserver: NSObjectProtocol?
     @ObservationIgnored private var renderedIndex = -1
+    @ObservationIgnored private var currentDepth: [Float]?
+    @ObservationIgnored private var probeGeneration = 0
+
+    /// Width ÷ height of the portrait picture (the depth map is landscape, shown rotated).
+    var displayAspect: CGFloat {
+        CGFloat(max(info.depthHeight, 1)) / CGFloat(max(info.depthWidth, 1))
+    }
 
     init(folder: URL) throws {
         let data = try Data(contentsOf: folder.appendingPathComponent("Recording.json"))
@@ -228,6 +423,8 @@ final class PlaybackModel {
         render(at: 0)
     }
 
+    // MARK: Transport
+
     func togglePlay() {
         if isPlaying {
             pause()
@@ -268,7 +465,12 @@ final class PlaybackModel {
         renderedIndex = index
         frame = info.frames[index]
         smoothedSpeed = smoothed[index]
-        guard let reader, let depth = reader.frame(index) else { return }
+        guard let reader, let depth = reader.frame(index) else {
+            currentDepth = nil
+            updateProbeCurrent()
+            return
+        }
+        currentDepth = depth
         depth.withUnsafeBufferPointer { buffer in
             let range = colorRange ?? DepthColors.percentileRange(buffer, step: 3)
             if let range {
@@ -276,6 +478,109 @@ final class PlaybackModel {
                                                near: range.lowerBound, far: range.upperBound)
             }
         }
+        updateProbeCurrent()
+    }
+
+    // MARK: Probe
+
+    /// Fitted picture rectangle inside a container (same fit as the video and depth image).
+    static func fitRect(in size: CGSize, aspect: CGFloat) -> CGRect {
+        guard size.width > 0, size.height > 0, aspect > 0 else { return .zero }
+        var width = size.width
+        var height = width / aspect
+        if height > size.height {
+            height = size.height
+            width = height * aspect
+        }
+        return CGRect(x: (size.width - width) / 2, y: (size.height - height) / 2, width: width, height: height)
+    }
+
+    func moveProbe(to location: CGPoint, in picture: CGRect) {
+        guard picture.width > 0, picture.height > 0, info.depthWidth > 0, info.depthHeight > 0 else { return }
+        let x = min(max((location.x - picture.minX) / picture.width, 0), 1)
+        let y = min(max((location.y - picture.minY) / picture.height, 0), 1)
+        probe = CGPoint(x: x, y: y)
+        // Portrait picture → landscape depth map: picture top = column 0, picture right = row 0.
+        let u = min(info.depthWidth - 1, Int(Double(y) * Double(info.depthWidth)))
+        let v = min(info.depthHeight - 1, Int(Double(1 - x) * Double(info.depthHeight)))
+        let pixel = ProbePixel(u: u, v: v)
+        if pixel != probePixel {
+            probePixel = pixel
+            probeStats = nil
+            probeGeneration += 1
+            probeComputing = false
+        }
+        updateProbeCurrent()
+    }
+
+    func finishProbe() {
+        guard let pixel = probePixel, probeStats == nil, !probeComputing, let reader else { return }
+        probeGeneration += 1
+        let generation = probeGeneration
+        probeComputing = true
+        let frames = info.frames
+        let count = min(frames.count, reader.frameCount)
+        Task { @MainActor [weak self] in
+            let values = await Task.detached(priority: .userInitiated) { () -> [Float] in
+                var out = [Float](repeating: .nan, count: count)
+                guard count > 0 else { return out }
+                out.withUnsafeMutableBufferPointer { buffer in
+                    // Each iteration writes its own element, so sharing the pointer across threads is safe.
+                    let target = SharedFloats(base: buffer.baseAddress!)
+                    DispatchQueue.concurrentPerform(iterations: count) { i in
+                        target.base[i] = reader.sample(i, u: pixel.u, v: pixel.v, radius: 1) ?? .nan
+                    }
+                }
+                return out
+            }.value
+            guard let self, generation == self.probeGeneration else { return }
+            self.probeStats = ProbeStats.make(values: values, frames: frames)
+            self.probeComputing = false
+        }
+    }
+
+    func clearProbe() {
+        probe = nil
+        probePixel = nil
+        probeCurrent = nil
+        probeStats = nil
+        probeComputing = false
+        probeGeneration += 1
+    }
+
+    private func updateProbeCurrent() {
+        guard let pixel = probePixel, let depth = currentDepth else {
+            probeCurrent = nil
+            return
+        }
+        probeCurrent = DepthFileReader.sample(depth, width: info.depthWidth, height: info.depthHeight,
+                                              u: pixel.u, v: pixel.v, radius: 1)
+    }
+
+    /// Where the probe is, relative to the picture centre, in mm on the surface.
+    var probePositionText: String {
+        guard let pixel = probePixel else { return "" }
+        guard let f = frame, let z = probeCurrent ?? probeStats.map({ Float($0.mean) }), f.fx > 0, f.fy > 0 else {
+            return "Point (\(pixel.u), \(pixel.v))"
+        }
+        // Screen right = decreasing depth rows; screen down = increasing depth columns.
+        let right = -Double((Float(pixel.v) - f.cy) * z / f.fy)
+        let down = Double((Float(pixel.u) - f.cx) * z / f.fx)
+        return String(format: "%.0f mm %@, %.0f mm %@ of centre",
+                      abs(right), right >= 0 ? "right" : "left",
+                      abs(down), down >= 0 ? "below" : "above")
+    }
+
+    /// Legend colour for a distance (dark blue far … dark red near).
+    func color(for value: Float?) -> Color {
+        guard let value, let range = colorRange ?? currentRange else { return .gray }
+        let c = DepthColors.lut[DepthColors.index(distance: value, near: range.lowerBound, far: range.upperBound)]
+        return Color(red: Double(c.0) / 255, green: Double(c.1) / 255, blue: Double(c.2) / 255)
+    }
+
+    private var currentRange: ClosedRange<Float>? {
+        guard let depth = currentDepth else { return nil }
+        return depth.withUnsafeBufferPointer { DepthColors.percentileRange($0, step: 6) }
     }
 }
 
@@ -287,6 +592,7 @@ struct PlayerLayerView: UIViewRepresentable {
     func makeUIView(context: Context) -> PlayerView {
         let view = PlayerView()
         view.backgroundColor = .black
+        view.isUserInteractionEnabled = false
         view.playerLayer.player = player
         view.playerLayer.videoGravity = .resizeAspect
         return view
@@ -302,6 +608,59 @@ struct PlayerLayerView: UIViewRepresentable {
         var playerLayer: AVPlayerLayer {
             // swiftlint:disable:next force_cast
             layer as! AVPlayerLayer
+        }
+    }
+}
+
+/// Crosshair drawn at the probe point.
+struct ProbeMarker: View {
+    var body: some View {
+        ZStack {
+            Rectangle().fill(Color.white).frame(width: 1.5, height: 36)
+            Rectangle().fill(Color.white).frame(width: 36, height: 1.5)
+            Circle().stroke(Color.black, lineWidth: 3).frame(width: 20, height: 20)
+            Circle().stroke(Color.white, lineWidth: 1.5).frame(width: 20, height: 20)
+        }
+        .shadow(color: .black, radius: 1)
+        .allowsHitTesting(false)
+    }
+}
+
+/// Distance at the probe point over the whole recording (up = closer), with min/max and the playback cursor.
+struct ProbeTimeline: View {
+    let stats: ProbeStats
+    let duration: Double
+    let cursor: Double
+
+    var body: some View {
+        Canvas { context, size in
+            guard duration > 0 else { return }
+            let lo = Double(stats.minimum)
+            let span = max(Double(stats.maximum) - lo, 0.5)
+            func point(_ t: Double, _ z: Double) -> CGPoint {
+                // Closest (minimum distance) at the top.
+                CGPoint(x: Double(size.width) * min(max(t / duration, 0), 1),
+                        y: Double(size.height) * min(max((z - lo) / span, 0), 1))
+            }
+            if stats.series.count >= 2 {
+                var path = Path()
+                for (i, p) in stats.series.enumerated() {
+                    let q = point(Double(p.x), Double(p.y))
+                    if i == 0 { path.move(to: q) } else { path.addLine(to: q) }
+                }
+                context.stroke(path, with: .color(.cyan), lineWidth: 1.2)
+            }
+            let minPoint = point(stats.minimumTime, Double(stats.minimum))
+            let maxPoint = point(stats.maximumTime, Double(stats.maximum))
+            context.fill(Path(ellipseIn: CGRect(x: minPoint.x - 3, y: minPoint.y - 3, width: 6, height: 6)),
+                         with: .color(.red))
+            context.fill(Path(ellipseIn: CGRect(x: maxPoint.x - 3, y: maxPoint.y - 3, width: 6, height: 6)),
+                         with: .color(.blue))
+            let x = Double(size.width) * min(max(cursor / duration, 0), 1)
+            var line = Path()
+            line.move(to: CGPoint(x: x, y: 0))
+            line.addLine(to: CGPoint(x: x, y: Double(size.height)))
+            context.stroke(line, with: .color(.white), lineWidth: 1)
         }
     }
 }
