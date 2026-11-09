@@ -206,12 +206,13 @@ final class DepthFileWriter {
     }
 }
 
-final class DepthFileReader {
+/// Reads Depth.bin. Immutable after init, so frames can be read from several threads at once.
+final class DepthFileReader: @unchecked Sendable {
     let width: Int
     let height: Int
     private let data: Data
-    private var offsets: [Int] = []
-    private var lengths: [Int] = []
+    private let offsets: [Int]
+    private let lengths: [Int]
 
     init(url: URL) throws {
         data = try Data(contentsOf: url, options: .alwaysMapped)
@@ -221,26 +222,35 @@ final class DepthFileReader {
         width = Int(data.readUInt32(at: 8))
         height = Int(data.readUInt32(at: 12))
         guard width > 0, height > 0 else { throw LineError.badFile }
+        var foundOffsets: [Int] = []
+        var foundLengths: [Int] = []
         var cursor = 16
         while cursor + 4 <= data.count {
             let length = Int(data.readUInt32(at: cursor))
             let start = cursor + 4
             guard length > 0, start + length <= data.count else { break }
-            offsets.append(start)
-            lengths.append(length)
+            foundOffsets.append(start)
+            foundLengths.append(length)
             cursor = start + length
         }
+        offsets = foundOffsets
+        lengths = foundLengths
     }
 
     var frameCount: Int { offsets.count }
 
-    /// Distances in millimetres, row-major width × height (0 = no data).
-    func frame(_ index: Int) -> [Float]? {
+    private func decompressed(_ index: Int) -> Data? {
         guard index >= 0, index < offsets.count else { return nil }
         let start = data.startIndex + offsets[index]
         let slice = data.subdata(in: start..<(start + lengths[index]))
         guard let raw = try? (slice as NSData).decompressed(using: .lzfse) as Data,
               raw.count >= width * height * 2 else { return nil }
+        return raw
+    }
+
+    /// Distances in millimetres, row-major width × height (0 = no data).
+    func frame(_ index: Int) -> [Float]? {
+        guard let raw = decompressed(index) else { return nil }
         var out = [Float](repeating: 0, count: width * height)
         raw.withUnsafeBytes { bytes in
             let values = bytes.bindMemory(to: UInt16.self)
@@ -249,6 +259,40 @@ final class DepthFileReader {
             }
         }
         return out
+    }
+
+    /// Median distance (mm) of the valid pixels in a (2·radius+1)² window around (u, v) of one frame.
+    func sample(_ index: Int, u: Int, v: Int, radius: Int) -> Float? {
+        guard let raw = decompressed(index), u >= 0, u < width, v >= 0, v < height else { return nil }
+        var values: [Float] = []
+        values.reserveCapacity((2 * radius + 1) * (2 * radius + 1))
+        raw.withUnsafeBytes { bytes in
+            let p = bytes.bindMemory(to: UInt16.self)
+            for y in max(0, v - radius)...min(height - 1, v + radius) {
+                for x in max(0, u - radius)...min(width - 1, u + radius) {
+                    let tenths = UInt16(littleEndian: p[y * width + x])
+                    if tenths > 0 { values.append(Float(tenths) * 0.1) }
+                }
+            }
+        }
+        guard !values.isEmpty else { return nil }
+        values.sort()
+        return values[values.count / 2]
+    }
+
+    /// Same window median, on an already decoded frame.
+    static func sample(_ millimetres: [Float], width: Int, height: Int, u: Int, v: Int, radius: Int) -> Float? {
+        guard u >= 0, u < width, v >= 0, v < height, millimetres.count >= width * height else { return nil }
+        var values: [Float] = []
+        for y in max(0, v - radius)...min(height - 1, v + radius) {
+            for x in max(0, u - radius)...min(width - 1, u + radius) {
+                let z = millimetres[y * width + x]
+                if z > 0 { values.append(z) }
+            }
+        }
+        guard !values.isEmpty else { return nil }
+        values.sort()
+        return values[values.count / 2]
     }
 }
 
