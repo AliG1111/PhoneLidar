@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CoreGraphics
 
 // MARK: - Errors
 
@@ -54,6 +55,11 @@ struct LineFrameInfo: Codable {
     /// Phone tilt relative to the surface below, from the LiDAR plane fit.
     var surfaceTiltX: Double? = nil
     var surfaceTiltY: Double? = nil
+    /// Speed of each zone this frame (mm/s, + = travel direction), grid tileColumns × tileRows.
+    var tileSpeeds: [Double?]? = nil
+    /// Fastest zone this frame (mm/s, signed) and its index.
+    var fastestSpeed: Double? = nil
+    var fastestTile: Int? = nil
 }
 
 /// Saved as Recording.json next to Video.mov and Depth.bin.
@@ -66,6 +72,9 @@ struct LineRecordingInfo: Codable {
     var shortShutter: Bool
     var direction: TravelDirection
     var frames: [LineFrameInfo]
+    /// Zone grid of the per-frame local speeds: columns across the material, rows along the travel.
+    var tileColumns: Int? = nil
+    var tileRows: Int? = nil
 }
 
 // MARK: - Speed text
@@ -76,9 +85,49 @@ enum SpeedText {
         return String(format: "%.0f mm/s", v)
     }
 
+    /// "612 mm/s" or "— mm/s".
+    static func short(_ mmPerSecond: Double?) -> String {
+        guard let v = mmPerSecond else { return "— mm/s" }
+        return String(format: "%.0f mm/s", v)
+    }
+
     static func perMinute(_ mmPerSecond: Double?) -> String {
         guard let v = mmPerSecond else { return "no texture lock" }
         return String(format: "%.2f m/min  ·  %.1f ft/min", v * 0.06, v * 0.06 * 3.28084)
+    }
+}
+
+/// Mapping between the speed-zone grid (buffer orientation) and the portrait picture.
+/// Zone columns run across the material = top → bottom of the screen; zone rows run along the travel
+/// = right → left of the screen (buffer row 0 is at the right edge of the portrait picture).
+enum ZoneGrid {
+    static var columns: Int { SpeedEstimator.tileColumns }
+    static var rows: Int { SpeedEstimator.tileRows }
+
+    /// Zone index under a point of the portrait picture (0…1 coordinates).
+    static func tile(atDisplay point: CGPoint, columns: Int = columns, rows: Int = rows) -> Int {
+        let across = Double(point.y)            // buffer x
+        let along = 1 - Double(point.x)         // buffer y
+        let c = min(columns - 1, max(0, Int(across * Double(columns))))
+        let r = min(rows - 1, max(0, Int(along * Double(rows))))
+        return r * columns + c
+    }
+
+    /// Zone index for a depth-map pixel.
+    static func tile(u: Int, v: Int, width: Int, height: Int, columns: Int = columns, rows: Int = rows) -> Int {
+        let c = min(columns - 1, max(0, u * columns / max(width, 1)))
+        let r = min(rows - 1, max(0, v * rows / max(height, 1)))
+        return r * columns + c
+    }
+
+    /// Centre of a zone in portrait-picture coordinates (0…1).
+    static func displayCenter(ofTile index: Int, columns: Int = columns, rows: Int = rows) -> CGPoint? {
+        guard index >= 0, index < columns * rows else { return nil }
+        let c = index % columns
+        let r = index / columns
+        let across = (Double(c) + 0.5) / Double(columns)
+        let along = (Double(r) + 0.5) / Double(rows)
+        return CGPoint(x: 1 - along, y: across)
     }
 }
 
@@ -382,11 +431,13 @@ final class LineRecorder {
         let info = LineRecordingInfo(depthWidth: depthWidth, depthHeight: depthHeight,
                                      videoWidth: videoWidth, videoHeight: videoHeight,
                                      filteredDepth: filteredDepth, shortShutter: shortShutter,
-                                     direction: direction, frames: frames)
+                                     direction: direction, frames: frames,
+                                     tileColumns: SpeedEstimator.tileColumns, tileRows: SpeedEstimator.tileRows)
         do {
             let json = try JSONEncoder.pretty.encode(info)
             try json.write(to: folder.appendingPathComponent("Recording.json"), options: .atomic)
             try framesCSV().write(to: folder.appendingPathComponent("Frames.csv"), atomically: true, encoding: .utf8)
+            try tileSpeedsCSV().write(to: folder.appendingPathComponent("ZoneSpeeds.csv"), atomically: true, encoding: .utf8)
         } catch {
             completion(.failure(error))
             return
@@ -403,10 +454,36 @@ final class LineRecorder {
         }
     }
 
+    /// One column per zone. Zone n: column n % 6 across the material (0 = top of the screen),
+    /// row n / 6 along the travel (0 = right edge of the screen). Values mm/s, + = travel direction.
+    private func tileSpeedsCSV() -> String {
+        let columns = SpeedEstimator.tileColumns
+        let rows = SpeedEstimator.tileRows
+        var header = ["frame", "time_s"]
+        for i in 0..<(columns * rows) {
+            header.append("zone\(i)_across\(i % columns)_along\(i / columns)_mm_s")
+        }
+        var table: [[String]] = [header]
+        for f in frames {
+            var line = ["\(f.index)", String(format: "%.4f", f.time)]
+            let speeds = f.tileSpeeds ?? []
+            for i in 0..<(columns * rows) {
+                if i < speeds.count, let v = speeds[i] {
+                    line.append(String(format: "%.1f", v))
+                } else {
+                    line.append("")
+                }
+            }
+            table.append(line)
+        }
+        return CSV.make(table)
+    }
+
     private func framesCSV() -> String {
         var rows: [[String]] = [["frame", "time_s", "speed_mm_s", "speed_m_min", "travel_mm",
                                  "shift_px", "cross_shift_px", "track_quality", "median_distance_mm",
-                                 "tilt_x_deg", "tilt_y_deg", "surface_tilt_x_deg", "surface_tilt_y_deg"]]
+                                 "tilt_x_deg", "tilt_y_deg", "surface_tilt_x_deg", "surface_tilt_y_deg",
+                                 "fastest_speed_mm_s", "fastest_zone"]]
         for f in frames {
             rows.append([
                 "\(f.index)",
@@ -421,7 +498,9 @@ final class LineRecorder {
                 f.tiltX.map { String(format: "%.2f", $0) } ?? "",
                 f.tiltY.map { String(format: "%.2f", $0) } ?? "",
                 f.surfaceTiltX.map { String(format: "%.2f", $0) } ?? "",
-                f.surfaceTiltY.map { String(format: "%.2f", $0) } ?? ""
+                f.surfaceTiltY.map { String(format: "%.2f", $0) } ?? "",
+                f.fastestSpeed.map { String(format: "%.1f", $0) } ?? "",
+                f.fastestTile.map { "\($0)" } ?? ""
             ])
         }
         return CSV.make(rows)

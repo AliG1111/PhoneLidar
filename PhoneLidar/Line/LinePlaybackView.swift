@@ -60,6 +60,13 @@ private struct PlaybackContent: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .allowsHitTesting(false)
                     }
+                    if let tile = model.fastestTileNow,
+                       let center = ZoneGrid.displayCenter(ofTile: tile, columns: model.zoneColumns,
+                                                           rows: model.zoneRows) {
+                        FastestMarker()
+                            .position(x: picture.minX + center.x * picture.width,
+                                      y: picture.minY + center.y * picture.height)
+                    }
                     if let probe = model.probe {
                         ProbeMarker()
                             .position(x: picture.minX + probe.x * picture.width,
@@ -108,14 +115,21 @@ private struct PlaybackContent: View {
     // MARK: Speed
 
     private var speedStrip: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(SpeedText.main(model.smoothedSpeed))
-                .font(.title2.weight(.bold))
-                .monospacedDigit()
-            Text(model.smoothedSpeed.map { String(format: "%.2f m/min", $0 * 0.06) } ?? "no texture lock")
-                .font(.caption)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(SpeedText.main(model.smoothedSpeed))
+                        .font(.title2.weight(.bold))
+                        .monospacedDigit()
+                    Text(model.smoothedSpeed.map { String(format: "%.2f m/min", $0 * 0.06) } ?? "no texture lock")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                Label("Fastest on screen " + SpeedText.short(model.fastestNow), systemImage: "hare.fill")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.orange)
+            }
             Spacer(minLength: 4)
             if let frame = model.frame {
                 VStack(alignment: .trailing, spacing: 0) {
@@ -175,7 +189,18 @@ private struct PlaybackContent: View {
             }
             .font(.caption)
 
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .top, spacing: 6) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Speed here")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(SpeedText.short(model.probeSpeed))
+                        .font(.callout.weight(.semibold).monospacedDigit())
+                    Text("fastest " + SpeedText.short(model.fastestNow))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.orange)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 probeValue(title: model.heightMode ? "Current height" : "Current",
                            value: model.probeCurrent,
                            detail: model.frame.map { String(format: "frame %ld", $0.index) } ?? "")
@@ -382,6 +407,13 @@ final class PlaybackModel {
     var depthImage: CGImage?
     var frame: LineFrameInfo?
     var smoothedSpeed: Double?
+    /// Fastest zone on screen at the current frame (mm/s, half-second average) and its index.
+    var fastestNow: Double?
+    var fastestTileNow: Int?
+    /// Speed of the zone under the probe at the current frame (mm/s).
+    var probeSpeed: Double?
+    let zoneColumns: Int
+    let zoneRows: Int
 
     /// Probe position in the portrait picture, 0…1 (x left → right, y top → bottom).
     var probe: CGPoint?
@@ -399,6 +431,8 @@ final class PlaybackModel {
     @ObservationIgnored private var renderedIndex = -1
     @ObservationIgnored private var currentDepth: [Float]?
     @ObservationIgnored private var probeGeneration = 0
+    /// Per frame: smoothed speed of every zone.
+    @ObservationIgnored private let zoneSmoothed: [[Double?]]
 
     /// Width ÷ height of the portrait picture (the depth map is landscape, shown rotated).
     var displayAspect: CGFloat {
@@ -424,6 +458,26 @@ final class PlaybackModel {
             if let v = smooth[i] { points.append(CGPoint(x: frame.time, y: v)) }
         }
         graphPoints = points
+
+        let columns = info.tileColumns ?? 0
+        let rows = info.tileRows ?? 0
+        zoneColumns = columns
+        zoneRows = rows
+        var perFrame = [[Double?]](repeating: [], count: info.frames.count)
+        if columns > 0, rows > 0 {
+            let zones = columns * rows
+            let series: [[Double?]] = (0..<zones).map { zone in
+                info.frames.map { frame -> Double? in
+                    let speeds = frame.tileSpeeds ?? []
+                    return zone < speeds.count ? speeds[zone] : nil
+                }
+            }
+            let smoothedZones = series.map { LineMath.smoothed($0, radius: 7) }
+            for f in 0..<info.frames.count {
+                perFrame[f] = (0..<zones).map { smoothedZones[$0][f] }
+            }
+        }
+        zoneSmoothed = perFrame
         if let top = points.map({ Double($0.y) }).max() {
             speedMax = max(top * 1.1, 1)
         } else {
@@ -499,6 +553,10 @@ final class PlaybackModel {
         renderedIndex = index
         frame = info.frames[index]
         smoothedSpeed = smoothed[index]
+        let zones = index < zoneSmoothed.count ? zoneSmoothed[index] : []
+        let fastest = LineCapturePipeline.fastest(zones)
+        fastestNow = fastest?.speed
+        fastestTileNow = fastest?.index
         guard let reader, let depth = reader.frame(index) else {
             currentDepth = nil
             updateProbeCurrent()
@@ -600,12 +658,26 @@ final class PlaybackModel {
         probePixel = nil
         probeCurrent = nil
         probeCurrentDistance = nil
+        probeSpeed = nil
         probeStats = nil
         probeComputing = false
         probeGeneration += 1
     }
 
+    private func updateProbeSpeed() {
+        guard let pixel = probePixel, zoneColumns > 0, zoneRows > 0, renderedIndex >= 0,
+              renderedIndex < zoneSmoothed.count else {
+            probeSpeed = nil
+            return
+        }
+        let zones = zoneSmoothed[renderedIndex]
+        let tile = ZoneGrid.tile(u: pixel.u, v: pixel.v, width: info.depthWidth, height: info.depthHeight,
+                                 columns: zoneColumns, rows: zoneRows)
+        probeSpeed = tile < zones.count ? zones[tile] : nil
+    }
+
     private func updateProbeCurrent() {
+        updateProbeSpeed()
         guard let pixel = probePixel, let depth = currentDepth else {
             probeCurrent = nil
             probeCurrentDistance = nil

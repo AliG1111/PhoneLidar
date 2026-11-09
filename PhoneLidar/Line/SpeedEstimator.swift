@@ -14,6 +14,13 @@ struct TextureShift {
     var regionY: ClosedRange<Double> = 0...1
 }
 
+/// Movement of one zone of the picture between two frames (full-resolution pixels).
+struct TileShift {
+    var along: Double
+    var across: Double
+    var quality: Double
+}
+
 /// Image-correlation tracker on the camera's luma plane (coarse-to-fine block matching
 /// with parabolic sub-pixel refinement). Works in the camera buffer's native landscape
 /// orientation: buffer rows run along the material's travel when the phone is in portrait.
@@ -26,6 +33,14 @@ final class SpeedEstimator {
 
     /// +1: material moves toward increasing buffer rows (right → left on a portrait screen).
     var travelSign = 1
+
+    /// Zone grid for local speeds: columns run across the material (buffer x, top → bottom of the
+    /// portrait screen), rows run along the travel (buffer y, right → left of the portrait screen).
+    static let tileColumns = 6
+    static let tileRows = 4
+
+    /// Local movement of each zone from the last processed frame pair (row-major: row * tileColumns + column).
+    private(set) var lastTiles: [TileShift?] = []
 
     private var previousHalf: Level?
     private var previousEighth: Level?
@@ -43,7 +58,11 @@ final class SpeedEstimator {
             previousEighth = eighth
         }
         guard let prevHalf = previousHalf, let prevEighth = previousEighth,
-              prevHalf.width == half.width, prevHalf.height == half.height else { return nil }
+              prevHalf.width == half.width, prevHalf.height == half.height else {
+            lastTiles = []
+            return nil
+        }
+        lastTiles = matchTiles(prevHalf: prevHalf, prevEighth: prevEighth, half: half, eighth: eighth)
         return match(prevHalf: prevHalf, prevEighth: prevEighth, half: half, eighth: eighth)
     }
 
@@ -150,6 +169,119 @@ final class SpeedEstimator {
         return TextureShift(along: fd * 2 * Double(sign), across: fe * 2, quality: quality,
                             regionX: max(0, left)...min(1, max(left, right)),
                             regionY: max(0, top)...min(1, max(top, bottom)))
+    }
+
+    /// Local block matching for every zone of the grid. Zones near the downstream edge match backwards
+    /// (template in the current frame, searched in the previous one) so every zone has room to measure.
+    private func matchTiles(prevHalf: Level, prevEighth: Level, half: Level, eighth: Level) -> [TileShift?] {
+        let sign = travelSign >= 0 ? 1 : -1
+        let cols = Self.tileColumns
+        let rows = Self.tileRows
+        let w8 = eighth.width
+        let h8 = eighth.height
+        let hw = half.width
+        let hh = half.height
+        let ts = 16                 // template size at 1/8 scale (64 px at 1/2, 128 px full resolution)
+        let back = 3
+        let maxForward = 40         // 320 full-resolution pixels per frame
+        let cross = 2
+        var result = [TileShift?](repeating: nil, count: cols * rows)
+
+        for row in 0..<rows {
+            for col in 0..<cols {
+                let tx = (2 * col + 1) * w8 / (2 * cols) - ts / 2
+                let ty = (2 * row + 1) * h8 / (2 * rows) - ts / 2
+                guard tx - cross >= 0, tx + ts + cross <= w8, ty >= 1, ty + ts + 1 <= h8 else { continue }
+                let roomPlus = h8 - ts - ty - 1
+                let roomMinus = ty - 1
+                let forwardRoom = sign > 0 ? roomPlus : roomMinus
+                let backwardRoom = sign > 0 ? roomMinus : roomPlus
+                let useForward = forwardRoom >= backwardRoom
+                let room = min(maxForward, useForward ? forwardRoom : backwardRoom)
+                let backRoom = min(back, useForward ? backwardRoom : forwardRoom)
+                guard room > 4, backRoom >= 0 else { continue }
+                let dySign = useForward ? sign : -sign
+                let dxSign = useForward ? 1 : -1
+                let template8 = useForward ? prevEighth : eighth
+                let search8 = useForward ? eighth : prevEighth
+
+                var best = Int.max
+                var bd = 0
+                var be = 0
+                template8.pixels.withUnsafeBufferPointer { pa in
+                    search8.pixels.withUnsafeBufferPointer { pb in
+                        for d in -backRoom...room {
+                            for e in -cross...cross {
+                                let c = Self.sad(pa, w8, pb, w8, tx: tx, ty: ty, tw: ts, th: ts,
+                                                 dx: dxSign * e, dy: dySign * d, step: 1)
+                                if c < best {
+                                    best = c
+                                    bd = d
+                                    be = e
+                                }
+                            }
+                        }
+                    }
+                }
+                if bd >= room { continue }      // moving faster than this zone can measure
+
+                // Refine at 1/2 scale around the coarse result.
+                let template2 = useForward ? prevHalf : half
+                let search2 = useForward ? half : prevHalf
+                let tx2 = tx * 4
+                let ty2 = ty * 4
+                let size2 = ts * 4
+                let kRange = 4
+                let jRange = 3
+                let kCount = 2 * kRange + 1
+                let jCount = 2 * jRange + 1
+                var costs = [Int](repeating: Int.max, count: kCount * jCount)
+                template2.pixels.withUnsafeBufferPointer { pa in
+                    search2.pixels.withUnsafeBufferPointer { pb in
+                        for k in -kRange...kRange {
+                            let dy = dySign * (4 * bd + k)
+                            if ty2 + dy < 0 || ty2 + dy + size2 > hh { continue }
+                            for j in -jRange...jRange {
+                                let dx = dxSign * (4 * be + j)
+                                if tx2 + dx < 0 || tx2 + dx + size2 > hw { continue }
+                                costs[(k + kRange) * jCount + (j + jRange)] =
+                                    Self.sad(pa, hw, pb, hw, tx: tx2, ty: ty2, tw: size2, th: size2,
+                                             dx: dx, dy: dy, step: 2)
+                            }
+                        }
+                    }
+                }
+                var bestIndex = -1
+                var total = 0.0
+                var valid = 0
+                for i in costs.indices where costs[i] != Int.max {
+                    total += Double(costs[i])
+                    valid += 1
+                    if bestIndex < 0 || costs[i] < costs[bestIndex] { bestIndex = i }
+                }
+                guard bestIndex >= 0, valid >= 9 else { continue }
+                let bestCost = Double(costs[bestIndex])
+                let meanCost = total / Double(valid)
+                let quality = meanCost > 0 ? max(0, min(1, (meanCost - bestCost) / meanCost)) : 0
+                let bk = bestIndex / jCount - kRange
+                let bj = bestIndex % jCount - jRange
+                func cost(_ k: Int, _ j: Int) -> Double? {
+                    guard abs(k) <= kRange, abs(j) <= jRange else { return nil }
+                    let c = costs[(k + kRange) * jCount + (j + jRange)]
+                    return c == Int.max ? nil : Double(c)
+                }
+                func subpixel(_ minus: Double?, _ center: Double, _ plus: Double?) -> Double {
+                    guard let m = minus, let p = plus else { return 0 }
+                    let denominator = m - 2 * center + p
+                    guard denominator > 0 else { return 0 }
+                    return max(-0.5, min(0.5, 0.5 * (m - p) / denominator))
+                }
+                let along = Double(4 * bd + bk) + subpixel(cost(bk - 1, bj), bestCost, cost(bk + 1, bj))
+                let acrossShift = Double(4 * be + bj) + subpixel(cost(bk, bj - 1), bestCost, cost(bk, bj + 1))
+                result[row * cols + col] = TileShift(along: along * 2, across: acrossShift * 2, quality: quality)
+            }
+        }
+        return result
     }
 
     /// Sum of absolute differences between a template in `a` and the same-size block in `b` shifted by (dx, dy).
