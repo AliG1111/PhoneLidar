@@ -628,7 +628,9 @@ final class PlaybackModel {
     /// Where the probe is, relative to the picture centre, in mm on the surface.
     var probePositionText: String {
         guard let pixel = probePixel else { return "" }
-        guard let f = frame, let z = probeCurrentDistance ?? Float(f.medianDepth), z > 0, f.fx > 0, f.fy > 0 else {
+        guard let f = frame else { return "Point (\(pixel.u), \(pixel.v))" }
+        let z = probeCurrentDistance ?? Float(f.medianDepth)
+        guard z > 0, f.fx > 0, f.fy > 0 else {
             return "Point (\(pixel.u), \(pixel.v))"
         }
         // Screen right = decreasing depth rows; screen down = increasing depth columns.
