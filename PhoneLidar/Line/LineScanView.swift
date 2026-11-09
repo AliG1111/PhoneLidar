@@ -13,16 +13,36 @@ struct LineScanView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            ZStack {
-                CameraPreview(session: model.pipeline.session)
-                if let image = model.depthImage {
-                    Image(decorative: image, scale: 1, orientation: .right)
-                        .resizable()
-                        .interpolation(.none)
-                        .scaledToFit()
-                        .opacity(model.overlayOpacity)
-                        .allowsHitTesting(false)
+            GeometryReader { geometry in
+                let picture = PlaybackModel.fitRect(in: geometry.size, aspect: CGFloat(model.pictureAspect))
+                ZStack {
+                    CameraPreview(session: model.pipeline.session)
+                    if let image = model.depthImage {
+                        Image(decorative: image, scale: 1, orientation: .right)
+                            .resizable()
+                            .interpolation(.none)
+                            .scaledToFit()
+                            .opacity(model.overlayOpacity)
+                            .allowsHitTesting(false)
+                    }
+                    // Tap anywhere on the picture to read the speed there.
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(SpatialTapGesture().onEnded { value in
+                            model.selectPoint(at: value.location, in: picture)
+                        })
+                    if let tile = model.fastestTile, let point = model.displayPoint(ofTile: tile) {
+                        FastestMarker()
+                            .position(x: picture.minX + point.x * picture.width,
+                                      y: picture.minY + point.y * picture.height)
+                    }
+                    if let point = model.selectedPoint {
+                        ProbeMarker()
+                            .position(x: picture.minX + point.x * picture.width,
+                                      y: picture.minY + point.y * picture.height)
+                    }
                 }
+                .frame(width: geometry.size.width, height: geometry.size.height)
             }
             .ignoresSafeArea()
 
@@ -104,6 +124,24 @@ struct LineScanView: View {
                 }
             }
             .font(.caption.monospacedDigit())
+            HStack(spacing: 14) {
+                Label("Fastest " + SpeedText.short(model.fastestSpeed), systemImage: "hare.fill")
+                    .foregroundStyle(.orange)
+                if model.selectedPoint != nil {
+                    Label("At point " + SpeedText.short(model.speedAtPoint), systemImage: "scope")
+                    Button {
+                        model.clearPoint()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .accessibilityLabel("Clear point")
+                } else {
+                    Text("Tap the picture for speed at a point")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.8))
+                }
+            }
+            .font(.callout.weight(.semibold).monospacedDigit())
             SpeedSparkline(values: model.speedHistory)
                 .frame(height: 34)
             HStack(spacing: 6) {
@@ -322,6 +360,33 @@ final class LineScanModel {
     var overlayOpacity: Double = 0.55
     var thermal: ProcessInfo.ThermalState = .nominal
     var speedHistory: [Double] = []
+    var tileSpeeds: [Double?] = []
+    var fastestSpeed: Double?
+    var fastestTile: Int?
+    var pictureAspect: Double = 0.75
+    /// Selected point in the portrait picture (0…1, x left → right, y top → bottom).
+    var selectedPoint: CGPoint?
+
+    /// Speed of the zone under the selected point, mm/s.
+    var speedAtPoint: Double? {
+        guard let point = selectedPoint else { return nil }
+        let index = ZoneGrid.tile(atDisplay: point)
+        return index < tileSpeeds.count ? tileSpeeds[index] : nil
+    }
+
+    func selectPoint(at location: CGPoint, in picture: CGRect) {
+        guard picture.width > 0, picture.height > 0 else { return }
+        selectedPoint = CGPoint(x: min(max((location.x - picture.minX) / picture.width, 0), 1),
+                                y: min(max((location.y - picture.minY) / picture.height, 0), 1))
+    }
+
+    func clearPoint() {
+        selectedPoint = nil
+    }
+
+    func displayPoint(ofTile index: Int) -> CGPoint? {
+        ZoneGrid.displayCenter(ofTile: index)
+    }
     var tiltX: Double?
     var tiltY: Double?
     var surfaceTiltX: Double?
@@ -493,6 +558,10 @@ final class LineScanModel {
         heightMode = update.heightMode
         centerHeight = update.centerHeight
         spread = update.spread
+        tileSpeeds = update.tileSpeeds
+        fastestSpeed = update.fastestSpeed
+        fastestTile = update.fastestTile
+        pictureAspect = update.pictureAspect
         if calibrating, let progress = update.calibrationProgress {
             calibrationProgress = progress
         } else if calibrating, calibrationProgress != nil, update.calibrationProgress == nil {
@@ -700,5 +769,21 @@ struct BubbleLevel: View {
         }
         let radius = Double(size / 2 - inset)
         return CGPoint(x: Double(center.x) + nx * radius, y: Double(center.y) - ny * radius)
+    }
+}
+
+/// Marks the fastest-moving zone on the picture.
+struct FastestMarker: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(Color.orange, lineWidth: 2.5)
+                .frame(width: 30, height: 30)
+            Image(systemName: "hare.fill")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.orange)
+        }
+        .shadow(color: .black, radius: 1)
+        .allowsHitTesting(false)
     }
 }

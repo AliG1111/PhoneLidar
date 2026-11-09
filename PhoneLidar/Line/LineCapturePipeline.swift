@@ -29,6 +29,13 @@ struct LiveUpdate {
     var spread: Double?
     /// 0…1 while a baseline calibration is being captured.
     var calibrationProgress: Double?
+    /// Local speeds (mm/s, + = travel direction), half-second average, grid SpeedEstimator.tileColumns × tileRows.
+    var tileSpeeds: [Double?] = []
+    /// Fastest zone on screen (mm/s) and its index in tileSpeeds.
+    var fastestSpeed: Double?
+    var fastestTile: Int?
+    /// Width ÷ height of the portrait picture.
+    var pictureAspect: Double = 0.75
 }
 
 /// Frames collected for a baseline calibration (handed to a background queue when complete).
@@ -69,6 +76,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     // Data-queue state
     private var baseline: Baseline?
     private var calibration: CalibrationCapture?
+    private var tileHistory: [[Double?]] = []
     private var lastSpread: Double?
     private var lastCenterHeight: Double?
     private let motion = CMMotionManager()
@@ -196,6 +204,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             self.direction = direction
             estimator.travelSign = direction.bufferSign
             estimator.reset()
+            tileHistory.removeAll()
         }
     }
 
@@ -324,6 +333,43 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                 rawSpeed = m.along * (distance / fyVideo) / dt
             }
         }
+        // Local speeds per zone: zone movement × (zone distance / focal length) / time.
+        let tileColumns = SpeedEstimator.tileColumns
+        let tileRows = SpeedEstimator.tileRows
+        let tiles = estimator.lastTiles
+        var rawTiles = [Double?](repeating: nil, count: tileColumns * tileRows)
+        let fyFull = Double(k.fy) * Double(videoHeight) / Double(max(dh, 1))
+        if dt > 0.001, dt < 1, fyFull > 0, tiles.count == rawTiles.count {
+            for (i, tile) in tiles.enumerated() {
+                guard let tile, tile.quality >= 0.12 else { continue }
+                let c = i % tileColumns
+                let r = i / tileColumns
+                let zoneDistance = Self.regionMedian(
+                    millimetres, width: dw, height: dh,
+                    regionX: Double(c) / Double(tileColumns)...Double(c + 1) / Double(tileColumns),
+                    regionY: Double(r) / Double(tileRows)...Double(r + 1) / Double(tileRows))
+                let distance = zoneDistance > 0 ? zoneDistance : median
+                guard distance > 0 else { continue }
+                rawTiles[i] = tile.along * (distance / fyFull) / dt
+            }
+        }
+        tileHistory.append(rawTiles)
+        if tileHistory.count > 15 { tileHistory.removeFirst(tileHistory.count - 15) }
+        var smoothTiles = [Double?](repeating: nil, count: rawTiles.count)
+        for i in 0..<rawTiles.count {
+            var sum = 0.0
+            var n = 0
+            for frameTiles in tileHistory where i < frameTiles.count {
+                if let v = frameTiles[i] {
+                    sum += v
+                    n += 1
+                }
+            }
+            if n >= 4 { smoothTiles[i] = sum / Double(n) }
+        }
+        let fastest = Self.fastest(smoothTiles)
+        let rawFastest = Self.fastest(rawTiles)
+
         if let v = rawSpeed { lastValidSpeed = v }
         if dt > 0, dt < 1 { travel += (rawSpeed ?? lastValidSpeed ?? 0) * dt }
         // Half-second rolling average of the valid readings (missing readings age out).
@@ -426,7 +472,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                                      quality: shift?.quality ?? 0, medianDepth: median,
                                      fx: k.fx, fy: k.fy, cx: k.cx, cy: k.cy,
                                      tiltX: tiltX, tiltY: tiltY,
-                                     surfaceTiltX: surfaceTilt?.x, surfaceTiltY: surfaceTilt?.y)
+                                     surfaceTiltX: surfaceTilt?.x, surfaceTiltY: surfaceTilt?.y,
+                                     tileSpeeds: rawTiles,
+                                     fastestSpeed: rawFastest?.speed, fastestTile: rawFastest?.index)
             active.append(sampleBuffer: sampleBuffer, depthMillimetres: millimetres, info: info)
         }
 
@@ -440,7 +488,21 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                              heightMode: activeBaseline != nil,
                              centerHeight: lastCenterHeight,
                              spread: lastSpread,
-                             calibrationProgress: calibrationProgress))
+                             calibrationProgress: calibrationProgress,
+                             tileSpeeds: smoothTiles,
+                             fastestSpeed: fastest?.speed,
+                             fastestTile: fastest?.index,
+                             pictureAspect: Double(dh) / Double(max(dw, 1))))
+    }
+
+    /// Zone with the largest speed magnitude (signed speed returned).
+    static func fastest(_ speeds: [Double?]) -> (speed: Double, index: Int)? {
+        var best: (speed: Double, index: Int)?
+        for (i, v) in speeds.enumerated() {
+            guard let v else { continue }
+            if best == nil || abs(v) > abs(best!.speed) { best = (v, i) }
+        }
+        return best
     }
 
     /// Std dev of the finite, positive-distance or any-height values in the central 80 % of the view.
