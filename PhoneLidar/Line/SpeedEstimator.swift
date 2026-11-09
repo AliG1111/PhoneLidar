@@ -9,6 +9,9 @@ struct TextureShift {
     var across: Double
     /// 0 = no usable texture, 1 = sharp, unique match.
     var quality: Double
+    /// Tracked area in normalized buffer coordinates (0…1): x across, y along travel.
+    var regionX: ClosedRange<Double> = 0...1
+    var regionY: ClosedRange<Double> = 0...1
 }
 
 /// Image-correlation tracker on the camera's luma plane (coarse-to-fine block matching
@@ -58,7 +61,8 @@ final class SpeedEstimator {
         let back = 6
         let across = 4
         let ty = sign > 0 ? back + 1 : h8 - th - back - 1
-        let forward = sign > 0 ? h8 - th - ty - 1 : ty - 1
+        // Up to 60 coarse steps (480 full-resolution pixels) per frame.
+        let forward = min(60, sign > 0 ? h8 - th - ty - 1 : ty - 1)
         guard forward > back, ty >= 1, tx - across >= 0, tx + tw + across <= w8 else { return nil }
 
         var coarseBest = Int.max
@@ -95,8 +99,10 @@ final class SpeedEstimator {
         let rtw = hw / 2
         let rtx = (hw - rtw) / 2
         guard rtx + minE >= 0, rtx + rtw + maxE <= hw else { return nil }
-        let rty = max(1, 1 - minD)
         var rth = max(24, hh / 4)
+        // Centre the matched area (previous + current position) in the frame, where lens distortion is lowest.
+        let centred = (hh - rth - predD) / 2
+        let rty = max(1 - minD, max(1, centred))
         rth = min(rth, hh - 1 - rty)                  // template inside the previous frame
         if rty + rth + maxD > hh - 1 { rth = hh - 1 - rty - maxD }   // shifted template inside the current frame
         guard rth >= 16 else { return nil }
@@ -137,7 +143,13 @@ final class SpeedEstimator {
         let fd = Double(bd) + subpixel(cost(bd - 1, be), best, cost(bd + 1, be))
         let fe = Double(be) + subpixel(cost(bd, be - 1), best, cost(bd, be + 1))
         // Half-scale pixels → full-resolution pixels.
-        return TextureShift(along: fd * 2 * Double(sign), across: fe * 2, quality: quality)
+        let top = Double(min(rty, rty + bd)) / Double(hh)
+        let bottom = Double(max(rty, rty + bd) + rth) / Double(hh)
+        let left = Double(rtx + min(0, be)) / Double(hw)
+        let right = Double(rtx + rtw + max(0, be)) / Double(hw)
+        return TextureShift(along: fd * 2 * Double(sign), across: fe * 2, quality: quality,
+                            regionX: max(0, left)...min(1, max(left, right)),
+                            regionY: max(0, top)...min(1, max(top, bottom)))
     }
 
     /// Sum of absolute differences between a template in `a` and the same-size block in `b` shifted by (dx, dy).

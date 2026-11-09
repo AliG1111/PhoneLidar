@@ -260,11 +260,15 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         var dt = 0.0
         if let last = lastTime { dt = (time - last).seconds }
         lastTime = time
-        if let m = measured, dt > 0.001, dt < 1, median > 0 {
+        if let m = measured, dt > 0.001, dt < 1 {
             shift = m
+            // Distance of the tracked area itself sets the mm-per-pixel scale.
+            let trackedDistance = Self.regionMedian(millimetres, width: dw, height: dh,
+                                                    regionX: m.regionX, regionY: m.regionY)
+            let distance = trackedDistance > 0 ? trackedDistance : median
             let fyVideo = Double(k.fy) * Double(videoHeight) / Double(dh)
-            if m.quality >= 0.1, fyVideo > 0 {
-                rawSpeed = m.along * (median / fyVideo) / dt
+            if m.quality >= 0.1, fyVideo > 0, distance > 0 {
+                rawSpeed = m.along * (distance / fyVideo) / dt
             }
         }
         if let v = rawSpeed { lastValidSpeed = v }
@@ -330,6 +334,30 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         let fieldOfView = (device?.activeFormat.videoFieldOfView ?? 64) * .pi / 180
         let fx = Float(depthWidth) / 2 / tan(fieldOfView / 2)
         return (fx, fx, Float(depthWidth) / 2, Float(depthHeight) / 2)
+    }
+
+    /// Median distance (mm) inside a normalized region of the depth map.
+    static func regionMedian(_ millimetres: [Float], width: Int, height: Int,
+                             regionX: ClosedRange<Double>, regionY: ClosedRange<Double>) -> Double {
+        let x0 = max(0, min(width - 1, Int(regionX.lowerBound * Double(width))))
+        let x1 = max(x0 + 1, min(width, Int(regionX.upperBound * Double(width))))
+        let y0 = max(0, min(height - 1, Int(regionY.lowerBound * Double(height))))
+        let y1 = max(y0 + 1, min(height, Int(regionY.upperBound * Double(height))))
+        var samples: [Float] = []
+        samples.reserveCapacity((x1 - x0) * (y1 - y0) / 4 + 1)
+        var y = y0
+        while y < y1 {
+            var x = x0
+            while x < x1 {
+                let z = millimetres[y * width + x]
+                if z > 0 { samples.append(z) }
+                x += 2
+            }
+            y += 2
+        }
+        guard samples.count >= 8 else { return 0 }
+        samples.sort()
+        return Double(samples[samples.count / 2])
     }
 
     /// Median distance (mm) of the central half of the depth map.

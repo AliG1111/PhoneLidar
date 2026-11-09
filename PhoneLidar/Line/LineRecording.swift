@@ -310,8 +310,9 @@ final class LineRecorder {
             _ = writer.startWriting()
             writer.startSession(atSourceTime: pts)
         }
-        guard writer.status == .writing, let start = startTime else { return }
-        if videoInput.isReadyForMoreMediaData {
+        guard let start = startTime else { return }
+        // Depth and frame data are kept even if the video encoder fails.
+        if writer.status == .writing, videoInput.isReadyForMoreMediaData {
             _ = videoInput.append(sampleBuffer)
         }
         do {
