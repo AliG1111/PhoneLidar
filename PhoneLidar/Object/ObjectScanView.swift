@@ -15,7 +15,7 @@ struct ObjectScanView: View {
             if let session = controller.session {
                 ObjectCaptureView(session: session)
                     .ignoresSafeArea()
-                CaptureOverlay(session: session, onCancel: cancel)
+                CaptureOverlay(session: session, state: controller.captureState, onCancel: cancel)
             } else {
                 statusView
             }
@@ -73,9 +73,8 @@ struct ObjectScanView: View {
 }
 
 private struct CaptureOverlay: View {
-    // ObjectCaptureSession is an ObservableObject: @ObservedObject makes the buttons,
-    // hint and photo count follow its state.
-    @ObservedObject var session: ObjectCaptureSession
+    let session: ObjectCaptureSession
+    let state: ObjectCaptureSession.CaptureState
     let onCancel: () -> Void
 
     var body: some View {
@@ -98,7 +97,7 @@ private struct CaptureOverlay: View {
             }
 
             HStack(spacing: 12) {
-                switch session.state {
+                switch state {
                 case .ready:
                     Button("Detect object") { _ = session.startDetecting() }
                         .buttonStyle(.borderedProminent)
@@ -127,7 +126,7 @@ private struct CaptureOverlay: View {
     }
 
     private var hint: String {
-        switch session.state {
+        switch state {
         case .ready:
             return "Point at the object. Tap Detect object (or Area mode for something too big for a box)."
         case .detecting:
@@ -156,6 +155,8 @@ final class ObjectCaptureController {
     var phase: Phase = .starting
     var progress: Double = 0
     var session: ObjectCaptureSession?
+    /// Copy of session.state, kept current from session.stateUpdates so the overlay redraws on every change.
+    var captureState: ObjectCaptureSession.CaptureState = .initializing
     var savedID: UUID?
 
     @ObservationIgnored private var folder: (name: String, url: URL)?
@@ -184,8 +185,9 @@ final class ObjectCaptureController {
             configuration.checkpointDirectory = checkpoint
 
             let newSession = ObjectCaptureSession()
-            try newSession.start(imagesDirectory: images, configuration: configuration)
+            newSession.start(imagesDirectory: images, configuration: configuration)
             session = newSession
+            captureState = newSession.state
             phase = .capturing
 
             // Follow the capture state: start reconstruction when the photos are saved.
@@ -200,6 +202,7 @@ final class ObjectCaptureController {
     }
 
     private func captureStateChanged(_ state: ObjectCaptureSession.CaptureState) {
+        captureState = state
         switch state {
         case .completed:
             stopListening()
