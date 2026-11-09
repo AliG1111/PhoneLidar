@@ -78,6 +78,11 @@ enum TopoMapBuilder {
         var mapImage: CGImage
     }
 
+    /// Depth pixels skipped at each edge of the depth map (the LiDAR is least reliable there).
+    static func border(width: Int, height: Int) -> Int {
+        max(2, min(width, height) / 32)
+    }
+
     static func build(folder: URL, info: LineRecordingInfo) throws -> Output {
         let reader = try DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
         let frames = Array(info.frames.prefix(reader.frameCount))
@@ -93,7 +98,7 @@ enum TopoMapBuilder {
         let depths = frames.map(\.medianDepth).filter { $0 > 0 }.sorted()
         guard !depths.isEmpty else { throw LineError.notEnoughData }
         let zTypical = depths[depths.count / 2]
-        let border = max(2, min(w, h) / 32)
+        let border = Self.border(width: w, height: h)
         guard w > 2 * border + 4, h > 2 * border + 4 else { throw LineError.badFile }
         let sign = Double(info.direction.bufferSign)
 
@@ -358,6 +363,9 @@ enum TopoMapBuilder {
         writePNG(image, to: folder.appendingPathComponent("TopoMapGrid.png"))
         try writeGridCSV(to: folder.appendingPathComponent("TopoMap.csv"), rows: rows, cols: cols, cell: cell,
                          xMin: xMin, zRef: zRef, means: means, hits: hits)
+        try TopoGridFile.write(to: folder.appendingPathComponent(TopoGridFile.fileName),
+                               columns: cols, rows: rows, cell: cell, qMin: qMin, xMin: xMin,
+                               heightMode: heightMode, zRef: zRef, means: means, hits: hits)
         try statsCSV(stats).write(to: folder.appendingPathComponent("TopoStats.csv"), atomically: true, encoding: .utf8)
         let valueName = heightMode ? "mean_height_mm" : "mean_distance_mm"
         try profileCSV(across, header: "across_mm", valueName: valueName)
