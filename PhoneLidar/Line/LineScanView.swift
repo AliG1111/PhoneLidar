@@ -837,10 +837,16 @@ final class LineScanModel {
                                 folderName: folder.name,
                                 primaryModel: nil,
                                 summary: summary + ["Map not built yet: open Topographic map and tap Rebuild map."])
+        // G-2: if the save below fails, library recovery adds the scan later with this record's name and summary
+        // (stop reason, recorder notes) instead of a generic one. Best effort: without the file recovery still
+        // adds the scan, with the generic summary.
+        try? LinePendingSave(name: record.name, created: record.created, summary: record.summary)
+            .write(to: folder.url)
         do {
             try store.save(record)
+            LinePendingSave.remove(from: folder.url)
         } catch {
-            // The folder keeps its marker, so library recovery adds it to the list later.
+            // The folder keeps its marker (and the pending save), so library recovery adds it to the list later.
             releaseRecordingFolder()
             phase = .ready
             notice = "The recording files are kept in Files › On My iPhone › Phone LiDAR › Scans › \(folder.name), "

@@ -443,6 +443,57 @@ final class LineRecordingRecoveryTests: XCTestCase {
         XCTAssertTrue(LineRecordingRepair.hasMarker(folder))
     }
 
+    // MARK: - Pending save (G-2)
+
+    func testARecordingWithAPendingSaveKeepsItsRealSummary() throws {
+        let folder = try makeUnsavedRecording(frames: 5)
+        let created = Date(timeIntervalSince1970: 1_800_000_000)
+        let lines = ["4 frames, 0.3 s, material travel Left → Right", "Recording stopped early: storage is low.",
+                     "Video.mov is incomplete.", "Map not built yet: open Topographic map and tap Rebuild map."]
+        try LinePendingSave(name: "Line 10 Nov 2026 at 10:15", created: created, summary: lines).write(to: folder)
+        try ageFolder(folder)
+
+        let outcome = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        let recovered = try XCTUnwrap(outcome.recovered.first)
+        XCTAssertEqual(outcome.recovered.count, 1)
+        XCTAssertEqual(recovered.name, "Line 10 Nov 2026 at 10:15")
+        XCTAssertEqual(recovered.created, created)
+        // The stop reason and recorder notes are kept; the generic "app closed" line is not used. The test file
+        // was cut off, so the repaired note is added as well.
+        XCTAssertEqual(recovered.summary, [lines[0], LineRecordingRecovery.pendingSaveNote,
+                                           TopoMapBuilder.recordingRepairedNote, lines[1], lines[2], lines[3]])
+        XCTAssertFalse(recovered.summary.contains { $0.hasPrefix("Recovered: the app closed") })
+        // The library removes the pending save with the marker, after it has saved scan.json.
+        XCTAssertNotNil(LinePendingSave.load(from: folder))
+        XCTAssertTrue(LineRecordingRepair.hasMarker(folder))
+    }
+
+    func testAnUnreadableOrEmptyPendingSaveFallsBackToTheGenericSummary() throws {
+        let folder = try makeUnsavedRecording(frames: 5)
+        try Data("{\"summary\":[".utf8).write(to: folder.appendingPathComponent(LinePendingSave.fileName))
+        try ageFolder(folder)
+        var recovered = try XCTUnwrap(LineRecordingRecovery.scan(root: root, active: ActiveFolderSet()).recovered.first)
+        XCTAssertNil(recovered.name)
+        XCTAssertTrue(recovered.summary.contains { $0.hasPrefix("Recovered: the app closed") })
+
+        try LinePendingSave(name: "Line", created: nil, summary: []).write(to: folder)
+        try ageFolder(folder)
+        recovered = try XCTUnwrap(LineRecordingRecovery.scan(root: root, active: ActiveFolderSet()).recovered.first)
+        XCTAssertNil(recovered.name)
+        XCTAssertTrue(recovered.summary.contains { $0.hasPrefix("Recovered: the app closed") })
+    }
+
+    func testASavedScanLosesAStalePendingSave() throws {
+        let folder = try makeUnsavedRecording(frames: 5, withScanJSON: true)
+        try LinePendingSave(name: "Line", created: nil, summary: ["2 frames"]).write(to: folder)
+        try ageFolder(folder)
+        XCTAssertTrue(LineRecordingRecovery.scan(root: root, active: ActiveFolderSet()).recovered.isEmpty)
+        XCTAssertNil(LinePendingSave.load(from: folder))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: folder.appendingPathComponent(LinePendingSave.fileName).path))
+        XCTAssertFalse(LineRecordingRepair.hasMarker(folder))
+    }
+
     func testFoldersWithoutTheMarkerOrTheLinePrefixAreIgnored() throws {
         let unmarked = try makeUnsavedRecording(stamp: "2026-11-10_090000", frames: 5)
         LineRecordingRepair.clearMarker(in: unmarked)
@@ -456,6 +507,46 @@ final class LineRecordingRecoveryTests: XCTestCase {
         XCTAssertFalse(outcome.deferred)
         XCTAssertTrue(FileManager.default.fileExists(atPath: other.path))
         XCTAssertTrue(LineRecordingRepair.hasMarker(other))
+    }
+}
+
+/// G-2: the pending-save file and the summary built from it.
+final class LinePendingSaveTests: XCTestCase {
+    func testFileIsHiddenAndRoundTrips() throws {
+        XCTAssertEqual(LinePendingSave.fileName, ".pending-scan.json")      // hidden: not listed or shared
+        let folder = try makeTempFolder()
+        XCTAssertNil(LinePendingSave.load(from: folder))
+        let created = Date(timeIntervalSince1970: 1_800_000_000)
+        try LinePendingSave(name: "Line A", created: created, summary: ["a", "b"]).write(to: folder)
+        let loaded = try XCTUnwrap(LinePendingSave.load(from: folder))
+        XCTAssertEqual(loaded.name, "Line A")
+        XCTAssertEqual(loaded.created, created)
+        XCTAssertEqual(loaded.summary, ["a", "b"])
+        LinePendingSave.remove(from: folder)
+        XCTAssertNil(LinePendingSave.load(from: folder))
+        LinePendingSave.remove(from: folder)      // removing again is harmless
+    }
+
+    func testEveryKeyIsOptionalForReaders() throws {
+        let folder = try makeTempFolder()
+        try Data("{\"future\":1}".utf8).write(to: folder.appendingPathComponent(LinePendingSave.fileName))
+        let loaded = try XCTUnwrap(LinePendingSave.load(from: folder))
+        XCTAssertNil(loaded.name)
+        XCTAssertNil(loaded.created)
+        XCTAssertNil(loaded.summary)
+    }
+
+    func testPendingSummaryPutsTheNotesAfterTheFirstLine() {
+        let note = LineRecordingRecovery.pendingSaveNote
+        let repairedNote = TopoMapBuilder.recordingRepairedNote
+        XCTAssertEqual(LineRecordingRecovery.pendingSummary(["first", "stop", "map"], repaired: false),
+                       ["first", note, "stop", "map"])
+        XCTAssertEqual(LineRecordingRecovery.pendingSummary(["first", "map"], repaired: true),
+                       ["first", note, repairedNote, "map"])
+        // Line scan's summary already has the repaired note: it is not added twice.
+        XCTAssertEqual(LineRecordingRecovery.pendingSummary(["first", repairedNote], repaired: true),
+                       ["first", note, repairedNote])
+        XCTAssertEqual(LineRecordingRecovery.pendingSummary([], repaired: false), [note])
     }
 }
 

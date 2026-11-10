@@ -67,6 +67,34 @@ enum LineRecordingRepair {
     }
 }
 
+/// The scan record Line scan was about to save when the recording stopped (G-2). Written to the recording
+/// folder just before the first scan.json save and removed once that save succeeds, so if the save fails (or the
+/// app is closed in between) recovery adds the scan with its real summary: stop reason and recorder notes.
+/// Hidden file `.pending-scan.json`, pretty JSON `{"created": ISO-8601, "name": text, "summary": [text]}`;
+/// every key is optional for readers, and a missing or unreadable file means "use the generic summary".
+struct LinePendingSave: Codable {
+    static let fileName = ".pending-scan.json"
+
+    var name: String?
+    var created: Date?
+    var summary: [String]?
+
+    func write(to folder: URL) throws {
+        try JSONEncoder.pretty.encode(self).write(to: folder.appendingPathComponent(Self.fileName), options: .atomic)
+    }
+
+    /// The folder's pending save, or nil if there is none or it cannot be read.
+    static func load(from folder: URL) -> LinePendingSave? {
+        guard let data = try? Data(contentsOf: folder.appendingPathComponent(fileName)) else { return nil }
+        return try? JSONDecoder.iso.decode(LinePendingSave.self, from: data)
+    }
+
+    /// Removes the file once scan.json holds the record (missing already is fine).
+    static func remove(from folder: URL) {
+        try? FileManager.default.removeItem(at: folder.appendingPathComponent(fileName))
+    }
+}
+
 /// Finds line recordings that were never saved (the app was closed or killed while recording or saving)
 /// and makes them openable again. The library runs it in the background (`ScanStore.recoverLineRecordings`).
 enum LineRecordingRecovery {
@@ -74,6 +102,24 @@ enum LineRecordingRecovery {
         var folderName: String
         var created: Date
         var summary: [String]
+        /// Name Line scan meant to give the scan (from `LinePendingSave`), else nil.
+        var name: String? = nil
+    }
+
+    /// Summary line of a recording recovered with its pending save: it stopped normally, only the save failed.
+    static let pendingSaveNote = "Recovered: the recording stopped normally, but the scan could not be added to the "
+        + "list at the time; the app added it later."
+
+    /// Summary of a recovery with a pending save: Line scan's own lines with `pendingSaveNote` after the first
+    /// line, and `TopoMapBuilder.recordingRepairedNote` too if Recording.json had to be repaired.
+    static func pendingSummary(_ lines: [String], repaired: Bool) -> [String] {
+        var notes = [pendingSaveNote]
+        if repaired, !lines.contains(TopoMapBuilder.recordingRepairedNote) {
+            notes.append(TopoMapBuilder.recordingRepairedNote)
+        }
+        var out = lines
+        out.insert(contentsOf: notes, at: min(1, out.count))
+        return out
     }
 
     /// Result of one pass over the Scans folder.
@@ -135,7 +181,15 @@ enum LineRecordingRecovery {
             guard !info.frames.isEmpty,
                   !manager.fileExists(atPath: folder.appendingPathComponent("scan.json").path) else {
                 // Nothing to add (no frames, or already a saved scan whose map step was cut short).
+                LinePendingSave.remove(from: folder)
                 LineRecordingRepair.clearMarker(in: folder)
+                continue
+            }
+            if let pending = LinePendingSave.load(from: folder), let lines = pending.summary, !lines.isEmpty {
+                // Stopped normally; only the scan.json save failed (G-2): keep Line scan's own summary.
+                outcome.recovered.append(Recovered(folderName: name, created: pending.created ?? startDate(of: folder),
+                                                   summary: pendingSummary(lines, repaired: loaded.repaired),
+                                                   name: pending.name))
                 continue
             }
             let summary = [
@@ -255,16 +309,17 @@ extension ScanStore {
                   !activeLineFolders.contains(item.folderName),
                   !scans.contains(where: { $0.folderName == item.folderName }),
                   !manager.fileExists(atPath: folder.appendingPathComponent("scan.json").path) else { continue }
+            let baseName = item.name ?? ("Line " + item.created.formatted(date: .abbreviated, time: .shortened))
             let record = ScanRecord(id: UUID(),
                                     kind: .line,
-                                    name: "Line " + item.created.formatted(date: .abbreviated, time: .shortened)
-                                        + " (recovered)",
+                                    name: baseName + " (recovered)",
                                     created: item.created,
                                     folderName: item.folderName,
                                     primaryModel: nil,
                                     summary: item.summary)
             do {
                 try save(record)
+                LinePendingSave.remove(from: folder)
                 LineRecordingRepair.clearMarker(in: folder)
                 added += 1
             } catch {
@@ -278,10 +333,10 @@ extension ScanStore {
 
         var parts: [String] = []
         if added == 1 {
-            parts.append("Recovered 1 line recording that was not saved when the app closed. It is under Saved scans "
+            parts.append("Recovered 1 line recording that had not been saved. It is under Saved scans "
                          + "(marked “recovered”); open Topographic map and tap Rebuild map to build its map.")
         } else if added > 1 {
-            parts.append("Recovered \(added) line recordings that were not saved when the app closed. They are under "
+            parts.append("Recovered \(added) line recordings that had not been saved. They are under "
                          + "Saved scans (marked “recovered”); open Topographic map and tap Rebuild map to build their maps.")
         }
         if firstTime.count == 1, let failure = firstTime.first {
