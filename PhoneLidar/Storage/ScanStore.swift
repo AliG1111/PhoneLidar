@@ -300,12 +300,13 @@ final class ScanStore {
         reload()
     }
 
-    func rename(_ record: ScanRecord, to name: String) {
+    /// Renames a saved scan. A blank name leaves the scan unchanged; a failed write throws so the caller can tell the user.
+    func rename(_ record: ScanRecord, to name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         var updated = record
         updated.name = trimmed
-        try? save(updated)
+        try save(updated)
     }
 
     /// Deletes a saved scan's folder. Refuses unless the folder is a direct child of the Scans folder and its
