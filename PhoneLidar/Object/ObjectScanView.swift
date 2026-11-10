@@ -355,7 +355,8 @@ final class ObjectCaptureController {
     func retrySave() {
         guard case .modelNotRecorded = phase, let folder else { return }
         do {
-            try writeRecord(model: "Model.usdz", summary: Self.completeSummary(photos: ObjectPhotos.count(in: folder.url.appendingPathComponent("Images", isDirectory: true))))
+            let images = folder.url.appendingPathComponent("Images", isDirectory: true)
+            try writeRecord(model: "Model.usdz", summary: Self.completeSummary(photos: ObjectPhotos.count(in: images)))
             phase = .done
         } catch {
             phase = .modelNotRecorded(ScanError.message(for: error))
