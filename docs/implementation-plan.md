@@ -145,7 +145,7 @@ Reconstructed from git history, CI runs and `REVISIONS.md`. Commits from PR #1 t
 
 ### P8 — Process alignment (in progress)
 
-Branches: all fix branches (`test-infra`, `fix-line`, `fix-topo`, `fix-apps`, `cycle2-capture`, `cycle2-topo`) are merged into `process-alignment`. Review cycle 3 is in progress on it; the final review and the merge into `main` (one PR) follow. Record: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md).
+Branches: all fix branches (`test-infra`, `fix-line`, `fix-topo`, `fix-apps`, `cycle2-capture`, `cycle2-topo`, `cycle2-rest`, `cycle3-recovery`, `cycle3-apps`) are merged into `process-alignment`. Cycle 3 found no new Critical/High/Medium; its seven Lows are fixed. The final review (Opus 5.5 / max) and the merge into `main` (one PR) follow. Record: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md).
 
 Documentation and agent rules
 - [x] P8.1 Requirements, design, technology recommendations and this plan in `docs/` (Opus 5.5 / max)
@@ -218,6 +218,8 @@ All Low, from [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md). Each needs n
 - [ ] F-5 Capture session is configured on the main thread: one-off at screen open; moving it risks session-ordering regressions without device testing (Opus 5.5 / high)
 - [ ] F-11 `store.save` then reload on main after Save image or a map build: infrequent, small folders (Sonnet 5.5 / high)
 - [ ] B-13r Replay `SCNGeometry` is still rebuilt per change: performance only; part of the SceneKit → RealityKit/Metal backlog item (Opus 5.5 / high)
+- [ ] Split `LineScanView.swift` (~1,070 lines) and `LinePlaybackView.swift` (~1,060 lines) below the ~800-line guideline; no behaviour change (Sonnet 5.5 / high)
+- [ ] Move `ObjectPhotos.hasCompleteModel` and the Object resume decision into a Storage file so the test target can cover them (Sonnet 5.5 / high)
 - [ ] Check which unit-test class takes about 83 s on CI and whether it can be made faster (Sonnet 5.5 / medium)
 
 ## 7. Change log
@@ -226,7 +228,7 @@ Newest first. Build = run number of the `Build iOS app` workflow on `main` after
 
 | Date | Build | PR / commit | Summary |
 |---|---|---|---|
-| 2026-11-10 | — | Process alignment (in progress, not merged) | On `process-alignment`: requirements, design and implementation plan, `CLAUDE.md`, README rewritten as the user guide; 313 unit tests (host-less `PhoneLidarTests`) and a `unit-tests` CI job on pull requests; CI hardening (read-only token, pinned actions and XcodeGen, warnings as errors with a log gate, TestFlight after build and tests); M1 review cycles 1–2 fixed (3 Critical, 3 High, 23 Medium; 26 + 24 Low, five deferred to P10): recordings stream to disk and survive interruptions, kills and low storage, with recovery from the library; map cell size, trimmed coverage/length/width, tolerant `scan.json`, Incomplete scans, Object photos kept on failure; cycle 3 in progress. Build number and merge commit are added at merge. |
+| 2026-11-10 | — | Process alignment (in progress, not merged) | On `process-alignment`: requirements, design and implementation plan, `CLAUDE.md`, README rewritten as the user guide; unit tests (host-less `PhoneLidarTests`) and a `unit-tests` CI job on pull requests; CI hardening (read-only token, pinned actions and XcodeGen, warnings as errors with a log gate, TestFlight after build and tests); M1 review cycles 1–3 fixed (3 Critical, 3 High, 23 Medium; 26 + 24 + 7 Low, five deferred to P10); 327 unit tests: recordings stream to disk and survive interruptions, kills and low storage, with recovery from the library; map cell size, trimmed coverage/length/width, tolerant `scan.json`, Incomplete scans, Object photos kept on failure, a finished model never rebuilt or deleted; final review in progress. Build number and merge commit are added at merge. |
 | 2026-11-09 | #23 | PR #8 `topo-replay` (`1cf693e`; branch runs #20–#22) | Real-time topographic replay: scrolling 3D strip (newest line right, walls, tolerance planes, marker), Map view, along/across profiles, colour bar target ± 2 tolerances, transport and 0.1×–20× speed, gestures, settings, Save image; `TopoGrid.bin`; landscape on the replay screen only; auto-play; file-list refresh. Xcode 26.6, 0 warnings. |
 | 2026-11-09 | #19 | PR #7 `local-speeds` (`ecba3d6`; branch run #18) | 6 × 4 zone speeds: Fastest marker and speed at a point while recording; Fastest on screen and Speed here in playback; `ZoneSpeeds.csv`, zone speeds in `Recording.json`, fastest zone in `Frames.csv`. Snapshot copied to the owner's folder. |
 | 2026-11-09 | #17 | PR #6 `baseline-calibration` (`bbeaa30`; branch run #15 failed, #16 green) | Flat-surface baseline calibration and height mode across live view, map, statistics, profiles and probe; tilt/filter warnings; baseline stored and copied into recordings. |
