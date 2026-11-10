@@ -392,6 +392,26 @@ final class LineRecordingRecoveryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
     }
 
+    func testAMarkedFolderWithoutRecordingJSONLosesItsMarkerAndIsNotReported() throws {
+        // Z-2: the recorder stopped after creating the marker and Depth.bin but before Recording.json.
+        let folder = try makeUnsavedRecording(frames: nil, recent: true)
+        try Data([1, 2, 3, 4]).write(to: folder.appendingPathComponent("Depth.bin"))
+        try ageFolder(folder)
+        XCTAssertFalse(ScanStore.isInterruptedRecording(folder))     // the library lists it as a plain incomplete scan
+        let outcome = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        XCTAssertTrue(outcome.recovered.isEmpty)
+        XCTAssertTrue(outcome.failed.isEmpty)
+        XCTAssertFalse(outcome.deferred)
+        XCTAssertFalse(LineRecordingRepair.hasMarker(folder))
+        // Captured data is kept.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("Depth.bin").path))
+        XCTAssertFalse(ScanStore.isInterruptedRecording(folder))
+        // A second pass has nothing to say about it.
+        let again = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        XCTAssertTrue(again.failed.isEmpty)
+        XCTAssertTrue(again.recovered.isEmpty)
+    }
+
     func testARecordingWithAScanRecordIsRepairedButNotReportedAgain() throws {
         let folder = try makeUnsavedRecording(frames: 5, withScanJSON: true)
         XCTAssertTrue(LineRecordingRecovery.scan(root: root, active: ActiveFolderSet()).recovered.isEmpty)

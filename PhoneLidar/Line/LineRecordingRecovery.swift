@@ -127,8 +127,9 @@ enum LineRecordingRecovery {
         /// Repaired recordings with frames and no scan.json, still marked: the caller adds each to the library
         /// and then clears its marker (`LineRecordingRepair.clearMarker`).
         var recovered: [Recovered] = []
-        /// Marked folders without a readable scan.json (listed under Incomplete scans) whose Recording.json could
-        /// not be read or repaired: folder name → reason. Saved scans that fail are left marked and not listed.
+        /// Marked folders without a readable scan.json (listed under Incomplete scans) whose Recording.json exists
+        /// but could not be read or repaired: folder name → reason. Saved scans that fail are left marked and not
+        /// listed; a marked folder without Recording.json loses its marker instead (Z-2).
         var failed: [String: String] = [:]
         /// Some folders were skipped because they were in use or only just written: run again later.
         var deferred = false
@@ -163,6 +164,13 @@ enum LineRecordingRecovery {
                 .filter { $0 != LineRecorder.inProgressMarker }
             if contents.isEmpty {
                 try? manager.removeItem(at: folder)      // only the marker, long untouched: never received a frame
+                continue
+            }
+            guard ScanStore.isInterruptedRecording(folder) else {
+                // No Recording.json to repair (the recorder stopped before creating it). The library uses the same
+                // rule: such a folder is a plain incomplete scan, so the marker goes and the folder is not reported
+                // as failed on every pass (Z-2).
+                LineRecordingRepair.clearMarker(in: folder)
                 continue
             }
             let loaded: (info: LineRecordingInfo, repaired: Bool)

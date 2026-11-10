@@ -374,7 +374,9 @@ final class ScanStore {
     }
 
     /// A `line_` folder with the recording-in-progress marker and a Recording.json (see `IncompleteScan`).
-    static func isInterruptedRecording(_ folder: URL) -> Bool {
+    /// Line-recording recovery applies the same rule: it clears the marker of a folder without Recording.json,
+    /// which then stays listed as a plain incomplete scan (Z-2). Reads files only: safe off the main thread.
+    nonisolated static func isInterruptedRecording(_ folder: URL) -> Bool {
         let manager = FileManager.default
         return folder.lastPathComponent.hasPrefix("line_")
             && manager.fileExists(atPath: folder.appendingPathComponent(LineRecorder.inProgressMarker).path)
