@@ -621,14 +621,18 @@ enum TopoMapBuilder {
 
     /// The scan record's summary after a rebuild: the recording line(s) kept, the map lines replaced.
     /// `recordingRepairedNote` appears once: a rebuild of a repaired recording brings it again in `map`.
+    /// The frames-and-duration line is refreshed from `info` (Recording.json as read back), so it never shows
+    /// frames that did not reach the file (Z-3).
     static func recordSummary(existing: [String], info: LineRecordingInfo, map: [String]) -> [String] {
         var lines = existing.filter { !isMapSummaryLine($0) }
         if map.contains(recordingRepairedNote) {
             lines.removeAll { $0 == recordingRepairedNote }
         }
+        if let i = lines.firstIndex(where: LineRecordingInfo.isSummaryLine) {
+            lines[i] = info.summaryLine
+        }
         if lines.isEmpty {
-            lines = [String(format: "%ld frames, %.1f s, material travel %@",
-                            info.frames.count, info.frames.last?.time ?? 0, info.direction.label)]
+            lines = [info.summaryLine]
         }
         lines.insert(contentsOf: map, at: 1)
         return lines

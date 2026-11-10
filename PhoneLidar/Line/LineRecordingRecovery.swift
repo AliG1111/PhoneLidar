@@ -193,16 +193,17 @@ enum LineRecordingRecovery {
                 LineRecordingRepair.clearMarker(in: folder)
                 continue
             }
-            if let pending = LinePendingSave.load(from: folder), let lines = pending.summary, !lines.isEmpty {
-                // Stopped normally; only the scan.json save failed (G-2): keep Line scan's own summary.
+            if let pending = LinePendingSave.load(from: folder), var lines = pending.summary, !lines.isEmpty {
+                // Stopped normally; only the scan.json save failed (G-2): keep Line scan's own summary, with the
+                // frames and duration of the file as read back (Z-3).
+                if let i = lines.firstIndex(where: LineRecordingInfo.isSummaryLine) { lines[i] = info.summaryLine }
                 outcome.recovered.append(Recovered(folderName: name, created: pending.created ?? startDate(of: folder),
                                                    summary: pendingSummary(lines, repaired: loaded.repaired),
                                                    name: pending.name))
                 continue
             }
             let summary = [
-                String(format: "%ld frames, %.1f s, material travel %@",
-                       info.frames.count, info.frames.last?.time ?? 0, info.direction.label),
+                info.summaryLine,
                 "Recovered: the app closed before this recording was saved. The last seconds and the end of the video may be missing.",
                 "Map not built yet: open Topographic map and tap Rebuild map."
             ]

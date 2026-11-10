@@ -82,6 +82,26 @@ struct LineRecordingInfo: Codable {
     var repaired: Bool? = nil
 }
 
+extension LineRecordingInfo {
+    /// First line of a line scan's summary for this recording: frames and duration as stored in Recording.json.
+    var summaryLine: String {
+        Self.summaryLine(frames: frames.count, duration: frames.last?.time ?? 0, direction: direction)
+    }
+
+    /// "120 frames, 4.0 s, material travel Right → Left".
+    static func summaryLine(frames: Int, duration: Double, direction: TravelDirection) -> String {
+        String(format: "%ld frames, %.1f s, material travel %@", frames, duration, direction.label)
+    }
+
+    /// True for a line made by `summaryLine` (any counts, either direction).
+    static func isSummaryLine(_ line: String) -> Bool {
+        guard let head = line.range(of: "^[0-9]+ frames, -?[0-9]+\\.[0-9] s, material travel ",
+                                    options: .regularExpression) else { return false }
+        let label = line[head.upperBound...]
+        return TravelDirection.allCases.contains { $0.label == label }
+    }
+}
+
 extension LineFrameInfo {
     /// The same frame with every non-finite number removed: Recording.json and the CSV files never get NaN or inf.
     func sanitized() -> LineFrameInfo {
@@ -127,6 +147,8 @@ struct LineRecordingHeader: Encodable {
 /// What a finished recording produced, for the scan summary.
 struct LineRecordingResult: Sendable {
     var folder: URL
+    /// Frames and duration handed to the files (`LineRecorder.frameCount`/`elapsed`); the summary line is replaced
+    /// by the counts read back from Recording.json once the map step has read it (Z-3).
     var frameCount: Int
     var duration: Double
     var direction: TravelDirection
@@ -539,9 +561,10 @@ final class LineRecorder: @unchecked Sendable {
     private var videoDropped = 0
     private var notes: [String] = []
 
-    /// Frames written to Depth.bin and Recording.json.
+    /// Frames handed to Depth.bin and Recording.json. Recording.json is written in ~64 kB blocks, so after a failed
+    /// write it can hold fewer frames than this: the scan summary is corrected from the file read back (Z-3).
     private(set) var frameCount = 0
-    /// Time of the last written frame since the first, seconds.
+    /// Time of the last frame handed to the files since the first, seconds (same caveat as `frameCount`).
     private(set) var elapsed: Double = 0
     /// First video problem (the recording continues with depth and speed only).
     private(set) var videoProblem: String?
@@ -637,7 +660,7 @@ final class LineRecorder: @unchecked Sendable {
             stopReason = "the recording could not be written to storage (\(error.localizedDescription))"
             return
         }
-        // The frame is in Depth.bin and Recording.json: count it, so frameCount always matches Recording.json.
+        // The frame went to Depth.bin and into Recording.json's buffer: count it (live display and the first summary).
         frameCount += 1
         elapsed = frame.time
         do {
