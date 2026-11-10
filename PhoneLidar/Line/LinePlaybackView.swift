@@ -310,7 +310,7 @@ private struct PlaybackContent: View {
             }
             HStack(spacing: 10) {
                 Picker("View", selection: $model.mode) {
-                    ForEach(PlaybackModel.Mode.allCases) { mode in
+                    ForEach(model.availableModes) { mode in
                         Text(mode.rawValue).tag(mode)
                     }
                 }
@@ -459,7 +459,8 @@ final class PlaybackModel {
     var videoNotice: String?
 
     @ObservationIgnored private let reader: DepthFileReader?
-    @ObservationIgnored private(set) var videoAvailable: Bool
+    /// False when there is no Video.mov or it failed: only the Depth view is offered.
+    private(set) var videoAvailable: Bool
     /// Where Video.mov ends (s), once known. The video can be shorter than the frames (a recovered recording
     /// keeps only complete 5 s fragments); from here on playback runs on the frame-time clock.
     @ObservationIgnored private var videoEnd: Double?
@@ -476,6 +477,9 @@ final class PlaybackModel {
     @ObservationIgnored private var probeGeneration = 0
     /// Per frame: smoothed speed of every zone.
     @ObservationIgnored private let zoneSmoothed: [[Double?]]
+
+    /// View modes that can be shown: Camera and Blend need a playable video.
+    var availableModes: [Mode] { videoAvailable ? Mode.allCases : [.depth] }
 
     /// Width ÷ height of the portrait picture (the depth map is landscape, shown rotated).
     var displayAspect: CGFloat {
@@ -634,7 +638,7 @@ final class PlaybackModel {
         videoAvailable = false
         player.pause()
         videoNotice = "Video.mov could not be played (\(reason)): playing the depth frames only."
-        if mode == .camera { mode = .depth }
+        mode = .depth
         if isPlaying { startClock() }
     }
 
