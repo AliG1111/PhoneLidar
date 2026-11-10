@@ -76,6 +76,19 @@ struct RoomReport {
             lines.append("\(o.category) \(i + 1): \(Units.short(Double(d.x))) W × \(Units.short(Double(d.y))) H × \(Units.short(Double(d.z))) D")
         }
 
+        // Summary rows at the end: values in the width columns (m, and ft-in or ft²).
+        rows.append(["summary", "total_wall_length", "\(room.walls.count)",
+                     RoomReport.f(Float(wallLength)), "", "",
+                     Units.feetInches(wallLength), "", "", "", "", "", ""])
+        if wallHeight > 0 {
+            rows.append(["summary", "wall_height_max", "",
+                         "", RoomReport.f(Float(wallHeight)), "",
+                         "", Units.feetInches(wallHeight), "", "", "", "", ""])
+        }
+        rows.append(["summary", "floor_area_m2_and_ft2", "",
+                     String(format: "%.3f", floorArea), "", "",
+                     String(format: "%.2f ft2", floorArea * 10.7639), "", "", "", "", "", ""])
+
         summaryLines = lines
         csv = CSV.make(rows)
     }
