@@ -564,8 +564,8 @@ enum TopoMapBuilder {
     }
 
     /// Summary lines of a map. `travel` is `travelRange` of the frames used: without any speed reading it says
-    /// whether the map has zero travel or, in recordings from builds before Z-1, travel integrated from the speed
-    /// held from before Record.
+    /// whether the map has zero travel or travel integrated from a speed held from before Record (a speed at most
+    /// 2 s old at Record, Y-1, or any held speed in recordings from builds before Z-1).
     static func summaryLines(_ s: TopoStats, travel: Double = 0) -> [String] {
         var lines = [
             String(format: "Scanned %.2f m long × %.2f m wide, %.0f mm cells, %.0f%% coverage",
