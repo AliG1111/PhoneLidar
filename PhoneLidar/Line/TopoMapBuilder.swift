@@ -87,7 +87,11 @@ enum TopoMapBuilder {
         max(2, min(width, height) / 32)
     }
 
-    static func build(folder: URL, info: LineRecordingInfo) throws -> Output {
+    /// Builds the map and writes its files. `composite` encodes TopoMap.png (title, legend, statistics) from the
+    /// map image; when given, TopoMap.png is staged with the other files, so it never pairs an old picture with
+    /// new statistics.
+    static func build(folder: URL, info: LineRecordingInfo,
+                      composite: ((CGImage, TopoStats) throws -> Data)? = nil) throws -> Output {
         let reader = try DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
         let frames = Array(info.frames.prefix(reader.frameCount))
         // A baseline saved with the recording turns distances into heights above the flat surface.
@@ -417,7 +421,7 @@ enum TopoMapBuilder {
         // Files: every output is written under a temporary name first and only renamed once all of them
         // succeeded, so a failure never leaves a mix of new and old files.
         let valueName = heightMode ? "mean_height_mm" : "mean_distance_mm"
-        try Self.writeAll(in: folder, [
+        var files: [(name: String, write: (URL) throws -> Void)] = [
             ("TopoMapGrid.png", { url in
                 guard Self.writePNG(image, to: url) else { throw LineError.badFile }
             }),
@@ -434,7 +438,12 @@ enum TopoMapBuilder {
             }),
             ("TopoStats.json", { url in try JSONEncoder.pretty.encode(stats).write(to: url) }),
             ("TopoProfiles.json", { url in try JSONEncoder().encode(profiles).write(to: url) })
-        ])
+        ]
+        if let composite {
+            let png = try composite(image, stats)
+            files.append(("TopoMap.png", { url in try png.write(to: url) }))
+        }
+        try Self.writeAll(in: folder, files)
 
         return Output(stats: stats, profiles: profiles, summary: summaryLines(stats), mapImage: image, grid: gridFile)
     }

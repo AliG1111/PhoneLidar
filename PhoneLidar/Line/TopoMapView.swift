@@ -200,7 +200,10 @@ struct TopoMapView: View {
                         throw RebuildError.recordingMissing
                     }
                     let info = loaded.info
-                    var output = try TopoMapBuilder.build(folder: folder, info: info)
+                    // TopoMap.png is rendered here, off the main thread, and staged with the other files.
+                    var output = try TopoMapBuilder.build(folder: folder, info: info) { image, stats in
+                        try TopoMapRenderer.compositePNG(map: image, stats: stats, direction: info.direction)
+                    }
                     if loaded.repaired { output.summary.insert(TopoMapBuilder.recordingRepairedNote, at: 0) }
                     return .success((info: info, output: output))
                 } catch {
@@ -209,9 +212,6 @@ struct TopoMapView: View {
             }.value
             switch result {
             case .success(let built):
-                TopoMapRenderer.writeComposite(map: built.output.mapImage, stats: built.output.stats,
-                                               direction: built.info.direction,
-                                               to: folder.appendingPathComponent("TopoMap.png"))
                 updateScanRecord(info: built.info, mapSummary: built.output.summary)
                 message = nil
             case .failure(let error):

@@ -107,16 +107,17 @@ struct TopoReplayView: View {
             status = "Building the topographic grid…"
             let built = await Task.detached(priority: .userInitiated) { () -> Result<TopoMapBuilder.Output, Error> in
                 do {
-                    return .success(try TopoMapBuilder.build(folder: folder, info: info))
+                    // TopoMap.png is rendered here, off the main thread, and staged with the other files.
+                    return .success(try TopoMapBuilder.build(folder: folder, info: info) { image, stats in
+                        try TopoMapRenderer.compositePNG(map: image, stats: stats, direction: info.direction)
+                    })
                 } catch {
                     return .failure(error)
                 }
             }.value
             switch built {
             case .success(let output):
-                // The files are written whether or not the screen is still open; keep the set complete.
-                TopoMapRenderer.writeComposite(map: output.mapImage, stats: output.stats, direction: info.direction,
-                                               to: folder.appendingPathComponent("TopoMap.png"))
+                // The files were written whether or not the screen is still open; keep the record current.
                 let mapSummary = opened.repaired ? [TopoMapBuilder.recordingRepairedNote] + output.summary
                     : output.summary
                 updateScanRecord(summary: (info: info, map: mapSummary))
