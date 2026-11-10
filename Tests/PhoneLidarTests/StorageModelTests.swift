@@ -2,7 +2,7 @@ import XCTest
 
 final class StorageModelTests: XCTestCase {
     func testScanKindMetadata() {
-        XCTAssertEqual(ScanKind.allCases.count, 4)
+        XCTAssertEqual(ScanKind.allCases.count, 5)      // room, mesh, object, line and .unknown (C-17)
         XCTAssertEqual(ScanKind.line.rawValue, "line")
         XCTAssertEqual(ScanKind.line.title, "Line scan (moving material)")
         XCTAssertEqual(ScanKind.room.title, "Room scan")
