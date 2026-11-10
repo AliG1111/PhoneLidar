@@ -868,8 +868,10 @@ final class LineScanModel {
             do {
                 try store.save(updated)
             } catch {
-                // The scan stays in the library with its first summary; say so on the Home screen.
-                let text = "\(record.name): the map was built, but the scan summary was not updated "
+                // The scan stays in the library with its first summary; say so on the Home screen (Y-2: from the
+                // map step's real outcome).
+                let mapStep = built.mapBuilt ? "the map was built, but" : "the map was not built and"
+                let text = "\(record.name): \(mapStep) the scan summary was not updated "
                     + "(\(error.localizedDescription)). Open the scan and tap Rebuild map."
                 store.recoveryNotice = store.recoveryNotice.map { $0 + "\n\n" + text } ?? text
             }
@@ -881,8 +883,10 @@ final class LineScanModel {
 
     /// Reads Recording.json back (repairing it if it was cut short) and builds the topographic map, TopoMap.png
     /// included: it is rendered here, off the main thread, and staged with the other map files (Z-5), as Rebuild map
-    /// does. `recordingLine` is the summary's frames-and-duration line from the file read back (nil if unreadable).
-    nonisolated private static func buildMap(folder: URL) -> (recordingLine: String?, summary: [String]) {
+    /// does. `recordingLine` is the summary's frames-and-duration line from the file read back (nil if unreadable);
+    /// `mapBuilt` is true when the map files were written.
+    nonisolated private static func buildMap(folder: URL)
+        -> (recordingLine: String?, summary: [String], mapBuilt: Bool) {
         let info: LineRecordingInfo
         var summary: [String] = []
         do {
@@ -894,16 +898,17 @@ final class LineScanModel {
         } catch {
             return (nil,
                     ["Recording.json could not be read back (\(error.localizedDescription)): playback and map are "
-                     + "not available. Free up storage; the app repairs it the next time the library opens."])
+                     + "not available. Free up storage; the app repairs it the next time the library opens."],
+                    false)
         }
         LineRecordingRepair.clearMarker(in: folder)
         do {
             let map = try TopoMapBuilder.build(folder: folder, info: info) { image, stats in
                 try TopoMapRenderer.compositePNG(map: image, stats: stats, direction: info.direction)
             }
-            return (info.summaryLine, summary + map.summary)
+            return (info.summaryLine, summary + map.summary, true)
         } catch {
-            return (info.summaryLine, summary + ["Map not built: \(error.localizedDescription)"])
+            return (info.summaryLine, summary + ["Map not built: \(error.localizedDescription)"], false)
         }
     }
 
