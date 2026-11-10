@@ -77,6 +77,9 @@ struct LineRecordingInfo: Codable {
     /// Zone grid of the per-frame local speeds: columns across the material, rows along the travel.
     var tileColumns: Int? = nil
     var tileRows: Int? = nil
+    /// True when the file was rebuilt from a cut-off Recording.json (`LineRecordingRepair`): the last frames
+    /// may be missing. Absent (nil) in files that never needed a repair; older builds ignore the key.
+    var repaired: Bool? = nil
 }
 
 extension LineFrameInfo {

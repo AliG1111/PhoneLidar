@@ -6,12 +6,14 @@ import UIKit
 /// file is repaired by keeping every complete frame line and adding the closing `]}`.
 enum LineRecordingRepair {
     /// Decodes the folder's Recording.json; if it does not decode, repairs it on disk and decodes that.
-    /// `repaired` is true when the file had to be repaired. Throws if it cannot be read or repaired.
+    /// `repaired` is true when the file had to be repaired, now or by an earlier read: the repair writes
+    /// `"repaired":true` into the file, so every later reader (Rebuild map, replay) still adds
+    /// `TopoMapBuilder.recordingRepairedNote` (G-5). Throws if it cannot be read or repaired.
     static func loadInfo(folder: URL) throws -> (info: LineRecordingInfo, repaired: Bool) {
         let url = folder.appendingPathComponent("Recording.json")
         let data = try Data(contentsOf: url)
         if let info = try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data) {
-            return (info, false)
+            return (info, info.repaired == true)
         }
         guard let fixed = repairedData(data) else { throw LineError.badFile }
         let info = try JSONDecoder.iso.decode(LineRecordingInfo.self, from: fixed)
@@ -19,8 +21,12 @@ enum LineRecordingRepair {
         return (info, true)
     }
 
-    /// Recording.json rebuilt from its header line and every complete frame line, or nil if the file
-    /// was not written line by line (recordings from earlier versions are never changed).
+    /// Key added at the start of a repaired file's header line (`LineRecordingInfo.repaired`).
+    static let repairedKey = Array("\"repaired\":true,".utf8)
+
+    /// Recording.json rebuilt from its header line and every complete frame line, with `"repaired":true`
+    /// added to the header, or nil if the file was not written line by line (recordings from earlier versions
+    /// are never changed).
     static func repairedData(_ data: Data) -> Data? {
         let newline = UInt8(ascii: "\n")
         let lines = data.split(separator: newline, omittingEmptySubsequences: true)
@@ -35,7 +41,12 @@ enum LineRecordingRepair {
             if (try? decoder.decode(LineFrameInfo.self, from: line)) != nil { break }
             end -= 1
         }
-        var out = Data(header)
+        // `{` + "repaired":true, + the rest of the header (once: a file repaired before keeps its single key).
+        var out = Data(header.prefix(1))
+        if header.range(of: Data("\"repaired\":".utf8)) == nil {
+            out.append(contentsOf: repairedKey)
+        }
+        out.append(contentsOf: header.dropFirst())
         if end > 1 {
             for i in 1..<end {
                 out.append(newline)

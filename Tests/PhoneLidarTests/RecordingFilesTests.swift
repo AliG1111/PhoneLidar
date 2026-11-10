@@ -221,11 +221,40 @@ final class LineRecordingRepairTests: XCTestCase {
         XCTAssertTrue(loaded.repaired)
         XCTAssertEqual(loaded.info.frames.count, 4)
 
-        // The file on disk was repaired: a second read needs no repair and gives the same frames.
+        // The file on disk was repaired: a second read decodes it directly and gives the same frames. G-5: the
+        // repair is kept in the file, so the second reader still learns that the last frames may be missing.
+        let repairedText = try String(contentsOf: folder.appendingPathComponent("Recording.json"), encoding: .utf8)
+        XCTAssertNoThrow(try decode(Data(repairedText.utf8)))
         let again = try LineRecordingRepair.loadInfo(folder: folder)
-        XCTAssertFalse(again.repaired)
+        XCTAssertTrue(again.repaired)
+        XCTAssertEqual(again.info.repaired, true)
         XCTAssertEqual(again.info.frames.count, 4)
         XCTAssertEqual(again.info.frames.last?.travel ?? 0, 45, accuracy: 1e-9)
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("Recording.json"), encoding: .utf8),
+                       repairedText)      // the second read did not write
+    }
+
+    func testRepairMarksTheHeaderOnce() throws {
+        let text = try recordingText(count: 3)
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        lines.removeLast()
+        let once = try XCTUnwrap(LineRecordingRepair.repairedData(Data(lines.joined(separator: "\n").utf8)))
+        let onceText = String(decoding: once, as: UTF8.self)
+        XCTAssertTrue(onceText.hasPrefix("{\"repaired\":true,\""), onceText)
+        XCTAssertEqual(try decode(once).repaired, true)
+        // A repaired file that is repaired again (its closing line cut off) keeps a single key.
+        var again = onceText.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        again.removeLast()
+        let twice = try XCTUnwrap(LineRecordingRepair.repairedData(Data(again.joined(separator: "\n").utf8)))
+        let twiceText = String(decoding: twice, as: UTF8.self)
+        XCTAssertEqual(twiceText.components(separatedBy: "\"repaired\"").count, 2, twiceText)
+        XCTAssertEqual(try decode(twice).frames.count, 3)
+    }
+
+    func testAFileThatNeverNeededARepairHasNoRepairedKey() throws {
+        let text = try recordingText(count: 2)
+        XCTAssertFalse(text.contains("repaired"))
+        XCTAssertNil(try decode(Data(text.utf8)).repaired)
     }
 
     func testLoadInfoThrowsForMissingOrHopelessFiles() throws {
@@ -328,7 +357,7 @@ final class LineRecordingRecoveryTests: XCTestCase {
         // saved the scan record (ScanStore.addRecovered), so a failed save is retried on the next pass.
         XCTAssertTrue(LineRecordingRepair.hasMarker(folder))
         let loaded = try LineRecordingRepair.loadInfo(folder: folder)
-        XCTAssertFalse(loaded.repaired)
+        XCTAssertTrue(loaded.repaired)      // repaired by the scan, and noted in the file (G-5)
         XCTAssertEqual(loaded.info.frames.count, 4)
     }
 
@@ -367,7 +396,10 @@ final class LineRecordingRecoveryTests: XCTestCase {
         let folder = try makeUnsavedRecording(frames: 5, withScanJSON: true)
         XCTAssertTrue(LineRecordingRecovery.scan(root: root, active: ActiveFolderSet()).recovered.isEmpty)
         XCTAssertFalse(LineRecordingRepair.hasMarker(folder))
-        XCTAssertEqual(try LineRecordingRepair.loadInfo(folder: folder).info.frames.count, 4)
+        let loaded = try LineRecordingRepair.loadInfo(folder: folder)
+        XCTAssertEqual(loaded.info.frames.count, 4)
+        // G-5: a later Rebuild map of this saved scan still knows the recording was repaired.
+        XCTAssertTrue(loaded.repaired)
     }
 
     func testAnUnreadableRecordingIsKeptForALaterAttempt() throws {
@@ -424,6 +456,40 @@ final class LineRecordingRecoveryTests: XCTestCase {
         XCTAssertFalse(outcome.deferred)
         XCTAssertTrue(FileManager.default.fileExists(atPath: other.path))
         XCTAssertTrue(LineRecordingRepair.hasMarker(other))
+    }
+}
+
+/// G-5: the "last frames may be missing" note of a repaired recording survives rebuilds, once.
+final class RepairedNoteSummaryTests: XCTestCase {
+    private let info = LineRecordingInfo(depthWidth: 64, depthHeight: 48, videoWidth: 1080, videoHeight: 1920,
+                                         filteredDepth: true, shortShutter: false, direction: .leftToRight,
+                                         frames: [makeFrame(index: 0, time: 0), makeFrame(index: 1, time: 0.5)])
+    private let note = TopoMapBuilder.recordingRepairedNote
+
+    func testARebuildOfARepairedRecordingKeepsOneNote() {
+        let existing = ["2 frames, 0.5 s, material travel Left → Right", note, "Map not built: no frames"]
+        let summary = TopoMapBuilder.recordSummary(existing: existing, info: info,
+                                                   map: [note, "Scanned 1.0 m"])
+        XCTAssertEqual(summary, ["2 frames, 0.5 s, material travel Left → Right", note, "Scanned 1.0 m"])
+    }
+
+    func testARebuildAddsTheNoteAndDropsTheReadBackLine() {
+        // Line scan could not read Recording.json at Stop; playback repaired it later; then Rebuild map.
+        let existing = ["2 frames, 0.5 s, material travel Left → Right",
+                        "Recording.json could not be read back (disk full): playback and map are not available."]
+        let summary = TopoMapBuilder.recordSummary(existing: existing, info: info, map: [note, "Scanned 1.0 m"])
+        XCTAssertEqual(summary, ["2 frames, 0.5 s, material travel Left → Right", note, "Scanned 1.0 m"])
+    }
+
+    func testTheNoteStaysWhenTheMapLinesDoNotBringIt() {
+        let existing = ["2 frames", note, "Scanned 0.5 m"]
+        XCTAssertEqual(TopoMapBuilder.recordSummary(existing: existing, info: info, map: ["Scanned 1.0 m"]),
+                       ["2 frames", "Scanned 1.0 m", note])
+    }
+
+    func testANoteOnlySummaryGetsTheFramesLineBack() {
+        XCTAssertEqual(TopoMapBuilder.recordSummary(existing: [note], info: info, map: [note]),
+                       ["2 frames, 0.5 s, material travel Left → Right", note])
     }
 }
 

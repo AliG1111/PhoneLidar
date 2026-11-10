@@ -876,7 +876,7 @@ final class LineScanModel {
             let loaded = try LineRecordingRepair.loadInfo(folder: folder)
             info = loaded.info
             if loaded.repaired {
-                summary.append("Recording.json was repaired after a write problem; the last frames may be missing.")
+                summary.append(TopoMapBuilder.recordingRepairedNote)
             }
         } catch {
             return (nil, nil, ["Recording.json could not be read back (\(error.localizedDescription)): playback and map are "
