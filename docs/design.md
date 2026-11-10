@@ -7,7 +7,7 @@
 | Date | 2026-11-10 |
 | Related | [requirements.md](requirements.md), [implementation-plan.md](implementation-plan.md), [../CLAUDE.md](../CLAUDE.md) |
 
-Source paths are relative to `PhoneLidar/` unless they start with `Support/`, `.github/` or `project.yml`. Review IDs (`A-1`, `B-4`, `C-2`, `P-1`, `F-6`, …) refer to the M1 review ([reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md)). This document describes the code after the cycle 1–2 fixes; where it says "was" it names the behaviour of build #23. The user guide is [`../README.md`](../README.md).
+Source paths are relative to `PhoneLidar/` unless they start with `Support/`, `.github/` or `project.yml`. Review IDs (`A-1`, `B-4`, `C-2`, `P-1`, `F-6`, …) refer to the M1 review ([reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md)). This document describes the code after the M1 fixes (cycles 1–3, final review and re-reviews); where it says "was" it names the behaviour of build #23. The user guide is [`../README.md`](../README.md).
 
 ---
 
@@ -744,7 +744,7 @@ Current hot paths are scalar Swift: depth Float32 → mm conversion, luma pyrami
 | ID | Limitation / risk | Consequence | Status / tracking |
 |---|---|---|---|
 | R-01 | Pinhole model without lens-distortion correction (no `lensDistortionLookupTable`). | Speed scale and map geometry drift toward the image edges; the main tracker is centred to limit this, zones near the edges are affected. | Backlog |
-| R-02 | Travel comes only from texture motion; during lock loss the last valid speed is held (cleared at Record and on a direction change, so it never carries in from before the recording). | Map stretch or compression when the material stops or changes speed while untracked; no absolute reference. | Backlog |
+| R-02 | Travel comes only from texture motion; during lock loss the last valid speed is held (cleared on a direction change; at Record kept only if at most 2.0 s old, Y-1 — older builds kept any held speed). | Map stretch or compression when the material stops or changes speed while untracked; no absolute reference. | Backlog |
 | R-03 | Texture dependence: blank or specular surfaces give no lock; the short shutter needs light; "lock %" is a relative SAD contrast, not a calibrated confidence. | Gaps in speed; tracked % in statistics. | Owner guidance |
 | R-04 | LiDAR sampling: ~15 real samples/s and ≈ 5 cm spot spacing at 1 m (build guide); the depth map is interpolated; filtered depth is temporally smoothed; distances ≥ 6.5 m are stored as no data. | Small features and sharp edges are smoothed; heights of small objects read low. | P9, documentation |
 | R-05 | Recording metadata was held in memory and written only at Stop. | **Resolved (M1):** `Recording.json`, `Frames.csv` and `ZoneSpeeds.csv` stream to disk (64 kB buffer), the header is flushed at creation, and an interrupted file is repaired (§6.14, §7.9). Up to about 64 kB of the CSV/JSON tail can be lost in a kill. | A-1, A-3, B-11 |

@@ -405,7 +405,7 @@ Paths are relative to `PhoneLidar/`. Status legend in §4. Review IDs name the M
 | FR-CAL-10 | Line/Baseline.swift (`minimumCoveragePercent` 50, `goodCoveragePercent` 80; unit tests); Line/LineScanView.swift (A-8) | Implemented – not verified on device |
 | FR-SPD-01 | Line/SpeedEstimator.swift; Line/LineCapturePipeline.swift; Line/LineMotionMath.swift (Z-7, unit-tested) | Implemented – not verified on device |
 | FR-SPD-02 | Line/LineCapturePipeline.swift; Line/LineMotionMath.swift; Line/LineScanView.swift; Line/LineRecording.swift (`SpeedText`) | Implemented – not verified on device |
-| FR-SPD-03 | Line/LineCapturePipeline.swift; Line/LineMotionMath.swift; Line/LineRecording.swift (Z-1, Z-9 tests) | Implemented – not verified on device |
+| FR-SPD-03 | Line/LineCapturePipeline.swift; Line/LineMotionMath.swift; Line/LineRecording.swift (Z-1, Y-1, Z-9 tests) | Implemented – not verified on device |
 | FR-SPD-04 | Line/SpeedEstimator.swift (`matchTiles`); Line/LineCapturePipeline.swift; Line/LineMotionMath.swift | Implemented – not verified on device |
 | FR-SPD-05 | Line/LineScanView.swift; Line/LineRecording.swift (`ZoneGrid`) | Implemented – not verified on device |
 | FR-SPD-06 | Line/LineCapturePipeline.swift; Line/LineMotionMath.swift; Line/LineScanView.swift | Implemented – not verified on device |

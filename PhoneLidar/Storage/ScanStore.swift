@@ -237,7 +237,9 @@ final class ScanStore {
     let activeLineFolders = ActiveFolderSet()
 
     // Line-recording recovery state, driven by `recoverLineRecordings()` (LineRecordingRecovery.swift).
-    /// Message about recordings recovered in the background, shown on the Home screen until dismissed.
+    /// Home notice under "Line recordings", shown until dismissed: recordings recovered in the background, recordings
+    /// that could not be recovered, and a failed scan-summary update after Stop (LineScanView). Append to it; only the
+    /// user's OK on Home clears it.
     var recoveryNotice: String?
     /// Interrupted recordings whose last recovery attempt failed: folder name → reason.
     var recoveryFailures: [String: String] = [:]

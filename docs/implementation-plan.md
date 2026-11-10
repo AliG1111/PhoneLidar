@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | v1 feature set on `main` (`1cf693e`, build #23). P8 process alignment on branch `process-alignment`: M1 review cycles 1–3 converged (no new Critical/High/Medium), final review done (0 Critical/High/Medium, 10 Lows being fixed), re-review at Opus 5.5 / max next; not yet merged to `main`. |
+| State | v1 feature set on `main` (`1cf693e`, build #23). P8 process alignment on branch `process-alignment`: M1 review cycles 1–3 converged (no new Critical/High/Medium), final review done (10 Lows, fixed); re-review 1 found Y-1 (Medium) and 3 Lows (fixed); re-review 2 found 3 Lows X-1…X-3 (fixed); re-review 3 at Opus 5.5 / max next; not yet merged to `main`. |
 | Date | 2026-11-10 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
