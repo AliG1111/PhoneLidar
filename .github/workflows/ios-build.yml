@@ -40,6 +40,13 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Verify the TestFlight tool lock (hashes, macOS arm64, Python 3.12)
+        run: |
+          set -euo pipefail
+          python3.12 -m venv "$RUNNER_TEMP/lockcheck"
+          "$RUNNER_TEMP/lockcheck/bin/pip" install --require-hashes --only-binary=:all: --dry-run \
+            -r .github/requirements/testflight.txt
+
       - name: Install XcodeGen (pinned)
         run: |
           set -euo pipefail
@@ -294,7 +301,10 @@ jobs:
           "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
 
       - name: Install tools
-        run: pip install codemagic-cli-tools==0.70.2
+        # Hash-locked tree (the job holds signing secrets). Regenerate with:
+        #   pip-compile --generate-hashes --strip-extras -o .github/requirements/testflight.txt .github/requirements/testflight.in
+        run: |
+          pip install --require-hashes --only-binary=:all: -r .github/requirements/testflight.txt
 
       - name: Set build number and generate project
         run: |

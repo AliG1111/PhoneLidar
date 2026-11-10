@@ -25,6 +25,7 @@ struct ScanDetailView: View {
     @State private var draftName = ""
     @State private var confirmDelete = false
     @State private var deleteFailed = false
+    @State private var renameError: String?
     @State private var photos: FolderEntry?
     @State private var showRetry = false
 
@@ -171,7 +172,13 @@ struct ScanDetailView: View {
         }
         .alert("Rename scan", isPresented: $showRename) {
             TextField("Name", text: $draftName)
-            Button("Save") { store.rename(scan, to: draftName) }
+            Button("Save") {
+                do {
+                    try store.rename(scan, to: draftName)
+                } catch {
+                    renameError = error.localizedDescription
+                }
+            }
             Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog("Delete this scan and all of its files?",
@@ -184,6 +191,12 @@ struct ScanDetailView: View {
                     deleteFailed = true
                 }
             }
+        }
+        .alert("Could not rename", isPresented: Binding(get: { renameError != nil },
+                                                        set: { if !$0 { renameError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(renameError ?? "The name was not changed.")
         }
         .alert("Could not delete", isPresented: $deleteFailed) {
             Button("OK", role: .cancel) {}

@@ -168,6 +168,7 @@ private struct TopoReplayContent: View {
     let filesChanged: @MainActor () -> Void
     @State private var showSettings = false
     @State private var shareFile: ShareFile?
+    @State private var saveError: String?
 
     var body: some View {
         GeometryReader { geometry in
@@ -182,9 +183,12 @@ private struct TopoReplayContent: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
-                    if let url = model.saveImage() {
+                    do {
+                        let url = try model.saveImage()
                         filesChanged()
                         shareFile = ShareFile(url: url)
+                    } catch {
+                        saveError = error.localizedDescription
                     }
                 } label: {
                     Image(systemName: "square.and.arrow.down")
@@ -204,6 +208,12 @@ private struct TopoReplayContent: View {
         }
         .sheet(item: $shareFile) { file in
             ActivityView(items: [file.url])
+        }
+        .alert("Could not save image", isPresented: Binding(get: { saveError != nil },
+                                                            set: { if !$0 { saveError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(saveError ?? "")
         }
     }
 

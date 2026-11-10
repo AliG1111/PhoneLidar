@@ -429,8 +429,8 @@ final class TopoReplayModel {
     // MARK: Image
 
     /// Saves the current view with a title and colour bar as a PNG in the scan folder.
-    func saveImage() -> URL? {
-        guard let view = scnView else { return nil }
+    func saveImage() throws -> URL {
+        guard let view = scnView else { throw ReplayImageError.noView }
         // Bring the header readouts up to the playhead so the text, the picture and the file name agree.
         render(now: CACurrentMediaTime(), forceReadout: true)
         let shot = view.snapshot()
@@ -478,7 +478,12 @@ final class TopoReplayModel {
             (colorBarCaption as NSString).draw(at: CGPoint(x: 14, y: barY + 38), withAttributes: body)
         }
         let url = folder.appendingPathComponent(String(format: "TopoReplay_%07.2fs.png", playhead))
-        guard let data = image.pngData(), (try? data.write(to: url, options: .atomic)) != nil else { return nil }
+        guard let data = image.pngData() else { throw ReplayImageError.encodeFailed }
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw ReplayImageError.writeFailed(error.localizedDescription)
+        }
         return url
     }
 
@@ -512,5 +517,20 @@ final class TopoReplayModel {
         let digits = ReplayNumbers.decimals(for: valueStep)
         return valueName + " (mm): green = target " + ReplayNumbers.text(target, decimals: digits)
             + " ±" + ReplayNumbers.text(tolerance, decimals: digits) + " mm, blue = lower, red = higher"
+    }
+}
+
+/// Why "Save image" could not produce a file; shown to the user in an alert.
+enum ReplayImageError: LocalizedError {
+    case noView
+    case encodeFailed
+    case writeFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noView: return "The replay view is not ready yet. Try again in a moment."
+        case .encodeFailed: return "The image could not be created."
+        case .writeFailed(let reason): return "The image could not be saved: \(reason)"
+        }
     }
 }
