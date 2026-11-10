@@ -110,13 +110,23 @@ final class ScanRecordDecodingTests: XCTestCase {
         XCTAssertThrowsError(try decode(""))
     }
 
-    func testUnknownKindIsWrittenBackAsUnknown() throws {
-        let record = try decode("{\"kind\":\"hologram\",\"name\":\"X\"}")
+    /// D-4: a kind written by a newer build is kept verbatim when this build saves the record again (rename),
+    /// so the newer build still finds its kind; this build reads it as `.unknown`.
+    func testUnknownKindIsWrittenBackUnchanged() throws {
+        var record = try decode("{\"kind\":\"hologram\",\"name\":\"X\"}")
+        XCTAssertEqual(record.kind, .unknown)
+        record.name = "Renamed"
         let data = try JSONEncoder.pretty.encode(record)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(json["kind"] as? String, "unknown")
-        XCTAssertEqual(json["name"] as? String, "X")
+        XCTAssertEqual(json["kind"] as? String, "hologram")
+        XCTAssertEqual(json["name"] as? String, "Renamed")
         XCTAssertEqual(try JSONDecoder.iso.decode(ScanRecord.self, from: data).kind, .unknown)
+    }
+
+    func testKnownKindIsWrittenWithItsOwnRawValue() throws {
+        let record = try decode("{\"kind\":\"line\",\"name\":\"X\"}")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try JSONEncoder.pretty.encode(record)) as? [String: Any])
+        XCTAssertEqual(json["kind"] as? String, "line")
     }
 
     func testStableIDsRepeatAndDiffer() {
