@@ -8,8 +8,10 @@ enum Units {
 
     /// "8' 0.0""
     static func feetInches(_ meters: Double) -> String {
-        let sign = meters < 0 ? "-" : ""
+        guard meters.isFinite else { return "—" }
         let totalInches = (abs(meters) / 0.0254 * 10).rounded() / 10
+        // Sign after rounding: a tiny negative value that rounds to zero prints as 0' 0.0", not -0' 0.0".
+        let sign = meters < 0 && totalInches > 0 ? "-" : ""
         var feet = Int(totalInches / 12)
         var inches = totalInches - Double(feet) * 12
         if inches >= 11.95 {
