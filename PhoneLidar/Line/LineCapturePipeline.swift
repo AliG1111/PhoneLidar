@@ -72,6 +72,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     private var synchronizer: AVCaptureDataOutputSynchronizer?
     private var device: AVCaptureDevice?
     private var configured = false
+    /// Session-queue state: short shutter wanted (read when the session starts and when toggled).
+    private var shortShutterSetting = true
 
     // Data-queue state
     private var baseline: Baseline?
@@ -172,11 +174,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             motion.startDeviceMotionUpdates()
         }
         sessionQueue.async { [self] in
+            shortShutterSetting = shortShutter
             if !session.isRunning { session.startRunning() }
-            // Let auto exposure settle before switching to a short shutter.
-            sessionQueue.asyncAfter(deadline: .now() + 1.0) { [self] in
-                applyShutter(short: shortShutter)
-            }
+            applyShutter()
         }
     }
 
@@ -195,7 +195,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
 
     func setShortShutter(_ enabled: Bool) {
         sessionQueue.async { [self] in
-            applyShutter(short: enabled)
+            shortShutterSetting = enabled
+            applyShutter()
         }
     }
 
@@ -208,22 +209,26 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         }
     }
 
-    private func applyShutter(short: Bool) {
+    /// Continuous auto exposure throughout; with the short shutter on, auto exposure may not use
+    /// exposures longer than 1/1000 s and raises ISO instead, so it keeps adapting to the light.
+    /// Session queue only.
+    private func applyShutter() {
         guard let device else { return }
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
-            if short, device.isExposureModeSupported(.custom) {
-                let format = device.activeFormat
-                var target = CMTime(value: 1, timescale: 1000)
-                if CMTimeCompare(target, format.minExposureDuration) < 0 { target = format.minExposureDuration }
-                if CMTimeCompare(target, format.maxExposureDuration) > 0 { target = format.maxExposureDuration }
-                let current = device.exposureDuration.seconds > 0 ? device.exposureDuration.seconds : 1.0 / 60
-                let gain = Float(current / max(target.seconds, 0.00001))
-                let iso = min(format.maxISO, max(format.minISO, device.iso * gain))
-                device.setExposureModeCustom(duration: target, iso: iso, completionHandler: nil)
-            } else if device.isExposureModeSupported(.continuousAutoExposure) {
+            if device.isExposureModeSupported(.continuousAutoExposure) {
                 device.exposureMode = .continuousAutoExposure
+            }
+            guard device.exposureMode == .continuousAutoExposure || device.exposureMode == .autoExpose else { return }
+            if shortShutterSetting {
+                let format = device.activeFormat
+                var limit = CMTime(value: 1, timescale: 1000)
+                if CMTimeCompare(limit, format.minExposureDuration) < 0 { limit = format.minExposureDuration }
+                if CMTimeCompare(limit, format.maxExposureDuration) > 0 { limit = format.maxExposureDuration }
+                device.activeMaxExposureDuration = limit
+            } else {
+                device.activeMaxExposureDuration = .invalid      // back to the format's default limit
             }
         } catch {
             // Keep whatever exposure mode is active.
