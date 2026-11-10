@@ -7,6 +7,7 @@ struct LineScanView: View {
     var onFinish: (UUID?) -> Void
 
     @Environment(ScanStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model = LineScanModel()
 
     var body: some View {
@@ -48,6 +49,12 @@ struct LineScanView: View {
 
             VStack(spacing: 10) {
                 topBar
+                if let banner = model.bannerText {
+                    noticeBadge([banner], color: .orange)
+                }
+                if model.phase == .recording, let warning = model.recordingWarning {
+                    noticeBadge([warning], color: .yellow)
+                }
                 speedPanel
                 levelPanel
                 Spacer()
@@ -68,9 +75,27 @@ struct LineScanView: View {
         .statusBarHidden()
         .onAppear {
             model.onSaved = { id in onFinish(id) }
-            model.start()
+            model.start(store: store)
         }
         .onDisappear { model.shutdown() }
+        .onChange(of: scenePhase) { _, newPhase in
+            model.scenePhaseChanged(newPhase)
+        }
+    }
+
+    /// Compact warning lines (camera / heat banner, and warnings that stay visible while recording).
+    private func noticeBadge(_ lines: [String], color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(lines, id: \.self) { line in
+                Label(line, systemImage: "exclamationmark.triangle.fill")
+            }
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(color)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: - Pieces
@@ -208,6 +233,12 @@ struct LineScanView: View {
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.yellow)
             }
+            if model.phase == .ready, let notice = model.notice {
+                Text(notice)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.yellow)
+            }
             if model.phase == .ready {
                 baselineRow
                 // Locked while a baseline is being captured so the baseline uses one depth setting.
@@ -320,13 +351,13 @@ struct LineScanView: View {
 
     private var recordButton: some View {
         Button {
-            model.toggleRecording(store: store)
+            model.toggleRecording()
         } label: {
             ZStack {
                 Circle()
                     .stroke(Color.white, lineWidth: 4)
                     .frame(width: 72, height: 72)
-                if model.phase == .recording {
+                if model.phase == .recording || model.phase == .arming {
                     RoundedRectangle(cornerRadius: 6)
                         .fill(Color.red)
                         .frame(width: 30, height: 30)
@@ -337,8 +368,8 @@ struct LineScanView: View {
                 }
             }
         }
-        .disabled(!(model.phase == .ready || model.phase == .recording) || model.calibrating)
-        .accessibilityLabel(model.phase == .recording ? "Stop recording" : "Start recording")
+        .disabled(!(model.phase == .ready || model.phase == .recording || model.phase == .arming) || model.calibrating)
+        .accessibilityLabel(model.phase == .recording || model.phase == .arming ? "Stop recording" : "Start recording")
     }
 }
 
@@ -350,6 +381,8 @@ final class LineScanModel {
     enum Phase: Equatable {
         case starting
         case ready
+        /// Record tapped; waiting for the first frame to create the files.
+        case arming
         case recording
         case saving
         case building
@@ -377,6 +410,13 @@ final class LineScanModel {
     var pictureAspect: Double = 0.75
     /// Selected point in the portrait picture (0…1, x left → right, y top → bottom).
     var selectedPoint: CGPoint?
+    /// Result of the last start/stop that the user should read (stays until the next recording starts).
+    var notice: String?
+    /// Camera interrupted or failed (cleared when frames arrive again).
+    var cameraBanner: String?
+    var pressure: LinePressure = .normal
+    /// Problem with the running recording that does not stop it (e.g. video encoder stopped).
+    var recordingWarning: String?
 
     /// Speed of the zone under the selected point, mm/s.
     var speedAtPoint: Double? {
@@ -424,19 +464,34 @@ final class LineScanModel {
     var levelX: Double? { tiltX.map { $0 - (levelZeroed ? levelZeroX : 0) } }
     var levelY: Double? { tiltY.map { $0 - (levelZeroed ? levelZeroY : 0) } }
 
+    /// Camera / heat message for the top of the screen.
+    var bannerText: String? {
+        if let cameraBanner { return cameraBanner }
+        switch pressure {
+        case .normal: return nil
+        case .serious: return "Phone is hot: live overlay slowed to reduce load. Shade the phone or improve airflow."
+        case .critical: return "Phone too hot: recording is stopped. Let the phone cool down before recording again."
+        }
+    }
+
     let pipeline = LineCapturePipeline()
     @ObservationIgnored var onSaved: ((UUID) -> Void)?
-    @ObservationIgnored private var folderName: String?
+    @ObservationIgnored private var store: ScanStore?
+    @ObservationIgnored private var recordingFolder: (name: String, url: URL)?
+    @ObservationIgnored private var stopReason: String?
+    @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored private var started = false
+    @ObservationIgnored private var closed = false
 
     var isBusy: Bool {
-        phase == .recording || phase == .saving || phase == .building
+        phase == .arming || phase == .recording || phase == .saving || phase == .building
     }
 
     var statusText: String {
         switch phase {
         case .starting: return "Starting…"
         case .ready: return "Ready"
+        case .arming: return "Starting recording…"
         case .recording:
             let minutes = Int(elapsed) / 60
             let seconds = Int(elapsed) % 60
@@ -447,14 +502,26 @@ final class LineScanModel {
         }
     }
 
-    func start() {
+    func start(store: ScanStore) {
         guard !started else { return }
         started = true
+        self.store = store
         pipeline.onUpdate = { [weak self] update in
             Task { @MainActor [weak self] in
                 self?.apply(update)
             }
         }
+        pipeline.onEvent = { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handle(event)
+            }
+        }
+        recoverUnsavedRecordings(store: store)
+        openCamera()
+    }
+
+    private func openCamera() {
+        guard !closed else { return }
         do {
             try pipeline.configure(filteredDepth: filteredDepth)
             pipeline.setDirection(direction)
@@ -466,9 +533,84 @@ final class LineScanModel {
         }
     }
 
+    /// Adds recordings left unsaved by an earlier run (app closed or killed while recording) to the library.
+    private func recoverUnsavedRecordings(store: ScanStore) {
+        let root = store.root
+        let active = recordingFolder?.name
+        Task { @MainActor in
+            let found = await Task.detached(priority: .utility) {
+                LineRecordingRecovery.scan(root: root, skipping: active)
+            }.value
+            for item in found where !store.scans.contains(where: { $0.folderName == item.folderName }) {
+                let record = ScanRecord(id: UUID(),
+                                        kind: .line,
+                                        name: "Line " + item.created.formatted(date: .abbreviated, time: .shortened)
+                                            + " (recovered)",
+                                        created: item.created,
+                                        folderName: item.folderName,
+                                        primaryModel: nil,
+                                        summary: item.summary)
+                try? store.save(record)
+            }
+        }
+    }
+
     func shutdown() {
+        closed = true
+        if phase == .recording || phase == .arming {
+            stop(reason: "the Line scan screen was closed")
+        }
+        if calibrating {
+            pipeline.cancelCalibration(reason: "the screen was closed")
+        }
         pipeline.stop()
         UIApplication.shared.isIdleTimerDisabled = false
+    }
+
+    /// Recording cannot continue in the background (the camera stops), so it is stopped and saved.
+    func scenePhaseChanged(_ newPhase: ScenePhase) {
+        switch newPhase {
+        case .background:
+            if calibrating {
+                pipeline.cancelCalibration(reason: "the app went to the background")
+            }
+            if phase == .recording || phase == .arming {
+                stop(reason: "the app went to the background (screen locked or another app opened)")
+            }
+        case .active:
+            // The camera normally resumes by itself; make sure it runs if it was stopped meanwhile.
+            if started, !closed, phase == .ready {
+                pipeline.start(shortShutter: shortShutter)
+            }
+        default:
+            break
+        }
+    }
+
+    private func handle(_ event: LineCaptureEvent) {
+        switch event {
+        case .recordingStarted:
+            if phase == .arming { phase = .recording }
+        case .recordingStartFailed(let reason):
+            guard phase == .arming else { return }
+            UIApplication.shared.isIdleTimerDisabled = false
+            if let folder = recordingFolder {
+                try? FileManager.default.removeItem(at: folder.url)      // no frames were written
+            }
+            recordingFolder = nil
+            phase = .ready
+            notice = "Recording not started: \(reason)."
+        case .stopRecording(let reason):
+            if phase == .recording || phase == .arming { stop(reason: reason) }
+        case .cameraInterrupted(let text):
+            cameraBanner = "Camera paused: \(text)."
+        case .cameraResumed:
+            cameraBanner = nil
+        case .cameraError(let text):
+            cameraBanner = "Camera error: \(text). Restarting the camera…"
+        case .pressure(let level):
+            pressure = level
+        }
     }
 
     /// Use the current orientation as level (e.g. phone laid flat on the floor or conveyor first).
@@ -561,8 +703,11 @@ final class LineScanModel {
             depthImage = image
             depthRange = update.depthRange
         }
-        elapsed = update.elapsed
-        recordedFrames = update.recordedFrames
+        if phase == .recording {
+            elapsed = update.elapsed
+            recordedFrames = update.recordedFrames
+            recordingWarning = update.recordingWarning
+        }
         if let v = update.speed {
             speedHistory.append(v)
             if speedHistory.count > 300 { speedHistory.removeFirst(speedHistory.count - 300) }
@@ -588,85 +733,151 @@ final class LineScanModel {
         thermal = ProcessInfo.processInfo.thermalState
     }
 
-    func toggleRecording(store: ScanStore) {
+    // MARK: Recording
+
+    func toggleRecording() {
         switch phase {
         case .ready:
-            do {
-                let folder = try store.newFolder(kind: .line)
-                folderName = folder.name
-                pipeline.startRecording(folder: folder.url, filtered: filteredDepth,
-                                        shortShutter: shortShutter, direction: direction)
-                elapsed = 0
-                recordedFrames = 0
-                phase = .recording
-                UIApplication.shared.isIdleTimerDisabled = true
-            } catch {
-                phase = .failed(error.localizedDescription)
-            }
-        case .recording:
-            phase = .saving
-            pipeline.stopRecording { [weak self] result in
-                Task { @MainActor [weak self] in
-                    self?.finished(result, store: store)
-                }
-            }
+            startRecording()
+        case .recording, .arming:
+            stop(reason: nil)
         default:
             break
         }
     }
 
-    private func finished(_ result: Result<LineCapturePipeline.Finished, Error>, store: ScanStore) {
-        UIApplication.shared.isIdleTimerDisabled = false
-        switch result {
-        case .failure(let error):
-            if let name = folderName {
-                try? FileManager.default.removeItem(at: store.root.appendingPathComponent(name, isDirectory: true))
-            }
-            phase = .failed("Recording not saved: \(error.localizedDescription)")
+    private func startRecording() {
+        guard let store, !calibrating else { return }
+        notice = nil
+        if let free = LineStorage.freeBytes(at: store.root), free < LineStorage.minimumToStart {
+            notice = "Not enough free storage to record: \(LineStorage.text(free)) free, at least "
+                + "\(LineStorage.text(LineStorage.minimumToStart)) needed. Delete old scans or free up space on the iPhone."
+            return
+        }
+        do {
+            let folder = try store.newFolder(kind: .line)
+            recordingFolder = folder
+            stopReason = nil
+            recordingWarning = nil
+            elapsed = 0
+            recordedFrames = 0
+            phase = .arming
+            UIApplication.shared.isIdleTimerDisabled = true
+            pipeline.startRecording(folder: folder.url, filtered: filteredDepth,
+                                    shortShutter: shortShutter, direction: direction)
+        } catch {
+            notice = "Recording not started: the scan folder could not be created (\(error.localizedDescription))."
+        }
+    }
+
+    /// Stops the recording and saves it. `reason` (nil = Stop tapped) completes "Recording stopped early: …".
+    /// Runs inside a background task so locking the phone during the save does not lose the recording.
+    private func stop(reason: String?) {
+        guard phase == .recording || phase == .arming else { return }
+        stopReason = reason
+        phase = .saving
+        beginBackgroundTask()
+        // Strong capture: the save must finish even if the screen has gone.
+        pipeline.stopRecording { result in
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(3))
-                if case .failed = self.phase { self.phase = .ready }
-            }
-        case .success(let output):
-            phase = .building
-            pipeline.stop()
-            let folder = output.folder
-            let info = output.info
-            let name = folderName ?? folder.lastPathComponent
-            Task { @MainActor in
-                let built = await Task.detached(priority: .userInitiated) { () -> Result<TopoMapBuilder.Output, Error> in
-                    do {
-                        return .success(try TopoMapBuilder.build(folder: folder, info: info))
-                    } catch {
-                        return .failure(error)
-                    }
-                }.value
-                var summary: [String]
-                switch built {
-                case .success(let map):
-                    TopoMapRenderer.writeComposite(map: map.mapImage, stats: map.stats, direction: info.direction,
-                                                   to: folder.appendingPathComponent("TopoMap.png"))
-                    summary = map.summary
-                case .failure(let error):
-                    summary = ["Map not built: \(error.localizedDescription)"]
-                }
-                summary.insert(String(format: "%ld frames, %.1f s, material travel %@",
-                                      info.frames.count, info.frames.last?.time ?? 0, info.direction.label), at: 0)
-                let record = ScanRecord(id: UUID(),
-                                        kind: .line,
-                                        name: "Line " + Date().formatted(date: .abbreviated, time: .shortened),
-                                        created: Date(),
-                                        folderName: name,
-                                        primaryModel: nil,
-                                        summary: summary)
-                do {
-                    try store.save(record)
-                    onSaved?(record.id)
-                } catch {
-                    phase = .failed(error.localizedDescription)
-                }
+                self.recordingStopped(result)
             }
         }
+    }
+
+    private func recordingStopped(_ result: LineRecordingResult?) {
+        UIApplication.shared.isIdleTimerDisabled = false
+        recordingWarning = nil
+        guard let store, let folder = recordingFolder else {
+            phase = .ready
+            endBackgroundTask()
+            return
+        }
+        guard let result, result.frameCount > 0 else {
+            try? FileManager.default.removeItem(at: folder.url)      // nothing was recorded
+            recordingFolder = nil
+            phase = .ready
+            notice = "Recording not saved: no frames were recorded" + (stopReason.map { " (\($0))." } ?? ".")
+            endBackgroundTask()
+            return
+        }
+
+        // Add the scan to the library straight away, so it is kept even if the map step is cut short.
+        var summary = [String(format: "%ld frames, %.1f s, material travel %@",
+                              result.frameCount, result.duration, result.direction.label)]
+        if let stopReason { summary.append("Recording stopped early: \(stopReason).") }
+        summary += result.notes
+        let record = ScanRecord(id: UUID(),
+                                kind: .line,
+                                name: "Line " + Date().formatted(date: .abbreviated, time: .shortened),
+                                created: Date(),
+                                folderName: folder.name,
+                                primaryModel: nil,
+                                summary: summary + ["Map not built yet: open Topographic map and tap Rebuild map."])
+        do {
+            try store.save(record)
+        } catch {
+            phase = .ready
+            notice = "The recording files are kept in Files › On My iPhone › Phone LiDAR › Scans › \(folder.name), "
+                + "but the scan could not be added to the list (\(error.localizedDescription))."
+            endBackgroundTask()
+            return
+        }
+        phase = .building
+        pipeline.stop()
+        let url = folder.url
+        Task { @MainActor in
+            let built = await Task.detached(priority: .userInitiated) { LineScanModel.buildMap(folder: url) }.value
+            if let map = built.map, let direction = built.direction {
+                TopoMapRenderer.writeComposite(map: map.mapImage, stats: map.stats, direction: direction,
+                                               to: url.appendingPathComponent("TopoMap.png"))
+            }
+            var updated = record
+            updated.summary = summary + built.summary
+            try? store.save(updated)          // if this fails the scan keeps its first summary
+            recordingFolder = nil
+            endBackgroundTask()
+            onSaved?(record.id)
+        }
+    }
+
+    /// Reads Recording.json back (repairing it if it was cut short) and builds the topographic map.
+    nonisolated private static func buildMap(folder: URL)
+        -> (map: TopoMapBuilder.Output?, direction: TravelDirection?, summary: [String]) {
+        let info: LineRecordingInfo
+        var summary: [String] = []
+        do {
+            let loaded = try LineRecordingRepair.loadInfo(folder: folder)
+            info = loaded.info
+            if loaded.repaired {
+                summary.append("Recording.json was repaired after a write problem; the last frames may be missing.")
+            }
+        } catch {
+            return (nil, nil, ["Recording.json could not be read back (\(error.localizedDescription)): playback and map are "
+                               + "not available. Free up storage, then open Line scan again to repair it."])
+        }
+        LineRecordingRepair.clearMarker(in: folder)
+        do {
+            let map = try TopoMapBuilder.build(folder: folder, info: info)
+            return (map, info.direction, summary + map.summary)
+        } catch {
+            return (nil, info.direction, summary + ["Map not built: \(error.localizedDescription)"])
+        }
+    }
+
+    private func beginBackgroundTask() {
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Save line recording") { [weak self] in
+            MainActor.assumeIsolated {
+                self?.endBackgroundTask()
+            }
+        }
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 }
 
