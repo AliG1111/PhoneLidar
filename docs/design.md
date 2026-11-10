@@ -111,7 +111,7 @@ flowchart LR
 ### 3.1 App (`App/`)
 - `PhoneLidarApp` — `@main`; creates `ScanStore` and injects it; installs `AppDelegate` through `@UIApplicationDelegateAdaptor`.
 - `AppDelegate` + `OrientationLock` — `supportedInterfaceOrientationsFor` returns `OrientationLock.mask` (default `.portrait`). `OrientationLock.allow(_:rotateTo:)` changes the mask, calls `setNeedsUpdateOfSupportedInterfaceOrientations()` and `requestGeometryUpdate`. `Info.plist` lists portrait and both landscapes so the replay can rotate.
-- `HomeView` — navigation stack keyed by scan `UUID`; new-scan rows gated by capability checks; capture screens in `fullScreenCover`; `finished(_:)` closes the cover and pushes the new scan after 450 ms. Saved scans use `swipeActions` without full swipe and one `confirmationDialog` for scans and incomplete scans (C-8); an **Incomplete scans** section lists `store.incomplete`; a **Recordings recovered** section shows `store.recoveryNotice`. It calls `store.recoverLineRecordings()` when the library loads, when the scene becomes active and when a capture cover closes.
+- `HomeView` — navigation stack keyed by scan `UUID`; new-scan rows gated by capability checks; capture screens in `fullScreenCover`; `finished(_:)` closes the cover and pushes the new scan after 450 ms. Saved scans use `swipeActions` without full swipe and one `confirmationDialog` for scans and incomplete scans (C-8); an **Incomplete scans** section lists `store.incomplete`; a **Line recordings** section shows `store.recoveryNotice` (recovery messages and a failed summary update after Stop). It calls `store.recoverLineRecordings()` when the library loads, when the scene becomes active and when a capture cover closes.
 - `CameraAccess` / `CameraDeniedView` — `AVCaptureDevice` authorization check (asks the first time) and the "Camera is off" screen with an Open Settings button, used by Room, Equipment and Object capture; Line scan has its own banner and button (A-9, C-5).
 - `KeepScreenOn` — `View.keepScreenOn()` sets `UIApplication.isIdleTimerDisabled` on appear and clears it on disappear (Room, Equipment, Object; C-4). Line scan sets and clears it itself for the whole screen (P-6).
 
@@ -143,7 +143,7 @@ flowchart LR
 
 | File | Responsibility |
 |---|---|
-| `LineCapturePipeline.swift` | AVCaptureSession setup and format choice, synchronized frame handler, depth → mm, speed scaling, zone speeds, travel, live overlay, calibration capture (and its cancellation), recorder lifecycle (start on the next frame, 3 s start timeout, auto-stop requests), session interruption / runtime-error / system-pressure observers, auto exposure with a 1/1000 s limit, gravity and surface tilt, `LiveUpdate` and `LineCaptureEvent` (`recordingStarted`, `recordingStartFailed`, `stopRecording`, `cameraInterrupted`, `cameraResumed`, `cameraError`, `pressure`) to the UI. Static helpers `fastest`, `spread`, `surfaceTilt`, `regionMedian`, `centerMedian`, `describe`. |
+| `LineCapturePipeline.swift` | AVCaptureSession setup and format choice, synchronized frame handler, depth → mm, speed scaling, zone speeds, travel, live overlay, calibration capture (and its cancellation), recorder lifecycle (start on the next frame, 3 s start timeout, auto-stop requests), session interruption / runtime-error / system-pressure observers, auto exposure with a 1/1000 s limit, gravity and surface tilt, `LiveUpdate` and `LineCaptureEvent` (`recordingStarted`, `recordingStartFailed`, `stopRecording`, `cameraInterrupted`, `cameraResumed`, `cameraError`, `pressure`) to the UI. Static helpers `fastest` (forwards to `LineMotionMath`, used by playback) and `describe`; the speed, travel, smoothing, median and tilt maths live in `LineMotionMath` (Z-7). |
 | `LineMotionMath.swift` | Pure maths used by the pipeline and compiled by the test target (Z-7): pixel shift → mm/s with the depth focal length scaled to video pixels, quality and Δt gates, zone speeds, travel integration with the held speed (cleared at Record and on a direction change, Z-1), 15-frame smoothing, fastest zone and `surfaceTilt` plane fit. Foundation only. |
 | `SpeedEstimator.swift` | Luma pyramid and SAD block matching: `process(_:)` → `TextureShift` (main) and `lastTiles` (24 `TileShift?`). Grid constants `tileColumns = 6`, `tileRows = 4`. |
 | `Baseline.swift` | `BaselineInfo` (Codable), `Baseline` (immutable values + info; `load`, `save`, `delete`, `heights`, `sample`, `build`, plane fit, 3×3 Cramer solver). |
@@ -154,7 +154,7 @@ flowchart LR
 | `DepthColors.swift` | Jet palette (`rgb`, 256-entry `lut`), colour index for distance and height, RGBA image builders, P2–P98 range helpers, `DepthLegend`. |
 | `LinePlaybackView.swift` | Playback screen, `PlaybackSetup` (read off the main thread), `PlaybackModel` (AVPlayer or frame-time clock, per-frame depth rendering, smoothed speeds, probe), `ProbeStats`, `PlayerLayerView`, `ProbeMarker`, `ProbeTimeline`, `SpeedTimeline`. |
 | `TopoMapBuilder.swift` | `ProfilePoint`, `TopoProfiles`, `TopoStats`; `build(folder:info:composite:)` (stitching, `pixelFootprint`, trim, statistics, image, staged write of all map files); text and CSV helpers; summary-line replacement for rebuilds; `writePNG`. |
-| `TopoMapRenderer.swift` | `TopoMap.png` composite (title, map, legend, statistics): `compositePNG` returns the data (UIKit drawing, not tied to the main actor), `writeComposite` writes it. |
+| `TopoMapRenderer.swift` | `TopoMap.png` composite (title, map, legend, statistics): `compositePNG` returns the data (UIKit drawing, not tied to the main actor); every caller passes it to `TopoMapBuilder.build`, which stages it with the other outputs. |
 | `TopoMapView.swift` | Map screen, `ProfileChart` (Swift Charts), `ZoomableImage` (UIScrollView). |
 | `TopoGridFile.swift` | `TopoGrid.bin` writer/reader; Float64 LE helpers. |
 | `TopoReplayData.swift` | `ReplayPalette`, `TopoReplaySource` (crop, reorder, reveal positions, run-out, defaults), `TopoDisplayGrid` (block averaging, gap fill, smoothing), `ReplayNumbers` (nice numbers, ticks). |
@@ -204,9 +204,8 @@ sequenceDiagram
   V->>ST: save ScanRecord now (summary + notes, "Map not built yet")
   V->>P: stop camera and motion
   V->>B: LineRecordingRepair.loadInfo, clear marker, TopoMapBuilder.build (detached task)
-  B->>F: staged write of TopoMapGrid.png, TopoMap.csv, TopoGrid.bin, TopoStats.csv and json, profiles
+  B->>F: staged write of TopoMapGrid.png, TopoMap.csv, TopoGrid.bin, TopoStats.csv and json, profiles, TopoMap.png (TopoMapRenderer composite)
   B-->>V: Output
-  V->>F: TopoMap.png (TopoMapRenderer)
   V->>ST: save ScanRecord with the map summary, endLineRecording
   V-->>U: scan detail opens
 ```
@@ -293,7 +292,7 @@ Swift 5 language mode (`SWIFT_VERSION: "5.0"`), so strict concurrency checking i
 | `phonelidar.line.finish` (serial, per recorder) | `LineRecorder.finish`: after `finishWriting` of `Video.mov`, closes `Depth.bin`, `Recording.json`, `Frames.csv` and `ZoneSpeeds.csv`, then calls the completion (→ `Task { @MainActor }`). |
 | Global queue (`.userInitiated`) | `Baseline.build` after calibration capture; completion hops to the main actor. |
 | AVAssetWriter completion queue | `finishWriting` completion → `stopRecording` completion → `Task { @MainActor }`. |
-| Detached tasks (`.userInitiated`, recovery `.utility`) | `TopoMapBuilder.build` (after Stop, on Rebuild, on replay open) including the `TopoMap.png` composite on Rebuild and replay open, `LineRecordingRepair.loadInfo`, `TopoGridFile.load` + `TopoReplaySource.make` + `TopoDisplayGrid.make` (replay open and block-size changes), `PlaybackModel.prepare`, map-screen file loads, `ViewerModel.loadScene`, Room export, Mesh export (`MeshExporter.write`), `LineRecordingRecovery.scan`, probe sampling (`DispatchQueue.concurrentPerform` over frames). |
+| Detached tasks (`.userInitiated`, recovery `.utility`) | `TopoMapBuilder.build` (after Stop, on Rebuild, on replay open) including the `TopoMap.png` composite (after Stop, on Rebuild and on replay open), `LineRecordingRepair.loadInfo`, `TopoGridFile.load` + `TopoReplaySource.make` + `TopoDisplayGrid.make` (replay open and block-size changes), `PlaybackModel.prepare`, map-screen file loads, `ViewerModel.loadScene`, Room export, Mesh export (`MeshExporter.write`), `LineRecordingRecovery.scan`, probe sampling (`DispatchQueue.concurrentPerform` over frames). |
 | Main run loop, `.common` mode | `CADisplayLink` replay clock and playback frame-time clock (preferred 60 / 30 Hz, range 30–60, through `DisplayLinkProxy`); `AVPlayer` periodic time observer (1/30 s, main queue); the AVCapture notification observers (delivered on any queue). |
 | SceneKit render thread | Renders `SCNView`s; geometry is replaced from the main actor. |
 
@@ -360,7 +359,7 @@ Range: just under 60 coarse steps = 480 px per frame. Any change of `travelSign`
 | Live zone speeds | Mean of the last 15 frames per zone, needs ≥ 4 readings. Fastest = largest absolute value, signed. |
 | Recorded values | Raw per-frame speeds and zone speeds (no smoothing). |
 | Playback / replay speed | `LineMath.smoothed(radius: 7)`: centred 15-frame mean skipping missing values. |
-| Travel | Every frame with 0 < Δt < 1 s: T += (v ?? v_last ?? 0)·Δt. T runs from session start; the recorder stores T − T_at_record_start. `setDirection` clears `v_last`, the 15-frame buffer and the previous timestamp (P-3); T keeps its value. |
+| Travel | Every frame with 0 < Δt < 1 s: T += (v ?? v_last ?? 0)·Δt. T runs from session start; the recorder stores T − T_at_record_start. `setDirection` clears `v_last`, the 15-frame buffer and the previous timestamp (P-3); T keeps its value. At Record, `v_last` and the buffered readings are kept only if the last valid reading is at most 2.0 s old (frame timestamps) and cleared otherwise (Z-1, Y-1), so a speed measured just before Record carries over a brief loss of lock at the start, but an old one never does. |
 | Angle | atan2(across, absolute along)·180/π when the absolute along shift > 2 px. |
 | Flatness σ | Population std dev of finite, non-zero values over the central 80 % (every 3rd pixel and row), needs > 20 samples; heights in height mode, distances otherwise. |
 | Median distance | Median of positive depths over the central half (every 2nd pixel). |
@@ -393,7 +392,7 @@ Use: height = baseline − distance where both > 0, else NaN. The baseline is ap
 5. For every frame and pixel inside the border with z > 0 (and a finite baseline b_px > 0 in height mode; a non-finite baseline pixel is skipped): value = z or b_px − z; q = s·T − (v − cy)/fy·z; x = (u − cx)/fx·z; col = ⌊(q − q_min)/cell⌋, row = ⌊(x − x_min)/cell⌋ (floor, not truncation, P-2); skip outside the grid. Welford update of d = value − z_ref (z_ref = z_typ in distance mode, 0 in height mode) in Float: n ← n+1, δ = d − mean, mean += δ/n, M2 += δ·(d − mean). Hit counters are UInt16 and saturate at 65,535 (further readings skipped).
 6. Cell value = z_ref + mean.
 7. Trim: the first and last row and column that hold any reading define the observed extent; q_min and x_min move by the trimmed rows/columns, and the grid, hit counts and M2 are copied into the smaller arrays (B-4). Fewer than 10 cells with data → `notEnoughData`.
-8. Outputs are written under hidden temporary names (`.<name>.partial`) and renamed together only when all succeeded (`replaceItemAt` for existing files), so a failure leaves the old set intact (B-17). `TopoMap.png` joins the set when the caller passes a `composite` closure (Rebuild map, replay open); the Line scan screen writes it afterwards with `TopoMapRenderer.writeComposite`.
+8. Outputs are written under hidden temporary names (`.<name>.partial`) and renamed together only when all succeeded (`replaceItemAt` for existing files), so a failure leaves the old set intact (B-17). `TopoMap.png` joins the set through the `composite` closure, which every caller passes (after Stop, Rebuild map, replay open; Z-5).
 
 Remaining effects: the map is a pinhole projection without distortion correction (R-01); a baseline of another size is ignored (distance mode).
 

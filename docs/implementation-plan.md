@@ -146,7 +146,7 @@ Reconstructed from git history, CI runs and `REVISIONS.md`. Commits from PR #1 t
 
 ### P8 — Process alignment (in progress)
 
-Branches: all fix branches (`test-infra`, `fix-line`, `fix-topo`, `fix-apps`, `cycle2-capture`, `cycle2-topo`, `cycle2-rest`, `cycle3-recovery`, `cycle3-apps`) are merged into `process-alignment`. Cycle 3 found no new Critical/High/Medium; its seven Lows are fixed. The final review (Opus 5.5 / max) and the merge into `main` (one PR) follow. Record: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md).
+Branches: all fix branches (`test-infra`, `fix-line`, `fix-topo`, `fix-apps`, `cycle2-capture`, `cycle2-topo`, `cycle2-rest`, `cycle3-recovery`, `cycle3-apps`) are merged into `process-alignment`. Cycle 3 found no new Critical/High/Medium; its seven Lows are fixed. The final review (Opus 5.5 / max) found ten Lows (fixed on `final-line`, `final-misc`); its re-review found Y-1 (Medium) and three Lows, fixed on `rereview-fixes` and in the docs; another fresh Opus 5.5 / max review follows, then the merge into `main` (one PR). Record: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md).
 
 Documentation and agent rules
 - [x] P8.1 Requirements, design, technology recommendations and this plan in `docs/` (Opus 5.5 / max)
