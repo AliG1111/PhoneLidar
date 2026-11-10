@@ -177,8 +177,9 @@ enum TopoMapBuilder {
                                         let zd = Double(z)
                                         let q = offset - yFactor * zd
                                         let x = (Double(u) - cx) / fx * zd
-                                        let col = Int((q - qMin) / cell)
-                                        let row = Int((x - xMin) / cell)
+                                        // floor, not truncation: readings just below qMin/xMin are outside.
+                                        let col = Int(((q - qMin) / cell).rounded(.down))
+                                        let row = Int(((x - xMin) / cell).rounded(.down))
                                         if col < 0 || col >= cols || row < 0 || row >= rows { continue }
                                         let idx = row * cols + col
                                         let n = hitBuf[idx]
