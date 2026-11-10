@@ -530,6 +530,9 @@ final class LineScanModel {
         guard !started else { return }
         started = true
         self.store = store
+        // Keep the screen awake for the whole Line scan screen (mounting, levelling, calibration, recording);
+        // an auto-lock would cancel the calibration. Reset in shutdown().
+        UIApplication.shared.isIdleTimerDisabled = true
         pipeline.onUpdate = { [weak self] update in
             Task { @MainActor [weak self] in
                 self?.apply(update)
@@ -609,7 +612,6 @@ final class LineScanModel {
             if phase == .arming { phase = .recording }
         case .recordingStartFailed(let reason):
             guard phase == .arming else { return }
-            UIApplication.shared.isIdleTimerDisabled = false
             if let folder = recordingFolder {
                 try? FileManager.default.removeItem(at: folder.url)      // no frames were written
             }
@@ -785,7 +787,6 @@ final class LineScanModel {
             elapsed = 0
             recordedFrames = 0
             phase = .arming
-            UIApplication.shared.isIdleTimerDisabled = true
             pipeline.startRecording(folder: folder.url, filtered: filteredDepth,
                                     shortShutter: shortShutter, direction: direction)
         } catch {
@@ -809,7 +810,6 @@ final class LineScanModel {
     }
 
     private func recordingStopped(_ result: LineRecordingResult?) {
-        UIApplication.shared.isIdleTimerDisabled = false
         recordingWarning = nil
         guard let store, let folder = recordingFolder else {
             phase = .ready
