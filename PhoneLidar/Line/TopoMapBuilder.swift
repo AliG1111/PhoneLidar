@@ -167,7 +167,7 @@ enum TopoMapBuilder {
                                         var value = z
                                         if heightMode {
                                             let b = baseBuf[rowBase + u]
-                                            if b <= 0 { continue }
+                                            if !(b > 0 && b.isFinite) { continue }   // no NaN/inf from a damaged baseline
                                             value = b - z
                                         }
                                         let zd = Double(z)
