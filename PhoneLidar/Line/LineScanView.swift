@@ -731,11 +731,11 @@ struct BubbleLevel: View {
             ZStack {
                 Circle().fill(Color.black.opacity(0.35))
                 Circle().stroke(Color.white.opacity(0.85), lineWidth: 1.5)
-                // Rings at 0.5° and 1.5°.
+                // Rings at the colour limits: 0.5° (green) and 2° (yellow).
                 Circle().stroke(Color.green.opacity(0.9), lineWidth: 1)
                     .frame(width: size * 0.5 / range, height: size * 0.5 / range)
-                Circle().stroke(Color.white.opacity(0.4), lineWidth: 1)
-                    .frame(width: size * 1.5 / range, height: size * 1.5 / range)
+                Circle().stroke(Color.yellow.opacity(0.6), lineWidth: 1)
+                    .frame(width: size * 2 / range, height: size * 2 / range)
                 Rectangle().fill(Color.white.opacity(0.35)).frame(width: 1, height: size)
                 Rectangle().fill(Color.white.opacity(0.35)).frame(width: size, height: 1)
                 if let sx = surfaceX, let sy = surfaceY {

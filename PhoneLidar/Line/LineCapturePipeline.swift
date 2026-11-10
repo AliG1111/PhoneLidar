@@ -314,6 +314,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         let videoWidth = CVPixelBufferGetWidth(pixelBuffer)
         let k = intrinsics(for: depth, depthWidth: dw, depthHeight: dh)
         let median = Self.centerMedian(millimetres, width: dw, height: dh)
+        // Focal length in full-resolution video pixels (depth intrinsics scaled up to the video buffer).
+        let fyVideo = Double(k.fy) * Double(videoHeight) / Double(max(dh, 1))
 
         // Speed from texture motion: pixels moved × (distance / focal length) / time.
         var shift: TextureShift?
@@ -328,7 +330,6 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             let trackedDistance = Self.regionMedian(millimetres, width: dw, height: dh,
                                                     regionX: m.regionX, regionY: m.regionY)
             let distance = trackedDistance > 0 ? trackedDistance : median
-            let fyVideo = Double(k.fy) * Double(videoHeight) / Double(dh)
             if m.quality >= 0.1, fyVideo > 0, distance > 0 {
                 rawSpeed = m.along * (distance / fyVideo) / dt
             }
@@ -338,8 +339,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         let tileRows = SpeedEstimator.tileRows
         let tiles = estimator.lastTiles
         var rawTiles = [Double?](repeating: nil, count: tileColumns * tileRows)
-        let fyFull = Double(k.fy) * Double(videoHeight) / Double(max(dh, 1))
-        if dt > 0.001, dt < 1, fyFull > 0, tiles.count == rawTiles.count {
+        if dt > 0.001, dt < 1, fyVideo > 0, tiles.count == rawTiles.count {
             for (i, tile) in tiles.enumerated() {
                 guard let tile, tile.quality >= 0.12 else { continue }
                 let c = i % tileColumns
@@ -350,7 +350,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                     regionY: Double(r) / Double(tileRows)...Double(r + 1) / Double(tileRows))
                 let distance = zoneDistance > 0 ? zoneDistance : median
                 guard distance > 0 else { continue }
-                rawTiles[i] = tile.along * (distance / fyFull) / dt
+                rawTiles[i] = tile.along * (distance / fyVideo) / dt
             }
         }
         tileHistory.append(rawTiles)
