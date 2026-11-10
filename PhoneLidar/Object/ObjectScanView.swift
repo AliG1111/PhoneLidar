@@ -83,6 +83,22 @@ struct ObjectScanView: View {
                     .multilineTextAlignment(.center)
                 Button("Close") { close() }
                     .buttonStyle(.bordered)
+            case .modelNotRecorded(let message):
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 48))
+                    .foregroundStyle(.yellow)
+                Text("3D model built, but not saved to the library")
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+                Text(message)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                Text("The finished model and the photos are kept in the scan folder. Try saving again.")
+                    .multilineTextAlignment(.center)
+                Button("Try saving again") { controller.retrySave() }
+                    .buttonStyle(.borderedProminent)
+                Button("Close") { close() }
+                    .buttonStyle(.bordered)
             case .kept(let message, let photos, let canRetry):
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 48))
@@ -242,6 +258,9 @@ final class ObjectCaptureController {
         case failed(String)
         /// The model was not built but the photos and a scan.json are kept.
         case kept(String, photos: Int, canRetry: Bool)
+        /// The model is complete (Model.usdz is good) but writing scan.json failed. Only the record is retried;
+        /// the model is never rebuilt or deleted (E-2).
+        case modelNotRecorded(String)
     }
 
     var phase: Phase = .starting
@@ -329,6 +348,23 @@ final class ObjectCaptureController {
         guard case .kept = phase else { return }
         phase = .reconstructing
         Task { await retryNow() }
+    }
+
+    /// Writes the scan record again after the model was built but scan.json could not be saved (E-2).
+    /// Never touches Model.usdz or the photos.
+    func retrySave() {
+        guard case .modelNotRecorded = phase, let folder else { return }
+        do {
+            try writeRecord(model: "Model.usdz", summary: Self.completeSummary(photos: ObjectPhotos.count(in: folder.url.appendingPathComponent("Images", isDirectory: true))))
+            phase = .done
+        } catch {
+            phase = .modelNotRecorded(ScanError.message(for: error))
+        }
+    }
+
+    private static func completeSummary(photos: Int) -> [String] {
+        ["Photos captured: \(photos) (kept in the Images folder)",
+         "Model.usdz is textured and at real-world scale (metres)"]
     }
 
     private func retryNow() async {
@@ -427,9 +463,14 @@ final class ObjectCaptureController {
             modelComplete = true
             try? FileManager.default.removeItem(at: checkpoint)
 
-            try writeRecord(model: "Model.usdz",
-                            summary: ["Photos captured: \(ObjectPhotos.count(in: images)) (kept in the Images folder)",
-                                      "Model.usdz is textured and at real-world scale (metres)"])
+            // The model is good from here on. If only the record cannot be written, keep the model and offer
+            // to save the record again instead of falling into the failed path (E-2).
+            do {
+                try writeRecord(model: "Model.usdz", summary: Self.completeSummary(photos: ObjectPhotos.count(in: images)))
+            } catch {
+                phase = .modelNotRecorded(ScanError.message(for: error))
+                return
+            }
             phase = .done
         } catch {
             photogrammetry = nil
