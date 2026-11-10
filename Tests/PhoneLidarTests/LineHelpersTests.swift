@@ -149,6 +149,7 @@ final class LineErrorTests: XCTestCase {
         XCTAssertNotNil(LineError.noLiDAR.errorDescription)
         XCTAssertNotNil(LineError.badFile.errorDescription)
         XCTAssertNotNil(LineError.notEnoughData.errorDescription)
+        XCTAssertNotNil(LineError.writeFailed.errorDescription)
         XCTAssertEqual(LineError.configuration("Cannot record video.").errorDescription, "Cannot record video.")
     }
 }
@@ -226,6 +227,27 @@ final class TextFileWriterTests: XCTestCase {
         try writer.line("second")
         try writer.close()
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "first\nsecond\n")
+    }
+
+    func testWritingAfterCloseFailsAndClosingTwiceIsHarmless() throws {
+        let url = try makeTempFolder().appendingPathComponent("closed.txt")
+        let writer = try TextFileWriter(url: url)
+        try writer.line("kept")
+        try writer.close()
+        XCTAssertThrowsError(try writer.line("late")) { assertLineError($0, .writeFailed) }
+        XCTAssertNoThrow(try writer.close())
+        XCTAssertFalse(writer.failed)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "kept\n")
+    }
+
+    func testTheFlushSizeCanBeChosen() throws {
+        let url = try makeTempFolder().appendingPathComponent("small.txt")
+        let writer = try TextFileWriter(url: url, flushBytes: 10)
+        try writer.line("short")                                     // 6 bytes buffered: below the limit
+        XCTAssertEqual(try Data(contentsOf: url).count, 0)
+        try writer.line("0123456789")                                // 17 bytes buffered: written out
+        XCTAssertEqual(try Data(contentsOf: url).count, 17)
+        try writer.close()
     }
 
     func testLargeOutputIsFlushedInChunks() throws {

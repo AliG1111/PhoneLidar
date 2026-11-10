@@ -46,6 +46,7 @@ targets:
       - path: PhoneLidar/Line/Baseline.swift
       - path: PhoneLidar/Line/DepthColors.swift
       - path: PhoneLidar/Line/LineRecording.swift
+      - path: PhoneLidar/Line/LineRecordingRecovery.swift
       - path: PhoneLidar/Line/SpeedEstimator.swift
       - path: PhoneLidar/Line/TopoGridFile.swift
       - path: PhoneLidar/Line/TopoMapBuilder.swift
