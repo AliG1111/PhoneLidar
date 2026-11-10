@@ -168,6 +168,71 @@ final class DepthFileTests: XCTestCase {
         XCTAssertThrowsError(try DepthFileReader(url: depthURL)) { assertLineError($0, .badFile) }
     }
 
+    func testReaderRejectsOversizedDimensions() throws {
+        // A damaged header must be refused before anything is allocated (width x height x 2 bytes).
+        let limit = UInt32(DepthFileReader.maxDimension)
+        let sizes: [(UInt32, UInt32)] = [(limit + 1, 6), (8, limit + 1), (limit + 1, limit + 1),
+                                         (100_000, 100_000), (UInt32.max, UInt32.max), (UInt32.max, 1)]
+        for (width, height) in sizes {
+            var header = Data("PLDP".utf8)
+            header.appendUInt32(1)
+            header.appendUInt32(width)
+            header.appendUInt32(height)
+            try header.write(to: depthURL)
+            XCTAssertThrowsError(try DepthFileReader(url: depthURL), "\(width) x \(height)") {
+                assertLineError($0, .badFile)
+            }
+        }
+    }
+
+    func testReaderAcceptsTheLargestAllowedDimension() throws {
+        let limit = UInt32(DepthFileReader.maxDimension)
+        var header = Data("PLDP".utf8)
+        header.appendUInt32(1)
+        header.appendUInt32(limit)
+        header.appendUInt32(1)
+        try header.write(to: depthURL)
+        let reader = try DepthFileReader(url: depthURL)
+        XCTAssertEqual(reader.width, Int(limit))
+        XCTAssertEqual(reader.height, 1)
+        XCTAssertEqual(reader.frameCount, 0)
+    }
+
+    // MARK: - Short frames
+
+    func testShortAppendIsZeroFilledNotFilledFromThePreviousFrame() throws {
+        // The writer reuses one scratch buffer: the part a short frame does not supply must be no data (0),
+        // never the values of the frame before it.
+        let writer = try DepthFileWriter(url: depthURL, width: 4, height: 3)
+        try writer.append(millimetres: [Float](repeating: 800, count: 12))
+        try writer.append(millimetres: [900, 901, 902, 903, 904])
+        try writer.append(millimetres: [])
+        try writer.append(millimetres: [Float](repeating: 700, count: 12))
+        writer.close()
+        let reader = try DepthFileReader(url: depthURL)
+        XCTAssertEqual(reader.frameCount, 4)
+        let full = try XCTUnwrap(reader.frame(0))
+        XCTAssertEqual(full, [Float](repeating: 800, count: 12))
+        let short = try XCTUnwrap(reader.frame(1))
+        XCTAssertEqual(short.count, 12)
+        for (i, expected) in [Float(900), 901, 902, 903, 904].enumerated() {
+            XCTAssertEqual(short[i], expected, accuracy: 0.0501)
+        }
+        XCTAssertEqual(Array(short[5...]), [Float](repeating: 0, count: 7))
+        XCTAssertEqual(try XCTUnwrap(reader.frame(2)), [Float](repeating: 0, count: 12))
+        // A full frame after the short ones is complete again.
+        XCTAssertEqual(try XCTUnwrap(reader.frame(3)), [Float](repeating: 700, count: 12))
+    }
+
+    func testOversizedAppendIgnoresTheExtraValues() throws {
+        let writer = try DepthFileWriter(url: depthURL, width: 2, height: 2)
+        try writer.append(millimetres: [500, 501, 502, 503, 999, 999])
+        writer.close()
+        let decoded = try XCTUnwrap(DepthFileReader(url: depthURL).frame(0))
+        XCTAssertEqual(decoded.count, 4)
+        XCTAssertEqual(decoded[3], 503, accuracy: 0.0501)
+    }
+
     func testFrameWithCorruptPayloadDecodesToNil() throws {
         try write(width: 8, height: 6, frames: [gradientFrame(width: 8, height: 6, offset: 0)])
         var data = try Data(contentsOf: depthURL)

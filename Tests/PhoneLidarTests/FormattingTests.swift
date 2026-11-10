@@ -41,6 +41,15 @@ final class UnitsTests: XCTestCase {
         XCTAssertEqual(Units.feetInches(-0.3), "-0' 11.8\"")
     }
 
+    func testFeetInchesTinyNegativeValueThatRoundsToZeroHasNoSign() {
+        // -0.0001 m is 0.004 in: it rounds to 0.0 in and must not read "-0' 0.0"".
+        XCTAssertEqual(Units.feetInches(-0.0001), "0' 0.0\"")
+        XCTAssertEqual(Units.feetInches(-0.0), "0' 0.0\"")
+        // -0.0012 m = 0.047 in still rounds to 0.0; -0.0013 m = 0.051 in rounds to 0.1 and keeps its sign.
+        XCTAssertEqual(Units.feetInches(-0.0012), "0' 0.0\"")
+        XCTAssertEqual(Units.feetInches(-0.0013), "-0' 0.1\"")
+    }
+
     func testFormatCombinesMetresAndFeetInches() {
         XCTAssertEqual(Units.format(meters: 2.438), "2.438 m  (8' 0.0\")")
         XCTAssertEqual(Units.format(meters: 0), "0.000 m  (0' 0.0\")")

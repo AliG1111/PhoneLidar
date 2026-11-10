@@ -20,6 +20,7 @@ final class TopoMapBuilderTests: XCTestCase {
     /// - `surface(q, x)`: height of the material above the reference surface (mm) at material coordinate `q`
     ///   (along the travel, fixed to the material) and across position `x`; nil = no depth reading.
     /// - `mask(u, v)`: which depth pixels return data at all.
+    /// - `perturb(frameIndex, &depth)`: last edit of each frame's depth map (mm, row-major) before it is written.
     @discardableResult
     private func writeRecording(width: Int = 64, height: Int = 48, frameCount: Int = 80,
                                 depthFrameCount: Int? = nil, travelStep: Double = 7.3,
@@ -27,6 +28,7 @@ final class TopoMapBuilderTests: XCTestCase {
                                 baselineSize: (Int, Int)? = nil,
                                 speed: (Int) -> Double? = { _ in 219 },
                                 mask: (Int, Int) -> Bool = { _, _ in true },
+                                perturb: ((Int, inout [Float]) -> Void)? = nil,
                                 surface: (Double, Double) -> Double? = { _, _ in 0 }) throws -> LineRecordingInfo {
         let fx = 100.0
         let cx = Double(width) / 2
@@ -50,6 +52,7 @@ final class TopoMapBuilderTests: XCTestCase {
                     }
                 }
             }
+            perturb?(i, &depth)
             try writer.append(millimetres: depth)
         }
         writer.close()
@@ -244,6 +247,55 @@ final class TopoMapBuilderTests: XCTestCase {
         XCTAssertEqual(info.frames.count, 80)
         let s = try TopoMapBuilder.build(folder: folder, info: info).stats
         XCTAssertEqual(s.frames, 30)
+    }
+
+    // MARK: - Cell size and edges (cycle 2 changes)
+
+    func testTiltedPlaneWithFarReadingsGetsACellAtLeastOneDepthPixelFootprintAndNoEmptyRows() throws {
+        // Depth grows across the material from 1000 mm to 1200 mm: a plane tilted by about 18.7 degrees, as the
+        // LiDAR plane fit would report. The typical (median) distance of the frames is 1100 mm.
+        var info = try writeRecording(surface: { _, x in -200 * (x + 295) / 590 })
+        info.frames = info.frames.map { frame in
+            var f = frame
+            f.medianDepth = 1100
+            f.surfaceTiltX = 18.7
+            return f
+        }
+        let output = try TopoMapBuilder.build(folder: folder, info: info)
+        let grid = try loadGrid()
+        // One depth pixel spans (z / f) / (1 - a * tan(tilt)) = 12 mm / 0.8985 = 13.3 mm at the far edge (z = 1200 mm,
+        // a = 0.30), so the footprint rule gives 14 mm. The level, typical-distance size would be only 11 or 12 mm.
+        XCTAssertGreaterThanOrEqual(output.stats.cellSize, 13.3)
+        XCTAssertEqual(output.stats.cellSize, 14, accuracy: 1e-9)
+        XCTAssertEqual(grid.cell, output.stats.cellSize, accuracy: 1e-9)
+        // Neighbouring depth pixels never skip a cell: every row between the first and the last has data
+        // (rows are across the material, so a skipped cell would show as a stripe without data).
+        for row in 0..<grid.rows {
+            XCTAssertTrue(rowHasData(grid, row: row), "row \(row) of \(grid.rows) has no data")
+        }
+        XCTAssertGreaterThan(output.stats.coveragePercent, 90)
+    }
+
+    func testAReadingJustBelowTheMapOriginIsDroppedNotPutInTheFirstColumn() throws {
+        // Reference build of a flat recording.
+        let reference = try TopoMapBuilder.build(folder: folder, info: try writeRecording()).stats
+        // The same recording with one stray far reading in the bottom row of the frame whose travel is smallest.
+        // The map origin qMin lies 35.4 mm (padding) beyond the nearest edge of that frame; the stray reading
+        // (1192 mm at v = 45, 0.21 mm of q per mm of depth) lands 4.9 mm below qMin, less than one 10 mm cell.
+        // Truncation toward zero would put it in column 0 and stretch the map; flooring drops it.
+        let sign = Double(TravelDirection.rightToLeft.bufferSign)
+        let strayFrame = (0..<80).min { sign * Double($0) * 7.3 < sign * Double($1) * 7.3 } ?? 0
+        let info = try writeRecording(perturb: { index, depth in
+            if index == strayFrame { depth[45 * 64 + 32] = 1192 }
+        })
+        let stats = try TopoMapBuilder.build(folder: folder, info: info).stats
+        XCTAssertEqual(stats.cellSize, 10, accuracy: 1e-9)
+        XCTAssertEqual(stats.columns, reference.columns)
+        XCTAssertEqual(stats.rows, reference.rows)
+        XCTAssertEqual(stats.lengthMM, reference.lengthMM, accuracy: 1e-9)
+        XCTAssertEqual(stats.minimum, 1000, accuracy: 0.01)
+        XCTAssertEqual(stats.maximum, 1000, accuracy: 0.01)
+        XCTAssertEqual(stats.stdDev, 0, accuracy: 1e-3)
     }
 
     // MARK: - Stitching geometry
