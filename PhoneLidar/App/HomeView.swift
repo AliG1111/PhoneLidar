@@ -93,8 +93,11 @@ struct HomeView: View {
                                 IncompleteRow(item: item)
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button("Delete", role: .destructive) {
-                                    pendingDelete = .incomplete(item)
+                                // Not while recovery may be repairing or saving this folder (G-4).
+                                if !(item.interruptedRecording && store.recoveryRunning) {
+                                    Button("Delete", role: .destructive) {
+                                        pendingDelete = .incomplete(item)
+                                    }
                                 }
                             }
                         }
@@ -190,6 +193,11 @@ struct HomeView: View {
         case .scan(let record):
             if !store.delete(record) { deleteFailed = true }
         case .incomplete(let incomplete):
+            // The dialog may have been open when a recovery pass started: refuse and leave the folder alone (G-4).
+            if incomplete.interruptedRecording && store.recoveryRunning {
+                deleteFailed = true
+                return
+            }
             if !store.deleteIncomplete(folderName: incomplete.folderName) { deleteFailed = true }
         }
     }

@@ -97,9 +97,9 @@ struct ObjectScanView: View {
                     .multilineTextAlignment(.center)
                 Button("Try saving again") { controller.retrySave() }
                     .buttonStyle(.borderedProminent)
-                Button("Close") { close() }
+                Button("Close") { closeAfterModelBuilt() }
                     .buttonStyle(.bordered)
-            case .kept(let message, let photos, let canRetry):
+            case .kept(let message, let photos, let canRetry, let inLibrary):
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 48))
                     .foregroundStyle(.yellow)
@@ -108,8 +108,14 @@ struct ObjectScanView: View {
                 Text(message)
                     .font(.footnote)
                     .multilineTextAlignment(.center)
-                Text("\(photos) photos are saved in the scan. You can share them or try again.")
-                    .multilineTextAlignment(.center)
+                if inLibrary {
+                    Text("\(photos) photos are saved in the scan. You can share them or try again.")
+                        .multilineTextAlignment(.center)
+                } else {
+                    // The scan record could not be written (G-7): say where the photos are, not that they are in the library.
+                    Text("\(photos) photos are kept in the scan folder, but the scan could not be added to the library. Find them in the Files app: Phone LiDAR › Scans › \(controller.folderName ?? "").")
+                        .multilineTextAlignment(.center)
+                }
                 if canRetry {
                     Button("Retry reconstruction") { controller.retry() }
                         .buttonStyle(.borderedProminent)
@@ -144,6 +150,13 @@ struct ObjectScanView: View {
     private func close() {
         controller.discardCapture()
         onFinish(nil)
+    }
+
+    /// Close on "model built but not saved": one last attempt to write the scan record, so the library entry
+    /// is not left pointing at "Model not built yet" next to a finished Model.usdz (G-3).
+    private func closeAfterModelBuilt() {
+        controller.recordFinishedModel()
+        close()
     }
 }
 
@@ -230,6 +243,15 @@ private struct CaptureOverlay: View {
 
 /// Counts the photos (not the depth / gravity side files) in an Images folder.
 enum ObjectPhotos {
+    /// True when the folder holds a finished model: a non-empty Model.usdz and no Checkpoint folder.
+    /// A reconstruction creates Checkpoint before it starts and removes it only after the model is complete,
+    /// so a Model.usdz next to a Checkpoint may be half-written (G-3).
+    static func hasCompleteModel(in folder: URL) -> Bool {
+        let fileManager = FileManager.default
+        let size = (try? folder.appendingPathComponent("Model.usdz").resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        return size > 0 && !fileManager.fileExists(atPath: folder.appendingPathComponent("Checkpoint", isDirectory: true).path)
+    }
+
     static func count(in images: URL) -> Int {
         let photoExtensions: Set<String> = ["heic", "heif", "jpg", "jpeg", "png", "dng"]
         let names = (try? FileManager.default.contentsOfDirectory(atPath: images.path)) ?? []
@@ -257,7 +279,8 @@ final class ObjectCaptureController {
         /// Nothing worth keeping (no photos); the folder has been removed.
         case failed(String)
         /// The model was not built but the photos and a scan.json are kept.
-        case kept(String, photos: Int, canRetry: Bool)
+        /// `inLibrary` is false when no scan record could be written, so the photos are only in the folder (G-7).
+        case kept(String, photos: Int, canRetry: Bool, inLibrary: Bool)
         /// The model is complete (Model.usdz is good) but writing scan.json failed. Only the record is retried;
         /// the model is never rebuilt or deleted (E-2).
         case modelNotRecorded(String)
@@ -282,6 +305,9 @@ final class ObjectCaptureController {
     @ObservationIgnored private var recordID: UUID?
     @ObservationIgnored private var recordName = "Object " + Date().formatted(date: .abbreviated, time: .shortened)
     @ObservationIgnored private var recordCreated = Date()
+
+    /// Name of the scan folder, for messages that point the user to the Files app.
+    var folderName: String? { folder?.name }
 
     func cameraDenied() {
         guard !started else { return }
@@ -353,7 +379,15 @@ final class ObjectCaptureController {
     /// Writes the scan record again after the model was built but scan.json could not be saved (E-2).
     /// Never touches Model.usdz or the photos.
     func retrySave() {
-        guard case .modelNotRecorded = phase, let folder else { return }
+        guard case .modelNotRecorded = phase else { return }
+        recordFinishedModel()
+    }
+
+    /// Writes the complete scan record for a finished Model.usdz: `.done` on success, `.modelNotRecorded` if
+    /// scan.json still cannot be written. Never touches Model.usdz or the photos.
+    func recordFinishedModel() {
+        guard let folder else { return }
+        modelComplete = true
         do {
             let images = folder.url.appendingPathComponent("Images", isDirectory: true)
             try writeRecord(model: "Model.usdz", summary: Self.completeSummary(photos: ObjectPhotos.count(in: images)))
@@ -370,6 +404,13 @@ final class ObjectCaptureController {
 
     private func retryNow() async {
         guard let folder else { return }
+        // A complete model is already in the folder (the app was closed or the record could not be written
+        // after the build): record it. Rebuilding would delete a good Model.usdz (G-3).
+        if ObjectPhotos.hasCompleteModel(in: folder.url) {
+            phase = .reconstructing
+            recordFinishedModel()
+            return
+        }
         // A half-written cache from the failed run can make the next run fail too.
         let checkpoint = folder.url.appendingPathComponent("Checkpoint", isDirectory: true)
         try? FileManager.default.removeItem(at: checkpoint)
@@ -511,8 +552,16 @@ final class ObjectCaptureController {
 
         let summary = ["Reconstruction failed: \(reason)",
                        "\(photos) photos kept in the Images folder. Use Share photos, or retry reconstruction."]
-        try? writeRecord(model: modelComplete ? "Model.usdz" : nil, summary: summary)
-        phase = .kept(reason, photos: photos, canRetry: PhotogrammetrySession.isSupported && photos > 0)
+        var inLibrary = true
+        do {
+            try writeRecord(model: modelComplete ? "Model.usdz" : nil, summary: summary)
+        } catch {
+            // The photos stay in the folder either way. An earlier record (written before the build) still
+            // lists the scan; with none, the screen must not claim the photos are in the library (G-7).
+            inLibrary = recordID.flatMap { store.record(id: $0) } != nil
+        }
+        phase = .kept(reason, photos: photos, canRetry: PhotogrammetrySession.isSupported && photos > 0,
+                      inLibrary: inLibrary)
     }
 
     private func writeRecord(model: String?, summary: [String]) throws {
