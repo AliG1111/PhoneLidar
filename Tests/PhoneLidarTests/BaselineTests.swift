@@ -303,6 +303,36 @@ final class BaselineTests: XCTestCase {
         XCTAssertNil(Baseline.load(from: folder))
     }
 
+    func testLoadRejectsHandEditedSizesWithoutCrashing() throws {
+        // Z-4: width × height × 4 used to be computed unchecked from Baseline.json.
+        let baseline = try build(calibrationFrames())
+        let folder = try makeTempFolder()
+        try baseline.save(to: folder)
+        let jsonURL = folder.appendingPathComponent(Baseline.infoName)
+        let original = try JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any]
+        for (w, h) in [(Int.max, 2), (Int.max / 2, Int.max / 2), (-width, -height), (0, height), (9000, 1),
+                       (DepthFileReader.maxDimension + 1, height)] {
+            var edited = try XCTUnwrap(original)
+            edited["width"] = w
+            edited["height"] = h
+            try JSONSerialization.data(withJSONObject: edited).write(to: jsonURL)
+            XCTAssertNil(Baseline.load(from: folder), "\(w) × \(h)")
+        }
+        // The real size still loads.
+        try JSONSerialization.data(withJSONObject: try XCTUnwrap(original)).write(to: jsonURL)
+        XCTAssertNotNil(Baseline.load(from: folder))
+    }
+
+    func testExpectedByteCount() {
+        XCTAssertEqual(Baseline.expectedByteCount(width: 256, height: 192), 256 * 192 * 4)
+        XCTAssertEqual(Baseline.expectedByteCount(width: DepthFileReader.maxDimension, height: DepthFileReader.maxDimension),
+                       DepthFileReader.maxDimension * DepthFileReader.maxDimension * 4)
+        XCTAssertNil(Baseline.expectedByteCount(width: DepthFileReader.maxDimension + 1, height: 1))
+        XCTAssertNil(Baseline.expectedByteCount(width: 1, height: 0))
+        XCTAssertNil(Baseline.expectedByteCount(width: -1, height: -1))
+        XCTAssertNil(Baseline.expectedByteCount(width: Int.max, height: Int.max))
+    }
+
     func testDeleteRemovesBothFiles() throws {
         let baseline = try build(calibrationFrames())
         let folder = try makeTempFolder()

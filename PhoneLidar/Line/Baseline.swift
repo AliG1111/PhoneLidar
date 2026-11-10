@@ -64,14 +64,27 @@ final class Baseline: @unchecked Sendable {
         return documents.appendingPathComponent("Calibration", isDirectory: true)
     }
 
+    /// The baseline saved in `folder`, or nil if it is missing or invalid. Width and height must be positive and at
+    /// most `DepthFileReader.maxDimension` (a hand-edited Baseline.json can hold any numbers: the byte count is
+    /// checked for overflow, Z-4), and Baseline.bin must hold exactly width × height Float32 values.
     static func load(from folder: URL) -> Baseline? {
         guard let infoData = try? Data(contentsOf: folder.appendingPathComponent(infoName)),
               let info = try? JSONDecoder.iso.decode(BaselineInfo.self, from: infoData),
-              info.width > 0, info.height > 0,
+              let bytes = expectedByteCount(width: info.width, height: info.height),
               let raw = try? Data(contentsOf: folder.appendingPathComponent(fileName)),
-              raw.count == info.width * info.height * MemoryLayout<Float>.size else { return nil }
+              raw.count == bytes else { return nil }
         let values: [Float] = raw.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
         return Baseline(info: info, values: values)
+    }
+
+    /// Bytes of Baseline.bin for a width × height map, or nil for a size no LiDAR depth map has.
+    static func expectedByteCount(width: Int, height: Int) -> Int? {
+        guard width > 0, height > 0,
+              width <= DepthFileReader.maxDimension, height <= DepthFileReader.maxDimension else { return nil }
+        let pixels = width.multipliedReportingOverflow(by: height)
+        let bytes = pixels.partialValue.multipliedReportingOverflow(by: MemoryLayout<Float>.size)
+        guard !pixels.overflow, !bytes.overflow else { return nil }
+        return bytes.partialValue
     }
 
     func save(to folder: URL) throws {
