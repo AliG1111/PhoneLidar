@@ -996,9 +996,9 @@ struct BubbleLevel: View {
                 Circle().stroke(Color.white.opacity(0.85), lineWidth: 1.5)
                 // Rings at the colour limits: 0.5° (green) and 2° (yellow).
                 Circle().stroke(Color.green.opacity(0.9), lineWidth: 1)
-                    .frame(width: size * 0.5 / range, height: size * 0.5 / range)
+                    .frame(width: ringDiameter(degrees: 0.5, size: size), height: ringDiameter(degrees: 0.5, size: size))
                 Circle().stroke(Color.yellow.opacity(0.6), lineWidth: 1)
-                    .frame(width: size * 2 / range, height: size * 2 / range)
+                    .frame(width: ringDiameter(degrees: 2, size: size), height: ringDiameter(degrees: 2, size: size))
                 Rectangle().fill(Color.white.opacity(0.35)).frame(width: 1, height: size)
                 Rectangle().fill(Color.white.opacity(0.35)).frame(width: size, height: 1)
                 if let sx = surfaceX, let sy = surfaceY {
@@ -1011,7 +1011,7 @@ struct BubbleLevel: View {
                         .fill(Self.color(for: x, y))
                         .overlay(Circle().stroke(Color.black.opacity(0.6), lineWidth: 1))
                         .frame(width: 16, height: 16)
-                        .position(point(x, y, size: size, center: center, inset: 8))
+                        .position(point(x, y, size: size, center: center, inset: Self.bubbleInset))
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -1019,6 +1019,16 @@ struct BubbleLevel: View {
         .aspectRatio(1, contentMode: .fit)
         .accessibilityElement()
         .accessibilityLabel("Bubble level")
+    }
+
+    /// Inset of the filled bubble's centre from the rim (half its 16 pt diameter). The ring radii use the same
+    /// travel as the bubble (`size / 2 - bubbleInset` per `range` degrees), so a ring marks exactly the tilt at
+    /// which the bubble centre sits on it (D-3).
+    private static let bubbleInset: CGFloat = 8
+
+    /// Diameter of the ring that the bubble centre reaches at `degrees` of tilt.
+    private func ringDiameter(degrees: Double, size: CGFloat) -> CGFloat {
+        2 * (size / 2 - Self.bubbleInset) * CGFloat(degrees / range)
     }
 
     /// +x (right edge high) moves right; +y (top edge high) moves up. Clamped to the rim.
