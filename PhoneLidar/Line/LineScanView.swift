@@ -210,20 +210,24 @@ struct LineScanView: View {
             }
             if model.phase == .ready {
                 baselineRow
-                Toggle("Raw LiDAR depth (unfiltered)", isOn: Binding(
-                    get: { !model.filteredDepth },
-                    set: { model.setFiltered(!$0) }))
-                Toggle("Short shutter (1/1000 s) for sharp texture", isOn: Binding(
-                    get: { model.shortShutter },
-                    set: { model.setShortShutter($0) }))
-                Picker("Direction", selection: Binding(
-                    get: { model.direction },
-                    set: { model.setDirection($0) })) {
-                    ForEach(TravelDirection.allCases) { direction in
-                        Text(direction.label).tag(direction)
+                // Locked while a baseline is being captured so the baseline uses one depth setting.
+                Group {
+                    Toggle("Raw LiDAR depth (unfiltered)", isOn: Binding(
+                        get: { !model.filteredDepth },
+                        set: { model.setFiltered(!$0) }))
+                    Toggle("Short shutter (1/1000 s) for sharp texture", isOn: Binding(
+                        get: { model.shortShutter },
+                        set: { model.setShortShutter($0) }))
+                    Picker("Direction", selection: Binding(
+                        get: { model.direction },
+                        set: { model.setDirection($0) })) {
+                        ForEach(TravelDirection.allCases) { direction in
+                            Text(direction.label).tag(direction)
+                        }
                     }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
+                .disabled(model.calibrating)
             }
             HStack(spacing: 10) {
                 Image(systemName: "square.2.layers.3d")
@@ -263,10 +267,17 @@ struct LineScanView: View {
                 Label("Baseline set: showing height above the flat surface", systemImage: "checkmark.seal.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.green)
-                Text(String(format: "%.0f mm away · flat surface %.1f mm σ (%.1f mm range) → %.2f mm σ corrected",
+                Text(String(format: "%.0f mm away · flat surface %.1f mm σ (%.1f mm range) → %.2f mm σ corrected · coverage %.0f %%",
                             baseline.info.meanDistance, baseline.info.rawStdDev, baseline.info.rawRange,
-                            baseline.info.correctedStdDev))
+                            baseline.info.correctedStdDev, baseline.info.coveragePercent))
                     .font(.caption2.monospacedDigit())
+                if baseline.info.coveragePercent < Baseline.goodCoveragePercent {
+                    Label(String(format: "Only %.0f %% of the view had steady LiDAR readings; the rest is estimated from a fitted plane. Clear the view and recalibrate for best accuracy.",
+                                 baseline.info.coveragePercent),
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                }
                 if let moved = model.baselineMovedDegrees, moved > 0.3 {
                     Label(String(format: "Phone tilt changed %.1f° since calibration — recalibrate", moved),
                           systemImage: "exclamationmark.triangle.fill")
@@ -474,11 +485,15 @@ final class LineScanModel {
         }
     }
 
-    private func finishCalibration(_ result: Baseline?) {
+    private func finishCalibration(_ outcome: Result<Baseline, Error>) {
         calibrating = false
         calibrationProgress = nil
-        guard let result else {
-            calibrationMessage = "Calibration failed: not enough LiDAR readings. Check the surface is in view and 0.3–4 m away."
+        let result: Baseline
+        switch outcome {
+        case .success(let built):
+            result = built
+        case .failure(let error):
+            calibrationMessage = error.localizedDescription
             return
         }
         do {
@@ -519,16 +534,19 @@ final class LineScanModel {
     }
 
     func setFiltered(_ filtered: Bool) {
+        guard !calibrating else { return }
         filteredDepth = filtered
         pipeline.setFiltering(filtered)
     }
 
     func setShortShutter(_ enabled: Bool) {
+        guard !calibrating else { return }
         shortShutter = enabled
         pipeline.setShortShutter(enabled)
     }
 
     func setDirection(_ newDirection: TravelDirection) {
+        guard !calibrating else { return }
         direction = newDirection
         pipeline.setDirection(newDirection)
         speedHistory.removeAll()

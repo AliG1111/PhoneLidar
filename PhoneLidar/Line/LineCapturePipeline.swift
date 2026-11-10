@@ -41,13 +41,15 @@ struct LiveUpdate {
 /// Frames collected for a baseline calibration (handed to a background queue when complete).
 private struct CalibrationCapture: @unchecked Sendable {
     var target: Int
+    /// Frames delivered since the calibration started, used or not.
+    var seen = 0
     var frames: [[Float]] = []
     var tiltX: [Double] = []
     var tiltY: [Double] = []
     var width = 0
     var height = 0
     var filtered: Bool
-    var completion: @Sendable (Baseline?) -> Void
+    var completion: @Sendable (Result<Baseline, Error>) -> Void
 }
 
 /// LiDAR depth camera + synchronized video. Measures surface speed from the video texture,
@@ -244,9 +246,21 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     }
 
     /// Captures `frames` frames of the empty flat surface and builds a per-pixel baseline from them.
-    func captureBaseline(frames: Int, filtered: Bool, completion: @escaping @Sendable (Baseline?) -> Void) {
+    /// Only frames whose depth filtering matches `filtered` are used.
+    func captureBaseline(frames: Int, filtered: Bool,
+                         completion: @escaping @Sendable (Result<Baseline, Error>) -> Void) {
         dataQueue.async { [self] in
+            calibration?.completion(.failure(BaselineError.cancelled("a new calibration was started")))
             calibration = CalibrationCapture(target: frames, filtered: filtered, completion: completion)
+        }
+    }
+
+    /// Abandons a calibration in progress (camera interrupted, app in the background).
+    func cancelCalibration(reason: String) {
+        dataQueue.async { [self] in
+            guard let capture = calibration else { return }
+            calibration = nil
+            capture.completion(.failure(BaselineError.cancelled(reason)))
         }
     }
 
@@ -419,11 +433,13 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         // Baseline calibration capture.
         var calibrationProgress: Double?
         if var capture = calibration {
+            capture.seen += 1
             if capture.frames.isEmpty {
                 capture.width = dw
                 capture.height = dh
             }
-            if capture.width == dw && capture.height == dh {
+            // Frames with the other depth filter setting (toggle still taking effect) are skipped.
+            if capture.width == dw && capture.height == dh && depthData.isDepthDataFiltered == capture.filtered {
                 capture.frames.append(millimetres)
                 if let g = motion.deviceMotion?.gravity {
                     capture.tiltX.append(asin(max(-1, min(1, -g.x))) * 180 / .pi)
@@ -431,15 +447,18 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                 }
             }
             calibrationProgress = Double(capture.frames.count) / Double(max(capture.target, 1))
-            if capture.frames.count >= capture.target {
+            // Give up waiting after 3× the frames needed (Baseline.build refuses too few frames).
+            if capture.frames.count >= capture.target || capture.seen >= capture.target * 3 {
                 calibration = nil
                 let done = capture
                 DispatchQueue.global(qos: .userInitiated).async {
                     let meanX = done.tiltX.isEmpty ? nil : done.tiltX.reduce(0, +) / Double(done.tiltX.count)
                     let meanY = done.tiltY.isEmpty ? nil : done.tiltY.reduce(0, +) / Double(done.tiltY.count)
-                    let result = Baseline.build(frames: done.frames, width: done.width, height: done.height,
-                                                verify: done.target / 3, tiltX: meanX, tiltY: meanY,
-                                                filtered: done.filtered)
+                    let result = Result<Baseline, Error> {
+                        try Baseline.build(frames: done.frames, width: done.width, height: done.height,
+                                           verify: done.target / 3, tiltX: meanX, tiltY: meanY,
+                                           filtered: done.filtered)
+                    }
                     done.completion(result)
                 }
             } else {
