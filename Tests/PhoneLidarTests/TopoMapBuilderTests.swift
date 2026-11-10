@@ -107,6 +107,14 @@ final class TopoMapBuilderTests: XCTestCase {
         return out
     }
 
+    private func rowHasData(_ grid: TopoGridFile, row: Int) -> Bool {
+        (0..<grid.columns).contains { grid.values[row * grid.columns + $0].isFinite }
+    }
+
+    private func columnHasData(_ grid: TopoGridFile, column: Int) -> Bool {
+        (0..<grid.rows).contains { grid.values[$0 * grid.columns + column].isFinite }
+    }
+
     // MARK: - Statistics
 
     func testFlatSurfaceInDistanceModeHasNoVariance() throws {
@@ -117,7 +125,7 @@ final class TopoMapBuilderTests: XCTestCase {
         XCTAssertEqual(s.mean, 1000, accuracy: 0.01)
         XCTAssertEqual(s.variance, 0, accuracy: 1e-3)
         XCTAssertEqual(s.stdDev, 0, accuracy: 1e-3)
-        XCTAssertEqual(s.cvPercent, 0, accuracy: 1e-3)
+        XCTAssertEqual(try XCTUnwrap(s.cvPercent), 0, accuracy: 1e-3)
         XCTAssertEqual(s.minimum, 1000, accuracy: 0.01)
         XCTAssertEqual(s.maximum, 1000, accuracy: 0.01)
         XCTAssertEqual(s.range, 0, accuracy: 0.01)
@@ -139,8 +147,8 @@ final class TopoMapBuilderTests: XCTestCase {
         XCTAssertEqual(s.stdDev, 5, accuracy: 0.2)
         XCTAssertEqual(s.variance, s.stdDev * s.stdDev, accuracy: 1e-6)
         XCTAssertEqual(s.variance, 25, accuracy: 2)
-        XCTAssertEqual(s.cvPercent, 100 * s.stdDev / s.mean, accuracy: 1e-6)
-        XCTAssertEqual(s.cvPercent, 0.5025, accuracy: 0.03)
+        XCTAssertEqual(try XCTUnwrap(s.cvPercent), 100 * s.stdDev / s.mean, accuracy: 1e-6)
+        XCTAssertEqual(try XCTUnwrap(s.cvPercent), 0.5025, accuracy: 0.03)
         XCTAssertEqual(s.minimum, 990, accuracy: 0.01)
         XCTAssertEqual(s.maximum, 1000, accuracy: 0.01)
         XCTAssertEqual(s.range, 10, accuracy: 0.02)
@@ -165,7 +173,7 @@ final class TopoMapBuilderTests: XCTestCase {
         XCTAssertEqual(s.mean, 2.5, accuracy: 0.15)
         XCTAssertEqual(s.stdDev, 2.5, accuracy: 0.1)
         XCTAssertEqual(s.variance, 6.25, accuracy: 0.6)
-        XCTAssertEqual(s.cvPercent, 0)      // the coefficient of variation is only reported for distances
+        XCTAssertNil(s.cvPercent)      // the coefficient of variation is only reported for distances (B-7)
         XCTAssertEqual(s.minimum, 0, accuracy: 0.01)
         XCTAssertEqual(s.maximum, 5, accuracy: 0.01)
         XCTAssertEqual(s.range, 5, accuracy: 0.02)
@@ -217,9 +225,12 @@ final class TopoMapBuilderTests: XCTestCase {
         XCTAssertEqual(s.cellSize, 10, accuracy: 1e-9)           // one depth pixel on the surface
         XCTAssertEqual(s.lengthMM, Double(s.columns) * s.cellSize, accuracy: 1e-9)
         XCTAssertEqual(s.widthMM, Double(s.rows) * s.cellSize, accuracy: 1e-9)
-        // The map is longer than the travelled distance (79 × 7.3 mm) plus the view length.
-        XCTAssertGreaterThan(s.lengthMM, 79 * 7.3)
-        XCTAssertGreaterThan(s.coveragePercent, 40)
+        // Length and width describe the observed material only (B-4): the travelled distance (79 × 7.3 mm)
+        // plus the 430 mm between the first and last depth row seen, and the 590 mm between the first and last
+        // depth column seen — each within one cell of the cell-aligned extent.
+        XCTAssertEqual(s.lengthMM, 79 * 7.3 + 430, accuracy: 20)
+        XCTAssertEqual(s.widthMM, 590, accuracy: 20)
+        XCTAssertGreaterThan(s.coveragePercent, 98)
         XCTAssertLessThanOrEqual(s.coveragePercent, 100)
         XCTAssertGreaterThan(s.meanHitsPerCell, 1)
         XCTAssertEqual(s.coveragePercent, 100 * Double(s.cellsWithData) / Double(s.columns * s.rows), accuracy: 1e-9)
@@ -340,6 +351,8 @@ final class TopoMapBuilderTests: XCTestCase {
             XCTAssertEqual(line.split(separator: ",", omittingEmptySubsequences: false).count, grid.columns + 1)
         }
         XCTAssertTrue(lines[0].hasPrefix("across_mm \\ along_mm,5,15,25"), String(lines[0]))
+        // Rows are labelled from the observed edge of the material: the first depth column seen is at −300 mm.
+        XCTAssertTrue(lines[1].hasPrefix("-300,"), String(lines[1]))
         XCTAssertTrue(csv.contains(",5.0"))
         XCTAssertTrue(csv.contains(",0.0"))
 
@@ -370,6 +383,192 @@ final class TopoMapBuilderTests: XCTestCase {
         let statsCSV = try String(contentsOf: folder.appendingPathComponent("TopoStats.csv"), encoding: .utf8)
         XCTAssertTrue(statsCSV.contains("\ndistance_mean,1000.00,mm\n"), statsCSV)
         XCTAssertFalse(try loadGrid().heightMode)
+    }
+
+    // MARK: - Observed extent, coverage and origins (B-4)
+
+    func testGapFreeScanHasFullCoverageAndNoEmptyMargin() throws {
+        let info = try writeRecording(withBaseline: true, surface: { _, x in x >= 0 ? 5 : 0 })
+        let output = try TopoMapBuilder.build(folder: folder, info: info)
+        let s = output.stats
+        // Every cell between the first and last reading has data; the padding around them is not counted.
+        XCTAssertGreaterThan(s.coveragePercent, 98)
+        XCTAssertLessThanOrEqual(s.coveragePercent, 100)
+        let grid = try loadGrid()
+        XCTAssertTrue(rowHasData(grid, row: 0))
+        XCTAssertTrue(rowHasData(grid, row: grid.rows - 1))
+        XCTAssertTrue(columnHasData(grid, column: 0))
+        XCTAssertTrue(columnHasData(grid, column: grid.columns - 1))
+        // The map is exactly the observed extent: 60 depth columns of 10 mm across the material.
+        XCTAssertEqual(s.widthMM, 600, accuracy: 10.5)
+        XCTAssertEqual(s.lengthMM, 79 * 7.3 + 430, accuracy: 20)
+    }
+
+    func testHolesInTheDataLowerTheCoverageButPaddingDoesNot() throws {
+        // Depth columns 10…19 never return data: 10 of the 60 map rows are empty inside the observed extent.
+        let info = try writeRecording(mask: { u, _ in u < 10 || u >= 20 })
+        let s = try TopoMapBuilder.build(folder: folder, info: info).stats
+        XCTAssertEqual(s.rows, 60)
+        XCTAssertEqual(s.coveragePercent, 100 * 50.0 / 60.0, accuracy: 1.5)
+        XCTAssertEqual(s.coveragePercent, 100 * Double(s.cellsWithData) / Double(s.columns * s.rows), accuracy: 1e-9)
+    }
+
+    func testProfilesStartAtTheObservedEdgesOfTheMaterial() throws {
+        let info = try writeRecording()
+        let output = try TopoMapBuilder.build(folder: folder, info: info)
+        let cell = output.stats.cellSize
+        // Along the travel: the first column of the map is the start of the material.
+        let along = try XCTUnwrap(output.profiles.along.first)
+        XCTAssertEqual(along.position, cell / 2, accuracy: 1e-9)
+        let lastAlong = try XCTUnwrap(output.profiles.along.last)
+        XCTAssertEqual(lastAlong.position, output.stats.lengthMM - cell / 2, accuracy: 1e-6)
+        // Across the material: from the first to the last depth column seen (−300 … 290 mm).
+        let first = try XCTUnwrap(output.profiles.across.first)
+        let last = try XCTUnwrap(output.profiles.across.last)
+        XCTAssertEqual(first.position, -300, accuracy: 6)
+        XCTAssertEqual(last.position, 290, accuracy: 6)
+    }
+
+    private func assertGridOriginsFollowTheObservedExtent(direction: TravelDirection) throws {
+        let info = try writeRecording(direction: direction)
+        let output = try TopoMapBuilder.build(folder: folder, info: info)
+        let grid = try loadGrid()
+        XCTAssertEqual(grid.columns, output.stats.columns)
+        XCTAssertEqual(grid.rows, output.stats.rows)
+        // The first sample is at q = −210 mm (right → left) or −576.7 − 210 mm (left → right); the grid starts
+        // at the left edge of the cell holding it, which is less than one cell before it.
+        let firstSampleQ = direction == .rightToLeft ? -210.0 : -(79 * 7.3) - 210
+        XCTAssertLessThanOrEqual(grid.qMin, firstSampleQ + 1e-6)
+        XCTAssertGreaterThan(grid.qMin, firstSampleQ - grid.cell - 1e-6)
+        XCTAssertLessThanOrEqual(grid.xMin, -300 + 1e-6)
+        XCTAssertGreaterThan(grid.xMin, -300 - grid.cell - 1e-6)
+    }
+
+    func testGridOriginsFollowTheObservedExtentRightToLeft() throws {
+        try assertGridOriginsFollowTheObservedExtent(direction: .rightToLeft)
+    }
+
+    func testGridOriginsFollowTheObservedExtentLeftToRight() throws {
+        try assertGridOriginsFollowTheObservedExtent(direction: .leftToRight)
+    }
+
+    // MARK: - Image size (B-16)
+
+    func testLongMapIsDownsampledWithPartialBlocksRoundedUp() throws {
+        // 1.6 m between frames: a map of about 12,700 columns, more than the 12,000 one image holds, so every
+        // pixel of the picture covers 2 × 2 cells. Depth column 61 returns nothing, leaving an odd 59 rows.
+        let info = try writeRecording(travelStep: 1600, mask: { u, _ in u != 61 })
+        let output = try TopoMapBuilder.build(folder: folder, info: info)
+        let s = output.stats
+        XCTAssertGreaterThan(s.columns, 12_000)
+        XCTAssertEqual(s.rows, 59)
+        XCTAssertEqual(output.mapImage.width, (s.columns + 1) / 2)
+        XCTAssertEqual(output.mapImage.height, 30)      // 59 rows → 29 full blocks and one partial block
+    }
+
+    // MARK: - Optional CV (B-7)
+
+    func testCVIsBlankInTheCSVAndOmittedFromTheJSONInHeightMode() throws {
+        let info = try writeRecording(withBaseline: true, surface: { _, x in x >= 0 ? 5 : 0 })
+        _ = try TopoMapBuilder.build(folder: folder, info: info)
+        let csv = try String(contentsOf: folder.appendingPathComponent("TopoStats.csv"), encoding: .utf8)
+        XCTAssertTrue(csv.contains("\nheight_cv,,%\n"), csv)
+        let data = try Data(contentsOf: folder.appendingPathComponent("TopoStats.json"))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertNil(object["cvPercent"])
+        XCTAssertEqual(object["heightMode"] as? Bool, true)
+        XCTAssertNotNil(object["stdDev"])
+        XCTAssertNil(try JSONDecoder().decode(TopoStats.self, from: data).cvPercent)
+    }
+
+    func testCVIsWrittenInDistanceMode() throws {
+        let info = try writeRecording(surface: { _, x in x >= 0 ? 10 : 0 })
+        let output = try TopoMapBuilder.build(folder: folder, info: info)
+        let csv = try String(contentsOf: folder.appendingPathComponent("TopoStats.csv"), encoding: .utf8)
+        XCTAssertTrue(csv.contains("\ndistance_cv,0."), csv)
+        let data = try Data(contentsOf: folder.appendingPathComponent("TopoStats.json"))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let cv = try XCTUnwrap(object["cvPercent"] as? Double)
+        XCTAssertEqual(cv, try XCTUnwrap(output.stats.cvPercent), accuracy: 1e-9)
+        XCTAssertGreaterThan(cv, 0)
+    }
+
+    func testOlderStatsFilesWithAZeroCVStillDecode() throws {
+        let info = try writeRecording(withBaseline: true)
+        _ = try TopoMapBuilder.build(folder: folder, info: info)
+        let data = try Data(contentsOf: folder.appendingPathComponent("TopoStats.json"))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object["cvPercent"] = 0
+        let older = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertEqual(try JSONDecoder().decode(TopoStats.self, from: older).cvPercent, 0)
+    }
+
+    // MARK: - Damaged baseline
+
+    func testNonFiniteBaselinePixelsAreSkippedSoNoNaNReachesTheOutputs() throws {
+        let info = try writeRecording(withBaseline: true)
+        // Overwrite Baseline.bin with a baseline that has NaN at depth columns 10 and 11 and infinity at column 20.
+        var values = [Float](repeating: Float(referenceDistance), count: 64 * 48)
+        for v in 0..<48 {
+            values[v * 64 + 10] = .nan
+            values[v * 64 + 11] = .nan
+            values[v * 64 + 20] = .infinity
+        }
+        let baselineInfo = BaselineInfo(width: 64, height: 48, created: Date(), frames: 90,
+                                        meanDistance: referenceDistance, rawStdDev: 0, rawRange: 0,
+                                        correctedStdDev: 0, coveragePercent: 100, tiltX: nil, tiltY: nil,
+                                        filteredDepth: true)
+        try Baseline(info: baselineInfo, values: values).save(to: folder)
+
+        let output = try TopoMapBuilder.build(folder: folder, info: info)
+        let s = output.stats
+        XCTAssertEqual(s.heightMode, true)
+        XCTAssertTrue(s.mean.isFinite && s.stdDev.isFinite && s.minimum.isFinite && s.maximum.isFinite)
+        XCTAssertEqual(s.mean, 0, accuracy: 1e-3)
+        // Three of the 60 map rows have no readings.
+        XCTAssertEqual(s.coveragePercent, 100 * 57.0 / 60.0, accuracy: 1.5)
+        let csv = try String(contentsOf: folder.appendingPathComponent("TopoMap.csv"), encoding: .utf8).lowercased()
+        XCTAssertFalse(csv.contains("nan"))
+        XCTAssertFalse(csv.contains("inf"))
+        XCTAssertFalse(try loadGrid().values.contains { $0.isInfinite })
+    }
+
+    // MARK: - Output files are replaced as a set (B-17)
+
+    func testBuildLeavesNoTemporaryFilesBehind() throws {
+        let info = try writeRecording(withBaseline: true)
+        _ = try TopoMapBuilder.build(folder: folder, info: info)
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)      // includes hidden files
+        XCTAssertTrue(names.filter { $0.hasSuffix(".partial") }.isEmpty, "\(names)")
+        XCTAssertTrue(names.contains("TopoStats.json"))
+    }
+
+    func testRebuildReplacesTheExistingOutputs() throws {
+        let info = try writeRecording(withBaseline: true, surface: { _, x in x >= 0 ? 5 : 0 })
+        let first = try TopoMapBuilder.build(folder: folder, info: info)
+        let statsURL = folder.appendingPathComponent("TopoStats.json")
+        let csvURL = folder.appendingPathComponent("TopoMap.csv")
+        try Data("old".utf8).write(to: statsURL)
+        try Data("old".utf8).write(to: csvURL)
+        let second = try TopoMapBuilder.build(folder: folder, info: info)
+        XCTAssertEqual(second.stats.mean, first.stats.mean, accuracy: 1e-9)
+        let stats = try JSONDecoder().decode(TopoStats.self, from: Data(contentsOf: statsURL))
+        XCTAssertEqual(stats.mean, first.stats.mean, accuracy: 1e-9)
+        XCTAssertGreaterThan(try Data(contentsOf: csvURL).count, 1000)
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        XCTAssertTrue(names.filter { $0.hasSuffix(".partial") }.isEmpty, "\(names)")
+    }
+
+    func testFailedBuildKeepsThePreviousOutputs() throws {
+        let info = try writeRecording(withBaseline: true)
+        _ = try TopoMapBuilder.build(folder: folder, info: info)
+        let statsURL = folder.appendingPathComponent("TopoStats.json")
+        let before = try Data(contentsOf: statsURL)
+        var tooShort = info
+        tooShort.frames = Array(info.frames.prefix(1))
+        XCTAssertThrowsError(try TopoMapBuilder.build(folder: folder, info: tooShort))
+        XCTAssertEqual(try Data(contentsOf: statsURL), before)
+        XCTAssertNotNil(TopoGridFile.load(from: folder))
     }
 
     // MARK: - Empty and unusable input
@@ -487,7 +686,7 @@ final class TopoMapBuilderTests: XCTestCase {
         XCTAssertTrue(heightLines.contains("height_mean,2.50,mm"))
         XCTAssertTrue(heightLines.contains("height_variance,6.250,mm^2"))
         XCTAssertTrue(heightLines.contains("height_std_dev,2.500,mm"))
-        XCTAssertTrue(heightLines.contains("height_cv,0.250,%"))
+        XCTAssertTrue(heightLines.contains("height_cv,,%"))      // no CV for heights above a baseline (B-7)
         XCTAssertTrue(heightLines.contains("speed_mean,219.0,mm/s"))
         XCTAssertTrue(heightLines.contains("speed_tracked,100.0,%"))
         XCTAssertTrue(heightLines.contains("colour_dark_red,5.0,mm"))
@@ -497,6 +696,7 @@ final class TopoMapBuilderTests: XCTestCase {
         let distanceLines = distance.split(separator: "\n").map(String.init)
         XCTAssertEqual(distanceLines[1], "values,distance_from_camera,")
         XCTAssertTrue(distanceLines.contains("distance_mean,1000.00,mm"))
+        XCTAssertTrue(distanceLines.contains("distance_cv,0.250,%"))
         XCTAssertTrue(distanceLines.contains("speed_mean,,mm/s"))      // missing speeds stay blank
         XCTAssertTrue(distanceLines.contains("speed_min,,mm/s"))
         XCTAssertTrue(distanceLines.contains("speed_tracked,0.0,%"))
