@@ -26,6 +26,11 @@ enum Units {
     static func formatArea(squareMeters: Double) -> String {
         String(format: "%.2f m²  (%.1f ft²)", squareMeters, squareMeters * 10.7639)
     }
+
+    /// "12.4 MB"
+    static func bytes(_ count: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
+    }
 }
 
 enum CSV {

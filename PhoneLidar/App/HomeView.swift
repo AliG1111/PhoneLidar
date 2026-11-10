@@ -5,8 +5,31 @@ import RealityKit
 
 struct HomeView: View {
     @Environment(ScanStore.self) private var store
-    @State private var path: [UUID] = []
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var path = NavigationPath()
     @State private var activeScan: ScanKind?
+    @State private var pendingDelete: PendingDelete?
+    @State private var deleteFailed = false
+
+    /// What the delete confirmation is asking about. One dialog serves both lists.
+    private enum PendingDelete {
+        case scan(ScanRecord)
+        case incomplete(IncompleteScan)
+
+        var title: String {
+            switch self {
+            case .scan: return "Delete this scan and all of its files?"
+            case .incomplete: return "Delete these files?"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .scan(let record): return record.name
+            case .incomplete(let item): return "\(item.folderName) (\(Units.bytes(item.bytes)))"
+            }
+        }
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -39,16 +62,49 @@ struct HomeView: View {
                         NavigationLink(value: scan.id) {
                             ScanRow(scan: scan)
                         }
+                        // No full-swipe delete: it would remove the scan without asking.
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button("Delete", role: .destructive) {
+                                pendingDelete = .scan(scan)
+                            }
+                        }
                     }
-                    .onDelete { offsets in
-                        let doomed = offsets.map { store.scans[$0] }
-                        doomed.forEach { store.delete($0) }
+                }
+
+                if !store.incomplete.isEmpty {
+                    Section {
+                        ForEach(store.incomplete) { item in
+                            NavigationLink(value: IncompleteRoute(folderName: item.folderName)) {
+                                IncompleteRow(item: item)
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button("Delete", role: .destructive) {
+                                    pendingDelete = .incomplete(item)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Incomplete scans")
+                    } footer: {
+                        Text("These scans stopped before they finished (app closed, crash or full storage). Share their files or delete them.")
                     }
                 }
             }
             .navigationTitle("Phone LiDAR")
             .navigationDestination(for: UUID.self) { id in
                 ScanDetailView(scanID: id)
+            }
+            .navigationDestination(for: IncompleteRoute.self) { route in
+                IncompleteScanView(folderName: route.folderName)
+            }
+            .confirmationDialog(pendingDelete?.title ?? "Delete?",
+                                isPresented: Binding(get: { pendingDelete != nil },
+                                                     set: { if !$0 { pendingDelete = nil } }),
+                                titleVisibility: .visible,
+                                presenting: pendingDelete) { item in
+                Button("Delete", role: .destructive) { confirmDelete(item) }
+            } message: { item in
+                Text(item.detail)
             }
             .fullScreenCover(item: $activeScan) { kind in
                 Group {
@@ -61,9 +117,24 @@ struct HomeView: View {
                         ObjectScanView(onFinish: finished)
                     case .line:
                         LineScanView(onFinish: finished)
+                    case .unknown:
+                        EmptyView()
                     }
                 }
                 .environment(store)
+            }
+            .alert("Could not delete", isPresented: $deleteFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Try again. If it keeps failing, delete the folder in the Files app.")
+            }
+            .onChange(of: activeScan) { _, newValue in
+                // A scan screen just closed: pick up new, discarded and incomplete folders.
+                if newValue == nil { store.reload() }
+            }
+            .onChange(of: scenePhase) { _, newValue in
+                // Folders may have been changed in the Files app.
+                if newValue == .active && activeScan == nil { store.reload() }
             }
         }
     }
@@ -89,6 +160,15 @@ struct HomeView: View {
         .disabled(!supported)
     }
 
+    private func confirmDelete(_ item: PendingDelete) {
+        switch item {
+        case .scan(let record):
+            if !store.delete(record) { deleteFailed = true }
+        case .incomplete(let incomplete):
+            if !store.deleteIncomplete(folderName: incomplete.folderName) { deleteFailed = true }
+        }
+    }
+
     private func finished(_ id: UUID?) {
         activeScan = nil
         guard let id else { return }
@@ -111,6 +191,26 @@ struct ScanRow: View {
                 Text(scan.name)
                     .font(.headline)
                 Text(scan.created.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+struct IncompleteRow: View {
+    let item: IncompleteScan
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.title3)
+                .foregroundStyle(.orange)
+                .frame(width: 36)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.folderName)
+                    .font(.headline)
+                Text("\(Units.bytes(item.bytes)) · \(item.date.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
