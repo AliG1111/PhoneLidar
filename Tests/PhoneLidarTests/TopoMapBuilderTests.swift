@@ -220,12 +220,14 @@ final class TopoMapBuilderTests: XCTestCase {
     }
 
     func testWithoutSpeedsTheSummarySaysWhereTheTravelCameFrom() throws {
-        // Z-1: a recording made before the fix could integrate a speed held from before Record.
+        // Y-1: at Record a held speed at most 2.0 s old is kept, so a recording can integrate it without any lock of
+        // its own; builds before Z-1 kept any held speed, however old.
         let held = try writeRecording(frameCount: 40, travelStep: 7.3, speed: { _ in nil })
         let heldLines = try TopoMapBuilder.build(folder: folder, info: held).summary
         XCTAssertTrue(heldLines.contains("Speed: no texture lock; map travel 285 mm comes from the speed held from "
                                          + "before Record"), heldLines.joined(separator: "\n"))
-        // Since Z-1 a recording without texture lock has zero travel.
+        // A held speed older than 2.0 s at Record is cleared (Z-1, Y-1): a recording whose held speed was stale has
+        // zero travel without texture lock.
         let still = try writeRecording(frameCount: 40, travelStep: 0, speed: { _ in nil })
         let stillLines = try TopoMapBuilder.build(folder: folder, info: still).summary
         XCTAssertTrue(stillLines.contains("Speed: no texture lock (map uses zero travel)"))
