@@ -494,7 +494,7 @@ final class LineScanModel {
         switch pressure {
         case .normal: return nil
         case .serious: return "Phone is hot: live overlay slowed to reduce load. Shade the phone or improve airflow."
-        case .critical: return "Phone too hot: recording is stopped. Let the phone cool down before recording again."
+        case .critical: return "Phone too hot: recording is stopped and cannot start until the phone cools down."
         }
     }
 
@@ -646,7 +646,7 @@ final class LineScanModel {
         case .cameraResumed:
             cameraBanner = nil
         case .cameraError(let text):
-            cameraBanner = "Camera error: \(text). Restarting the camera…"
+            cameraBanner = "Camera error: \(text). Restarting the camera; if the picture stays frozen, close and reopen Line scan."
         case .pressure(let level):
             pressure = level
         }
@@ -788,6 +788,10 @@ final class LineScanModel {
     private func startRecording() {
         guard let store, !calibrating else { return }
         notice = nil
+        guard pressure != .critical else {
+            notice = "Recording not started: the phone is too hot. Let it cool down (shade, airflow) and try again."
+            return
+        }
         if let free = LineStorage.freeBytes(at: store.root), free < LineStorage.minimumToStart {
             notice = "Not enough free storage to record: \(LineStorage.text(free)) free, at least "
                 + "\(LineStorage.text(LineStorage.minimumToStart)) needed. Delete old scans or free up space on the iPhone."
