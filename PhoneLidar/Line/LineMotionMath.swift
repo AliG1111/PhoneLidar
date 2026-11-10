@@ -219,44 +219,66 @@ enum LineMotionMath {
 
 /// Main speed state of the capture: travel integration with the held speed, and the half-second rolling average
 /// shown on screen. Owned by the capture data queue (a value type, no sharing).
+///
+/// Time: the tracker keeps its own clock (s), the sum of the positive frame intervals `dt` it is given, i.e. the
+/// frame timestamps the capture computes `dt` from (gaps of a second or more count too). Readings are stamped with it
+/// so `beginRecording` can tell how old they are.
 struct LineSpeedTracker {
     /// Rolling-average window, frames (~0.5 s at 30 fps).
     static let windowFrames = 15
     /// Valid readings in the window needed for an average; below this the raw reading is shown.
     static let minimumReadings = 3
+    /// Oldest reading (s, by the tracker clock) that a recording may start with: the held speed and window readings
+    /// at most this old at Record are kept, older ones are cleared (Y-1).
+    static let recordingCarryOverAge = 2.0
 
     /// Material travel since the capture started, mm (+ = travel direction).
     private(set) var travel: Double = 0
     /// Last valid speed reading (mm/s): travel keeps integrating it through frames without texture lock.
     private(set) var lastValidSpeed: Double?
-    /// The last `windowFrames` readings, NaN = no reading (missing readings age out of the window).
-    private var recent: [Double] = []
+    /// Tracker clock (s) of `lastValidSpeed`'s frame.
+    private var lastValidTime: Double?
+    /// Tracker clock (s): sum of the positive, finite frame intervals added so far.
+    private var clock: Double = 0
+    /// The last `windowFrames` readings with their tracker clock (s); speed NaN = no reading (missing readings age
+    /// out of the window).
+    private var recent: [(speed: Double, time: Double)] = []
 
     /// Adds one frame's reading (nil = no texture lock) over the interval `dt` (s) since the previous frame and
     /// returns the smoothed speed: the mean of the window's valid readings when there are at least
     /// `minimumReadings`, else `rawSpeed`. Travel grows by (rawSpeed, else the held speed, else 0) × dt for
     /// intervals accepted by `LineMotionMath.isTravelInterval`.
     mutating func add(rawSpeed: Double?, dt: Double) -> Double? {
-        if let v = rawSpeed { lastValidSpeed = v }
+        if dt.isFinite && dt > 0 { clock += dt }
+        if let v = rawSpeed {
+            lastValidSpeed = v
+            lastValidTime = clock
+        }
         if LineMotionMath.isTravelInterval(dt) { travel += (rawSpeed ?? lastValidSpeed ?? 0) * dt }
-        recent.append(rawSpeed ?? .nan)
+        recent.append((rawSpeed ?? .nan, clock))
         if recent.count > Self.windowFrames { recent.removeFirst(recent.count - Self.windowFrames) }
-        let valid = recent.filter { !$0.isNaN }
+        let valid = recent.map(\.speed).filter { !$0.isNaN }
         return valid.count >= Self.minimumReadings ? valid.reduce(0, +) / Double(valid.count) : rawSpeed
     }
 
     /// Forgets the held speed and the rolling window (travel is kept): readings from before must not carry over.
     mutating func clearHeldSpeed() {
         lastValidSpeed = nil
+        lastValidTime = nil
         recent.removeAll()
     }
 
-    /// A recording starts with the frame whose reading is `currentReading` (nil = no lock), already added with
-    /// `add`: only that reading is kept as the held speed and in the window, so a recording without texture lock
-    /// records zero travel instead of integrating a speed measured before Record (Z-1).
-    mutating func beginRecording(currentReading: Double?) {
-        lastValidSpeed = currentReading
-        recent = [currentReading ?? .nan]
+    /// A recording starts with the frame just passed to `add` (travel is unchanged, so the recording's travel
+    /// starts at 0 there). Y-1: the held speed is kept when its reading is at most `recordingCarryOverAge` old
+    /// by the tracker clock, so frames without lock right after Record still advance; an older one is cleared
+    /// (Z-1), and so are window entries older than that limit. Mid-recording behaviour is unchanged.
+    mutating func beginRecording() {
+        let oldest = clock - Self.recordingCarryOverAge
+        if let t = lastValidTime, t < oldest {
+            lastValidSpeed = nil
+            lastValidTime = nil
+        }
+        recent.removeAll { $0.time < oldest }
     }
 }
 

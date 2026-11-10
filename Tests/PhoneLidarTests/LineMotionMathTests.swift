@@ -212,26 +212,85 @@ final class LineMotionMathTests: XCTestCase {
         XCTAssertEqual(tracker.travel, 10, accuracy: 1e-12)
     }
 
-    func testARecordingDoesNotInheritTheSpeedHeldFromBeforeRecord() {
-        // Z-1: lock is lost before Record and never regained: the recording's travel stays put.
+    func testARecordingKeepsAFreshHeldSpeed() throws {
+        // Y-1: lock on the material, lost 0.5 s before Record: the held speed and the recent average carry over.
         var tracker = LineSpeedTracker()
         for _ in 0..<5 { _ = tracker.add(rawSpeed: 300, dt: 0.1) }
-        _ = tracker.add(rawSpeed: nil, dt: 0.1)
-        tracker.beginRecording(currentReading: nil)      // first recorded frame, no lock
+        for _ in 0..<4 { _ = tracker.add(rawSpeed: nil, dt: 0.125) }      // the last one is the first recorded frame
+        let start = tracker.travel
+        tracker.beginRecording()
+        XCTAssertEqual(tracker.travel, start)                             // recorded travel starts at 0 here
+        XCTAssertEqual(tracker.lastValidSpeed, 300)
+        XCTAssertEqual(try XCTUnwrap(tracker.add(rawSpeed: nil, dt: 0.125)), 300, accuracy: 1e-12)   // window kept
+        XCTAssertEqual(tracker.travel - start, 37.5, accuracy: 1e-12)     // held 300 mm/s × 0.125 s
+    }
+
+    func testARecordingClearsAStaleHeldSpeed() throws {
+        // Y-1 (Z-1 kept for old readings): lock lost 3 s before Record and never regained: travel stays put.
+        var tracker = LineSpeedTracker()
+        for _ in 0..<5 { _ = tracker.add(rawSpeed: 300, dt: 0.25) }       // last reading at 1.25 s
+        var shown: Double?
+        for _ in 0..<12 { shown = tracker.add(rawSpeed: nil, dt: 0.25) }  // Record at 4.25 s
+        XCTAssertEqual(try XCTUnwrap(shown), 300, accuracy: 1e-12)        // three old readings still in the window
+        tracker.beginRecording()
+        XCTAssertNil(tracker.lastValidSpeed)
         let start = tracker.travel
         for _ in 0..<30 { XCTAssertNil(tracker.add(rawSpeed: nil, dt: 0.1)) }      // the old average is gone too
         XCTAssertEqual(tracker.travel, start)
-        XCTAssertNil(tracker.lastValidSpeed)
     }
 
-    func testARecordingKeepsTheReadingOfItsFirstFrame() {
+    func testARecordingKeepsReadingsExactlyTwoSecondsOld() throws {
+        // Y-1 boundary: the reading at 0.25 s is exactly 2.0 s old at 2.25 s (binary-exact intervals).
+        var tracker = LineSpeedTracker()
+        _ = tracker.add(rawSpeed: 300, dt: 0.25)
+        for _ in 0..<4 { _ = tracker.add(rawSpeed: nil, dt: 0.5) }
+        XCTAssertEqual(LineSpeedTracker.recordingCarryOverAge, 2.0)
+
+        var atLimit = tracker
+        atLimit.beginRecording()
+        XCTAssertEqual(atLimit.lastValidSpeed, 300)
+        let start = atLimit.travel
+        _ = atLimit.add(rawSpeed: nil, dt: 0.5)
+        XCTAssertEqual(atLimit.travel - start, 150, accuracy: 1e-12)      // held 300 mm/s × 0.5 s
+        // The 300 reading is still in the window: with two new readings the average needs three.
+        XCTAssertEqual(atLimit.add(rawSpeed: 600, dt: 0.0625), 600)
+        XCTAssertEqual(try XCTUnwrap(atLimit.add(rawSpeed: 600, dt: 0.0625)), 500, accuracy: 1e-12)
+
+        var pastLimit = tracker
+        _ = pastLimit.add(rawSpeed: nil, dt: 0.0625)                     // now 2.0625 s old
+        pastLimit.beginRecording()
+        XCTAssertNil(pastLimit.lastValidSpeed)
+        let pastStart = pastLimit.travel
+        _ = pastLimit.add(rawSpeed: nil, dt: 0.5)
+        XCTAssertEqual(pastLimit.travel, pastStart)
+        XCTAssertEqual(pastLimit.add(rawSpeed: 600, dt: 0.0625), 600)
+        XCTAssertEqual(pastLimit.add(rawSpeed: 600, dt: 0.0625), 600)      // two readings only: raw shown
+    }
+
+    func testARecordingThatStartsWithLockIsUnchanged() {
+        // Y-1: with lock throughout, Record changes neither the travel nor the shown average.
+        let readings: [Double?] = [100, 120, nil, 140, 160, 150, nil, nil, 170, 180, 190, nil, 200]
+        var plain = LineSpeedTracker()
+        var recorded = LineSpeedTracker()
+        for (n, v) in readings.enumerated() {
+            let a = plain.add(rawSpeed: v, dt: 1.0 / 30)
+            let b = recorded.add(rawSpeed: v, dt: 1.0 / 30)
+            if n == 4 { recorded.beginRecording() }
+            XCTAssertEqual(a, b, "frame \(n)")
+            XCTAssertEqual(plain.travel, recorded.travel, "frame \(n)")
+            XCTAssertEqual(plain.lastValidSpeed, recorded.lastValidSpeed, "frame \(n)")
+        }
+    }
+
+    func testARecordingStartingWithLockAfterAStalePeriodHoldsTheNewReading() {
         var tracker = LineSpeedTracker()
         _ = tracker.add(rawSpeed: 300, dt: 0.1)
-        _ = tracker.add(rawSpeed: 50, dt: 0.1)
-        tracker.beginRecording(currentReading: 50)       // the first recorded frame measured 50 mm/s
+        for _ in 0..<30 { _ = tracker.add(rawSpeed: nil, dt: 0.1) }       // 3 s without lock
+        _ = tracker.add(rawSpeed: 50, dt: 0.1)                           // the first recorded frame measured 50 mm/s
+        tracker.beginRecording()
         let start = tracker.travel
-        XCTAssertEqual(tracker.add(rawSpeed: nil, dt: 0.1), nil)       // one reading in the window: no average yet
-        XCTAssertEqual(tracker.travel - start, 5, accuracy: 1e-12)     // held 50 mm/s × 0.1 s
+        XCTAssertNil(tracker.add(rawSpeed: nil, dt: 0.1))                 // one reading in the window: no average yet
+        XCTAssertEqual(tracker.travel - start, 5, accuracy: 1e-12)        // held 50 mm/s × 0.1 s
         XCTAssertEqual(tracker.lastValidSpeed, 50)
     }
 
