@@ -45,6 +45,25 @@ enum CSV {
         rows.map { $0.map(escape).joined(separator: ",") }.joined(separator: "\n") + "\n"
     }
 
+    /// The totals block of RoomReport.csv (E-4): an empty line, its own header (`summary_item,value,unit`), then one
+    /// row per value and unit, so no total sits in an element column such as `width_m`. Appended after the
+    /// element rows, which keep their own header and columns. The wall-height rows are left out when there are
+    /// no walls (`wallHeightM` 0).
+    static func roomSummary(wallCount: Int, wallLengthM: Double, wallHeightM: Double,
+                            floorAreaM2: Double) -> [[String]] {
+        var rows: [[String]] = [[""], ["summary_item", "value", "unit"]]
+        rows.append(["wall_count", "\(wallCount)", "count"])
+        rows.append(["total_wall_length", String(format: "%.4f", wallLengthM), "m"])
+        rows.append(["total_wall_length", Units.feetInches(wallLengthM), "ft_in"])
+        if wallHeightM > 0 {
+            rows.append(["wall_height_max", String(format: "%.4f", wallHeightM), "m"])
+            rows.append(["wall_height_max", Units.feetInches(wallHeightM), "ft_in"])
+        }
+        rows.append(["floor_area", String(format: "%.3f", floorAreaM2), "m2"])
+        rows.append(["floor_area", String(format: "%.2f", floorAreaM2 * 10.7639), "ft2"])
+        return rows
+    }
+
     static func measurements(_ items: [PointMeasurement]) -> String {
         var rows: [[String]] = [["label", "distance_m", "distance_ft_in",
                                  "start_x_m", "start_y_m", "start_z_m",

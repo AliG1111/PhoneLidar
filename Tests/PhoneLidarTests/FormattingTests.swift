@@ -112,4 +112,38 @@ final class CSVTests: XCTestCase {
         XCTAssertEqual(csv.split(separator: "\n").count, 1)
         XCTAssertTrue(csv.hasPrefix("label,distance_m"))
     }
+
+    func testRoomSummaryIsASeparateBlockWithItsOwnHeader() {
+        let rows = CSV.roomSummary(wallCount: 4, wallLengthM: 14.0, wallHeightM: 2.4384, floorAreaM2: 12.5)
+        XCTAssertEqual(rows[0], [""])      // empty line before the block
+        XCTAssertEqual(rows[1], ["summary_item", "value", "unit"])
+        XCTAssertEqual(Array(rows.dropFirst(2)), [
+            ["wall_count", "4", "count"],
+            ["total_wall_length", "14.0000", "m"],
+            ["total_wall_length", Units.feetInches(14.0), "ft_in"],
+            ["wall_height_max", "2.4384", "m"],
+            ["wall_height_max", "8' 0.0\"", "ft_in"],
+            ["floor_area", "12.500", "m2"],
+            ["floor_area", "134.55", "ft2"]
+        ])
+    }
+
+    func testRoomSummaryOmitsWallHeightWhenThereAreNoWalls() {
+        let rows = CSV.roomSummary(wallCount: 0, wallLengthM: 0, wallHeightM: 0, floorAreaM2: 0)
+        XCTAssertFalse(rows.contains { $0.first == "wall_height_max" })
+        XCTAssertEqual(rows.last, ["floor_area", "0.00", "ft2"])
+    }
+
+    func testRoomSummaryBlockFollowsTheElementRowsAndEscapesFeetInches() {
+        let text = CSV.make([["type", "width_m"], ["wall", "3.0000"]]
+            + CSV.roomSummary(wallCount: 1, wallLengthM: 3.0, wallHeightM: 2.4384, floorAreaM2: 9))
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        XCTAssertEqual(lines[0], "type,width_m")
+        XCTAssertEqual(lines[1], "wall,3.0000")
+        XCTAssertEqual(lines[2], "")
+        XCTAssertEqual(lines[3], "summary_item,value,unit")
+        // The feet-and-inches text has a quote, so it is quoted with the quote doubled.
+        XCTAssertTrue(lines.contains("wall_height_max,\"8' 0.0\"\"\",ft_in"), text)
+        XCTAssertTrue(text.hasSuffix("\n"))
+    }
 }
