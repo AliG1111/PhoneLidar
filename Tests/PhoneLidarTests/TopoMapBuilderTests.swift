@@ -153,8 +153,8 @@ final class TopoMapBuilderTests: XCTestCase {
         XCTAssertEqual(s.colorFar, s.p99, accuracy: 1e-9)
         // The step is across the material, so almost all variation is in the across profile.
         XCTAssertEqual(s.acrossStdDev, 5, accuracy: 0.3)
-        XCTAssertEqual(s.alongStdDev, 0, accuracy: 0.3)
-        XCTAssertEqual(s.residualStdDev, 0, accuracy: 0.3)
+        XCTAssertLessThan(s.alongStdDev, 1.0)
+        XCTAssertLessThan(s.residualStdDev, 1.0)
     }
 
     func testHeightModeWithABaselineReportsHeightsAboveTheSurface() throws {

@@ -6,13 +6,17 @@ final class SpeedEstimatorTests: XCTestCase {
     private let height = 720
 
     /// Smooth, non-repeating synthetic texture (sum of incommensurate sinusoids), 0…255.
-    private func texture(_ x: Double, _ y: Double) -> UInt8 {
-        let wavelengths: [Double] = [310, 190, 130, 97, 71, 53, 43, 37]
-        var sum = 0.0
-        for (k, wavelength) in wavelengths.enumerated() {
+    private static let waves: [(kx: Double, ky: Double, phase: Double)] =
+        [310.0, 190, 130, 97, 71, 53, 43, 37].enumerated().map { k, wavelength in
             let angle = Double(k) * 0.7 + 0.3
-            let phase = Double(k) * 1.3
-            sum += sin(2 * Double.pi * (x * cos(angle) + y * sin(angle)) / wavelength + phase) / 8
+            let f = 2 * Double.pi / wavelength
+            return (f * cos(angle), f * sin(angle), Double(k) * 1.3)
+        }
+
+    private func texture(_ x: Double, _ y: Double) -> UInt8 {
+        var sum = 0.0
+        for wave in Self.waves {
+            sum += sin(x * wave.kx + y * wave.ky + wave.phase) / 8
         }
         return UInt8(max(0, min(255, 128 + 220 * sum)))
     }

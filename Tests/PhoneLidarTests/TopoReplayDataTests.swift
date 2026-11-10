@@ -335,7 +335,7 @@ final class TopoDisplayGridTests: XCTestCase {
         let display = TopoDisplayGrid.make(source: source, factor: 2)
         // Block column 0 holds 5.5 (top) and 25.5 (bottom).
         XCTAssertEqual(display.columnMean[0], 15.5)
-        XCTAssertEqual(display.columnMean[3], 21.5 + 10)      // (11.5 + 31.5) / 2
+        XCTAssertEqual(display.columnMean[3], 21.5)      // (11.5 + 31.5) / 2
     }
 
     func testSmoothedGridAveragesTheThreeByThreeNeighbourhood() throws {
@@ -404,7 +404,7 @@ final class ReplayNumbersTests: XCTestCase {
     func testNiceRoundsToOneTwoTwoPointFiveFiveOrTen() {
         let cases: [(Double, Double)] = [
             (1, 1), (1.4, 1), (1.5, 2), (2.2, 2), (2.25, 2.5), (3.4, 2.5), (3.5, 5), (7.4, 5), (7.5, 10),
-            (14, 10), (23, 20), (1234, 1000), (0.7, 0.5), (0.012, 0.01), (950, 1000)
+            (14, 10), (23, 25), (19, 20), (1234, 1000), (0.7, 0.5), (0.012, 0.01), (950, 1000)
         ]
         for (input, expected) in cases {
             XCTAssertEqual(ReplayNumbers.nice(input), expected, accuracy: expected * 1e-9, "nice(\(input))")
