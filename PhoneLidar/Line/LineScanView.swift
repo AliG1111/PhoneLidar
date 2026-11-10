@@ -52,8 +52,8 @@ struct LineScanView: View {
                 if let banner = model.bannerText {
                     noticeBadge([banner], color: .orange)
                 }
-                if model.phase == .recording, let warning = model.recordingWarning {
-                    noticeBadge([warning], color: .yellow)
+                if model.phase == .recording, !model.recordingWarnings.isEmpty {
+                    noticeBadge(model.recordingWarnings, color: .yellow)
                 }
                 speedPanel
                 levelPanel
@@ -232,6 +232,10 @@ struct LineScanView: View {
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.yellow)
+                if model.cameraDenied, let settings = URL(string: UIApplication.openSettingsURLString) {
+                    Button("Open Settings") { UIApplication.shared.open(settings) }
+                        .buttonStyle(.borderedProminent)
+                }
             }
             if model.phase == .ready, let notice = model.notice {
                 Text(notice)
@@ -417,6 +421,8 @@ final class LineScanModel {
     var pressure: LinePressure = .normal
     /// Problem with the running recording that does not stop it (e.g. video encoder stopped).
     var recordingWarning: String?
+    /// Camera permission is off: the screen offers a Settings button.
+    var cameraDenied = false
 
     /// Speed of the zone under the selected point, mm/s.
     var speedAtPoint: Double? {
@@ -463,6 +469,24 @@ final class LineScanModel {
     /// Level shown on the bubble: gravity tilt minus the saved zero (if any).
     var levelX: Double? { tiltX.map { $0 - (levelZeroed ? levelZeroX : 0) } }
     var levelY: Double? { tiltY.map { $0 - (levelZeroed ? levelZeroY : 0) } }
+
+    /// Short warnings kept on screen while recording (the full ones are in the settings panel before recording).
+    var recordingWarnings: [String] {
+        var warnings: [String] = []
+        if heightMode, let baseline {
+            if let moved = baselineMovedDegrees, moved > 0.3 {
+                warnings.append(String(format: "Tilt changed %.1f° since baseline — recalibrate after this run", moved))
+            }
+            if baseline.info.filteredDepth != filteredDepth {
+                warnings.append("Baseline was calibrated with \(baseline.info.filteredDepth ? "filtered" : "raw") depth")
+            }
+            if baseline.info.coveragePercent < Baseline.goodCoveragePercent {
+                warnings.append(String(format: "Baseline coverage only %.0f %%", baseline.info.coveragePercent))
+            }
+        }
+        if let recordingWarning { warnings.append(recordingWarning) }
+        return warnings
+    }
 
     /// Camera / heat message for the top of the screen.
     var bannerText: String? {
@@ -517,7 +541,17 @@ final class LineScanModel {
             }
         }
         recoverUnsavedRecordings(store: store)
-        openCamera()
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            openCamera()
+        case .notDetermined:
+            Task { @MainActor in
+                let granted = await AVCaptureDevice.requestAccess(for: .video)
+                if granted { self.openCamera() } else { self.denyCamera() }
+            }
+        default:
+            denyCamera()
+        }
     }
 
     private func openCamera() {
@@ -531,6 +565,11 @@ final class LineScanModel {
         } catch {
             phase = .failed(error.localizedDescription)
         }
+    }
+
+    private func denyCamera() {
+        cameraDenied = true
+        phase = .failed("Camera access is off for Phone LiDAR. Turn it on in Settings › Privacy & Security › Camera, then reopen Line scan.")
     }
 
     /// Adds recordings left unsaved by an earlier run (app closed or killed while recording) to the library.
