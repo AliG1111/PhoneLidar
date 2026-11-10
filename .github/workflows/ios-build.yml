@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths-ignore:
       - "**.md"
+  # Build and test every pull request into main before it can be merged.
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       testflight:
@@ -72,6 +75,22 @@ jobs:
           path: dist/*.ipa
           retention-days: 30
 
+      - name: Report compiler warnings
+        if: always()
+        run: |
+          COUNT=$(grep -c "warning:" logs/xcodebuild.log || true)
+          {
+            echo "## Compiler warnings: ${COUNT}"
+            if [ "${COUNT}" != "0" ]; then
+              echo '```'
+              grep "warning:" logs/xcodebuild.log | sort -u | head -60
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${COUNT}" != "0" ]; then
+            echo "::warning::The app build log has ${COUNT} 'warning:' lines (the project is kept warning-free)."
+          fi
+
       - name: Put compile errors on the summary page
         if: failure()
         run: |
@@ -88,6 +107,111 @@ jobs:
         with:
           name: build-log-${{ github.run_number }}
           path: logs/
+          retention-days: 14
+
+  # Runs the PhoneLidarTests unit tests (pure logic only) on an iOS Simulator. Also runs for pull requests.
+  unit-tests:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Select iOS Simulator
+        run: |
+          set -euo pipefail
+          xcrun simctl list devices available -j > simulators.json
+          python3 -I - <<'PY' >> "$GITHUB_ENV"
+          import json, re, sys
+
+          with open("simulators.json") as f:
+              runtimes = json.load(f)["devices"]
+
+          def runtime_version(key):
+              match = re.search(r"\.iOS-(\d+(?:-\d+)*)$", key)
+              return tuple(int(part) for part in match.group(1).split("-")) if match else None
+
+          best = None
+          for key, devices in runtimes.items():
+              version = runtime_version(key)
+              if version is None:
+                  continue
+              for device in devices:
+                  if not device.get("isAvailable", False) or not device["name"].startswith("iPhone"):
+                      continue
+                  generation = re.search(r"iPhone (\d+)", device["name"])
+                  # Newest iOS runtime, then newest iPhone generation, then the shortest (base) model name.
+                  rank = (version, int(generation.group(1)) if generation else 0, -len(device["name"]))
+                  if best is None or rank > best[0]:
+                      best = (rank, device["udid"], device["name"], key)
+
+          if best is None:
+              sys.stderr.write("::error::No available iPhone simulator was found on this runner.\n")
+              sys.exit(1)
+          sys.stderr.write("Using simulator %s (%s) on %s\n" % (best[2], best[1], best[3]))
+          print("SIM_UDID=" + best[1])
+          print("SIM_NAME=" + best[2])
+          PY
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          xcodebuild test \
+            -project PhoneLidar.xcodeproj \
+            -scheme PhoneLidarTests \
+            -destination "platform=iOS Simulator,id=${SIM_UDID}" \
+            -derivedDataPath build/DerivedData \
+            -resultBundlePath build/PhoneLidarTests.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee logs/unit-tests.log
+
+      - name: Summarize results
+        if: always()
+        run: |
+          LOG=logs/unit-tests.log
+          PASSED=$(grep -c "^Test Case .* passed" "$LOG" || true)
+          FAILED=$(grep -c "^Test Case .* failed" "$LOG" || true)
+          WARNINGS=$(grep -c "warning:" "$LOG" || true)
+          {
+            echo "## Unit tests (${SIM_NAME:-no simulator})"
+            if [ "${FAILED}" = "0" ] && [ "${PASSED}" != "0" ]; then
+              echo "**PASSED**: ${PASSED} tests passed, 0 failed."
+            else
+              echo "**FAILED**: ${PASSED} passed, ${FAILED} failed (see the log artifact)."
+              echo '```'
+              grep -E "error:|^Test Case .* failed|\*\* TEST FAILED \*\*|\*\* BUILD FAILED \*\*" "$LOG" | sort -u | head -60 || true
+              echo '```'
+            fi
+            echo "Compiler warnings: ${WARNINGS}"
+            if [ "${WARNINGS}" != "0" ]; then
+              echo '```'
+              grep "warning:" "$LOG" | sort -u | head -60
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${WARNINGS}" != "0" ]; then
+            echo "::error::The unit-test build log has ${WARNINGS} 'warning:' lines; the project must stay warning-free."
+            exit 1
+          fi
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results-${{ github.run_number }}
+          path: |
+            build/PhoneLidarTests.xcresult
+            logs/
           retention-days: 14
 
   # Optional. Runs only when started by hand with "testflight" ticked.
