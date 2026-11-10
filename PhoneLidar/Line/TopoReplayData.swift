@@ -76,7 +76,9 @@ struct TopoReplaySource: Sendable {
     let revealP: [Double]
     let speeds: [Double?]
     let recordingDuration: Double
-    /// Travel speed used after the last frame to bring the rest of the recorded material out (mm/s, 0 = none).
+    /// Travel speed used after the last frame to bring the rest of the recorded material out (mm/s, 0 = none):
+    /// the last measured speed, raised so the run-out never takes longer than `maxRunOut`, or a speed that
+    /// takes `fallbackRunOut` when no speed was measured.
     let runOutSpeed: Double
     /// Replay length including the run-out, s.
     let duration: Double
@@ -89,6 +91,11 @@ struct TopoReplaySource: Sendable {
 
     var pEnd: Double { pStart + Double(columns) * cell }
     var widthMM: Double { Double(rows) * cell }
+
+    /// Longest run-out after the last frame, s.
+    static let maxRunOut = 60.0
+    /// Run-out length when the recording has no measured speed, s.
+    static let fallbackRunOut = 3.0
 
     static func make(grid: TopoGridFile, info: LineRecordingInfo) throws -> TopoReplaySource {
         let sign = info.direction.bufferSign
@@ -177,21 +184,32 @@ struct TopoReplaySource: Sendable {
         let recordingDuration = max(times.last ?? 0, 0.01)
 
         // Speed for the run-out: travel over the last second, else over the whole recording.
-        var runOut = 0.0
+        var measured = 0.0
         if let last = frames.last {
             let startIndex = LineMath.frameIndex(for: last.time - 1.0, in: frames)
             let a = frames[startIndex]
             if last.time - a.time > 0.2 {
-                runOut = (last.travel - a.travel) / (last.time - a.time)
+                measured = (last.travel - a.travel) / (last.time - a.time)
             }
-            if !(runOut > 1), last.time > 0.2 {
-                runOut = (last.travel - frames[0].travel) / (last.time - frames[0].time)
+            if !(measured > 1), last.time - frames[0].time > 0.2 {
+                measured = (last.travel - frames[0].travel) / (last.time - frames[0].time)
             }
-            if !(runOut > 1) || !runOut.isFinite { runOut = 0 }
+            if !(measured > 1) || !measured.isFinite { measured = 0 }
         }
+        // The rest of the material always comes out by the end of the replay: at the measured speed, faster if
+        // that would take more than `maxRunOut`, over `fallbackRunOut` when no speed was measured.
         let pEnd = pStart + Double(columns) * grid.cell
         let remaining = max(0, pEnd - (reveal.last ?? pEnd))
-        let runOutTime = runOut > 1 ? min(60, remaining / runOut) : 0
+        var runOut = 0.0
+        var runOutTime = 0.0
+        if remaining > 0 {
+            runOutTime = measured > 0 ? min(remaining / measured, maxRunOut) : fallbackRunOut
+            runOut = remaining / runOutTime
+            if !runOut.isFinite || runOut <= 0 {
+                runOut = 0
+                runOutTime = 0
+            }
+        }
         let duration = recordingDuration + runOutTime
 
         // Height statistics for the default target and tolerance.
@@ -219,12 +237,12 @@ struct TopoReplaySource: Sendable {
                                 p01: percentile(0.01), p99: percentile(0.99))
     }
 
-    /// Travel coordinate of the newest complete line at replay time t.
+    /// Travel coordinate of the newest complete line at replay time t. Reaches `pEnd` at `duration`.
     func revealPosition(at t: Double) -> Double {
         guard let last = revealP.last else { return pEnd }
+        if t >= duration { return max(pEnd, last) }
         if t >= recordingDuration {
-            if runOutSpeed > 1 { return min(pEnd, last + (t - recordingDuration) * runOutSpeed) }
-            return t >= duration ? pEnd : last
+            return runOutSpeed > 0 ? min(pEnd, last + (t - recordingDuration) * runOutSpeed) : last
         }
         if t <= (frameTimes.first ?? 0) { return revealP[0] }
         let i = Self.index(for: t, in: frameTimes)
@@ -240,7 +258,7 @@ struct TopoReplaySource: Sendable {
         guard let last = revealP.last else { return 0 }
         if p <= revealP[0] { return frameTimes.first ?? 0 }
         if p > last {
-            return runOutSpeed > 1 ? min(duration, recordingDuration + (p - last) / runOutSpeed) : duration
+            return runOutSpeed > 0 ? min(duration, recordingDuration + (p - last) / runOutSpeed) : duration
         }
         // First frame whose reveal position reaches p (reveal positions never decrease).
         var lo = 0
@@ -275,36 +293,60 @@ struct TopoReplaySource: Sendable {
 // MARK: - Display grid
 
 /// The replay grid averaged into square blocks of `factor` × `factor` cells, small enough to rebuild the
-/// 3D surface every screen refresh. Gaps are filled from neighbouring cells.
+/// 3D surface every screen refresh.
+///
+/// Only blocks that are complete at the moment shown are ever used: the newest displayed column is the newest
+/// block whose whole length has left the LiDAR's view, and gap filling and smoothing for the surface never look
+/// at newer columns (see `window`). Statistics and profiles use the measured blocks only (`observed`).
 struct TopoDisplayGrid: Sendable {
+    /// Longest gap (blocks) filled across a column, between two measured blocks.
+    static let maxAcrossGap = 3
+    /// Longest gap (blocks) filled along a row, between two measured blocks.
+    static let maxAlongGap = 8
+
     let factor: Int
     let rows: Int
     let columns: Int
-    /// Block size, mm.
+    /// Block size along the travel, mm.
     let cellMM: Double
     let pStart: Double
-    /// rows × columns heights, mm (NaN = no data).
-    let raw: [Float]
-    /// 3 × 3 smoothed copy of `raw`.
-    let smooth: [Float]
-    /// Mean height of each column (NaN = no data).
+    /// Travel coordinate of the end of the newest material (the last block may be shorter than `cellMM`).
+    let pEnd: Double
+    /// Strip width (mm) and the centre of each row, mm from the back edge (top of the recording screen).
+    /// The last row may be narrower than the others.
+    let widthMM: Double
+    let rowCenterMM: [Double]
+    /// rows × columns block means of the measured cells, mm (NaN = no data).
+    let observed: [Float]
+    /// `observed` with short gaps across each column filled (between two measured blocks, no edge extension).
+    let filled: [Float]
+    /// Mean of the measured blocks of each column (NaN = no data).
     let columnMean: [Float]
-    /// Replay time at which each column becomes complete.
+    /// Replay time at which each column is complete.
     let revealTime: [Double]
 
     /// Travel coordinate of a column centre.
     func p(ofColumn j: Int) -> Double { pStart + (Double(j) + 0.5) * cellMM }
 
+    /// Newest column whose whole length is complete when the newest complete line is at `newest`
+    /// (−1 or less = none yet).
+    func newestCompleteColumn(newest: Double) -> Int {
+        if newest >= pEnd - 1e-6 { return columns - 1 }
+        let complete = ((newest - pStart) / cellMM).rounded(.down)
+        guard complete.isFinite else { return -1 }
+        return Int(min(max(complete, -1), Double(columns))) - 1
+    }
+
     static func make(source: TopoReplaySource, factor: Int) -> TopoDisplayGrid {
         let k = max(1, factor)
-        let rows = max(1, source.rows / k)
+        let rows = max(1, (source.rows + k - 1) / k)
         let columns = max(1, (source.columns + k - 1) / k)
-        var raw = [Float](repeating: .nan, count: rows * columns)
+        var observed = [Float](repeating: .nan, count: rows * columns)
         source.values.withUnsafeBufferPointer { src in
-            raw.withUnsafeMutableBufferPointer { dst in
+            observed.withUnsafeMutableBufferPointer { dst in
                 for row in 0..<rows {
                     let rLo = row * k
-                    let rHi = row == rows - 1 ? source.rows : min(source.rows, rLo + k)
+                    let rHi = min(source.rows, rLo + k)
                     for col in 0..<columns {
                         let cLo = col * k
                         let cHi = min(source.columns, cLo + k)
@@ -325,15 +367,19 @@ struct TopoDisplayGrid: Sendable {
                 }
             }
         }
-        fillGaps(&raw, rows: rows, columns: columns)
-        let smooth = smoothed(raw, rows: rows, columns: columns)
+        var filled = observed
+        filled.withUnsafeMutableBufferPointer { buffer in
+            for col in 0..<columns {
+                fillInterior(buffer, count: rows, maxGap: maxAcrossGap) { $0 * columns + col }
+            }
+        }
 
         var means = [Float](repeating: .nan, count: columns)
         for col in 0..<columns {
             var sum: Float = 0
             var n = 0
             for row in 0..<rows {
-                let v = raw[row * columns + col]
+                let v = observed[row * columns + col]
                 if v.isFinite {
                     sum += v
                     n += 1
@@ -342,38 +388,61 @@ struct TopoDisplayGrid: Sendable {
             if n > 0 { means[col] = sum / Float(n) }
         }
         let cellMM = source.cell * Double(k)
-        let times = (0..<columns).map { source.revealTime(of: source.pStart + (Double($0) + 0.5) * cellMM) }
+        let pEnd = source.pEnd
+        let times = (0..<columns).map { j in
+            source.revealTime(of: min(source.pStart + Double(j + 1) * cellMM, pEnd))
+        }
+        let centres = (0..<rows).map { row in
+            Double(row * k + min(source.rows, row * k + k)) / 2 * source.cell
+        }
         return TopoDisplayGrid(factor: k, rows: rows, columns: columns, cellMM: cellMM, pStart: source.pStart,
-                               raw: raw, smooth: smooth, columnMean: means, revealTime: times)
+                               pEnd: pEnd, widthMM: source.widthMM, rowCenterMM: centres,
+                               observed: observed, filled: filled, columnMean: means, revealTime: times)
     }
 
-    /// Linear interpolation across each column, then along each row for gaps up to 8 blocks.
-    private static func fillGaps(_ values: inout [Float], rows: Int, columns: Int) {
-        func fill(count: Int, maxGap: Int, index: (Int) -> Int) {
-            var last = -1
-            for i in 0..<count {
-                guard values[index(i)].isFinite else { continue }
-                if last >= 0, i - last > 1, i - last - 1 <= maxGap {
-                    let a = values[index(last)]
-                    let b = values[index(i)]
-                    for m in (last + 1)..<i {
-                        let f = Float(m - last) / Float(i - last)
-                        values[index(m)] = a + (b - a) * f
-                    }
-                } else if last < 0, i > 0, i <= maxGap {
-                    for m in 0..<i { values[index(m)] = values[index(i)] }
+    /// Surface values of columns jLo…jHi (rows × (jHi − jLo + 1), row-major): `filled` with gaps along each row
+    /// of up to `maxAlongGap` blocks interpolated between two measured blocks, optionally 3 × 3 smoothed.
+    /// Nothing newer than jHi is read, so the newest column never shows material that is not complete yet.
+    func window(jLo: Int, jHi: Int, smooth: Bool) -> [Float] {
+        guard jLo >= 0, jHi < columns, jHi >= jLo else { return [] }
+        let from = max(0, jLo - Self.maxAlongGap - 1)
+        let span = jHi - from + 1
+        var buffer = [Float](repeating: .nan, count: rows * span)
+        filled.withUnsafeBufferPointer { src in
+            buffer.withUnsafeMutableBufferPointer { dst in
+                for r in 0..<rows {
+                    let s = r * columns + from
+                    let d = r * span
+                    for c in 0..<span { dst[d + c] = src[s + c] }
+                    Self.fillInterior(dst, count: span, maxGap: Self.maxAlongGap) { d + $0 }
                 }
-                last = i
-            }
-            if last >= 0, last < count - 1, count - 1 - last <= maxGap {
-                for m in (last + 1)..<count { values[index(m)] = values[index(last)] }
             }
         }
-        for col in 0..<columns {
-            fill(count: rows, maxGap: rows) { $0 * columns + col }
+        if smooth { buffer = Self.smoothed(buffer, rows: rows, columns: span) }
+        let nc = jHi - jLo + 1
+        let skip = jLo - from
+        var out = [Float](repeating: .nan, count: rows * nc)
+        for r in 0..<rows {
+            for c in 0..<nc { out[r * nc + c] = buffer[r * span + skip + c] }
         }
-        for row in 0..<rows {
-            fill(count: columns, maxGap: 8) { row * columns + $0 }
+        return out
+    }
+
+    /// Linear interpolation of gaps of up to `maxGap` values between two finite values (edges are left empty).
+    private static func fillInterior(_ values: UnsafeMutableBufferPointer<Float>, count: Int, maxGap: Int,
+                                     index: (Int) -> Int) {
+        var last = -1
+        for i in 0..<count {
+            guard values[index(i)].isFinite else { continue }
+            if last >= 0, i - last > 1, i - last - 1 <= maxGap {
+                let a = values[index(last)]
+                let b = values[index(i)]
+                for m in (last + 1)..<i {
+                    let f = Float(m - last) / Float(i - last)
+                    values[index(m)] = a + (b - a) * f
+                }
+            }
+            last = i
         }
     }
 

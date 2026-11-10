@@ -32,7 +32,9 @@ struct TopoStats: Codable {
     var mean: Double
     var variance: Double
     var stdDev: Double
-    var cvPercent: Double
+    /// Coefficient of variation, % (distance mode only; nil/absent for heights above a baseline, where the
+    /// mean is near zero and a CV has no meaning — older files may hold 0 there).
+    var cvPercent: Double?
     var minimum: Double
     var maximum: Double
     var range: Double
@@ -76,6 +78,8 @@ enum TopoMapBuilder {
         var profiles: TopoProfiles
         var summary: [String]
         var mapImage: CGImage
+        /// The grid just written to TopoGrid.bin.
+        var grid: TopoGridFile
     }
 
     /// Depth pixels skipped at each edge of the depth map (the LiDAR is least reliable there).
@@ -132,7 +136,7 @@ enum TopoMapBuilder {
         var cell = max(2.0, (zTypical / Double(max(middle.fx, 1))).rounded())   // ≈ one depth pixel on the surface
         var cols = Int(((qMax - qMin) / cell).rounded(.up)) + 1
         var rows = Int(((xMax - xMin) / cell).rounded(.up)) + 1
-        while cols * rows > 3_000_000 {
+        while cols * rows > TopoGridFile.maxCells {
             cell *= 1.25
             cols = Int(((qMax - qMin) / cell).rounded(.up)) + 1
             rows = Int(((xMax - xMin) / cell).rounded(.up)) + 1
@@ -163,7 +167,7 @@ enum TopoMapBuilder {
                                         var value = z
                                         if heightMode {
                                             let b = baseBuf[rowBase + u]
-                                            if b <= 0 { continue }
+                                            if !(b > 0 && b.isFinite) { continue }   // no NaN/inf from a damaged baseline
                                             value = b - z
                                         }
                                         let zd = Double(z)
@@ -190,9 +194,51 @@ enum TopoMapBuilder {
             }
         }
 
+        // Trim the empty margin around the data (the padding above only leaves room for relief), so the map,
+        // its length, width and coverage describe the observed material only.
+        var rLo = rows, rHi = -1, cLo = cols, cHi = -1
+        hits.withUnsafeBufferPointer { hitBuf in
+            for r in 0..<rows {
+                let base = r * cols
+                var first = -1
+                var last = -1
+                for c in 0..<cols where hitBuf[base + c] > 0 {
+                    if first < 0 { first = c }
+                    last = c
+                }
+                guard first >= 0 else { continue }
+                rLo = min(rLo, r)
+                rHi = max(rHi, r)
+                cLo = min(cLo, first)
+                cHi = max(cHi, last)
+            }
+        }
+        guard rHi >= rLo, cHi >= cLo else { throw LineError.notEnoughData }
+        let fullColumns = cols
+        cols = cHi - cLo + 1
+        rows = rHi - rLo + 1
+        qMin += Double(cLo) * cell
+        xMin += Double(rLo) * cell
+        let mapCells = cols * rows
+        var grid = [Float](repeating: .nan, count: mapCells)
+        var cellHits = [UInt16](repeating: 0, count: mapCells)
+        var cellM2 = [Float](repeating: 0, count: mapCells)
+        for r in 0..<rows {
+            let src = (rLo + r) * fullColumns + cLo
+            let dst = r * cols
+            for c in 0..<cols where hits[src + c] > 0 {
+                grid[dst + c] = zRef + means[src + c]
+                cellHits[dst + c] = hits[src + c]
+                cellM2[dst + c] = m2s[src + c]
+            }
+        }
+        means = []
+        m2s = []
+        hits = []
+
         // Cell values, profiles and overall statistics.
         var values: [Float] = []
-        values.reserveCapacity(cellCount / 2)
+        values.reserveCapacity(mapCells)
         var rowSum = [Double](repeating: 0, count: rows)
         var rowN = [Int](repeating: 0, count: rows)
         var colSum = [Double](repeating: 0, count: cols)
@@ -204,9 +250,9 @@ enum TopoMapBuilder {
         for r in 0..<rows {
             for c in 0..<cols {
                 let idx = r * cols + c
-                let n = hits[idx]
+                let n = cellHits[idx]
                 if n == 0 { continue }
-                let z = zRef + means[idx]
+                let z = grid[idx]
                 values.append(z)
                 let zd = Double(z)
                 sum += zd
@@ -216,11 +262,12 @@ enum TopoMapBuilder {
                 colN[c] += 1
                 hitTotal += Double(n)
                 if n >= 3 {
-                    repeatVarianceSum += Double(m2s[idx]) / Double(n - 1)
+                    repeatVarianceSum += Double(cellM2[idx]) / Double(n - 1)
                     repeatN += 1
                 }
             }
         }
+        cellM2 = []
         guard values.count >= 10 else { throw LineError.notEnoughData }
         let count = Double(values.count)
         let mean = sum / count
@@ -231,6 +278,7 @@ enum TopoMapBuilder {
         }
         let variance = sq / count
         let sorted = values.sorted()
+        values = []
         func percentile(_ p: Double) -> Double {
             Double(sorted[min(sorted.count - 1, max(0, Int((Double(sorted.count - 1) * p).rounded())))])
         }
@@ -269,8 +317,8 @@ enum TopoMapBuilder {
             for c in 0..<cols {
                 guard let cm = colMean[c] else { continue }
                 let idx = r * cols + c
-                if hits[idx] == 0 { continue }
-                let e = Double(zRef + means[idx]) - rm - cm + mean
+                if cellHits[idx] == 0 { continue }
+                let e = Double(grid[idx]) - rm - cm + mean
                 residualSq += e * e
                 residualN += 1
             }
@@ -300,14 +348,14 @@ enum TopoMapBuilder {
         let stats = TopoStats(
             cellSize: cell, columns: cols, rows: rows,
             lengthMM: Double(cols) * cell, widthMM: Double(rows) * cell,
-            coveragePercent: 100 * count / Double(cellCount),
-            cellsWithData: values.count,
+            coveragePercent: 100 * count / Double(mapCells),
+            cellsWithData: sorted.count,
             meanHitsPerCell: hitTotal / count,
             mean: mean, variance: variance, stdDev: variance.squareRoot(),
-            cvPercent: !heightMode && mean > 0 ? 100 * variance.squareRoot() / mean : 0,
+            cvPercent: !heightMode && mean > 0 ? 100 * variance.squareRoot() / mean : nil,
             minimum: Double(sorted.first ?? 0), maximum: Double(sorted.last ?? 0),
             range: Double((sorted.last ?? 0) - (sorted.first ?? 0)),
-            p1: p1Value, p5: percentile(0.05), median: percentile(0.5), p95: percentile(0.95), p99: percentile(0.99),
+            p1: p1Value, p5: percentile(0.05), median: percentile(0.5), p95: percentile(0.95), p99: p99Value,
             acrossStdDev: acrossSpread.std, acrossRange: acrossSpread.range,
             alongStdDev: alongSpread.std, alongRange: alongSpread.range,
             residualStdDev: residualN > 0 ? (residualSq / Double(residualN)).squareRoot() : 0,
@@ -319,11 +367,13 @@ enum TopoMapBuilder {
             frames: frames.count, duration: frames.last?.time ?? 0,
             heightMode: heightMode)
         let profiles = TopoProfiles(across: across, along: along)
+        let gridFile = TopoGridFile(columns: cols, rows: rows, cell: cell, qMin: qMin, xMin: xMin,
+                                    heightMode: heightMode, values: grid)
 
-        // Colour image (downsampled if very long).
+        // Colour image (downsampled if very long; a partial block at the end still gets a pixel).
         let factor = max(1, Int((Double(cols) / 12_000).rounded(.up)))
-        let imageWidth = max(1, cols / factor)
-        let imageHeight = max(1, rows / factor)
+        let imageWidth = (cols + factor - 1) / factor
+        let imageHeight = (rows + factor - 1) / factor
         var rgba = [UInt8](repeating: 0, count: imageWidth * imageHeight * 4)
         let nearF = Float(near), farF = Float(far)
         for iy in 0..<imageHeight {
@@ -336,9 +386,9 @@ enum TopoMapBuilder {
                     for dx in 0..<factor {
                         let c = ix * factor + dx
                         if c >= cols { break }
-                        let idx = r * cols + c
-                        if hits[idx] > 0 {
-                            total += zRef + means[idx]
+                        let v = grid[r * cols + c]
+                        if v.isFinite {
+                            total += v
                             n += 1
                         }
                     }
@@ -359,23 +409,53 @@ enum TopoMapBuilder {
             throw LineError.notEnoughData
         }
 
-        // Files.
-        writePNG(image, to: folder.appendingPathComponent("TopoMapGrid.png"))
-        try writeGridCSV(to: folder.appendingPathComponent("TopoMap.csv"), rows: rows, cols: cols, cell: cell,
-                         xMin: xMin, zRef: zRef, means: means, hits: hits)
-        try TopoGridFile.write(to: folder.appendingPathComponent(TopoGridFile.fileName),
-                               columns: cols, rows: rows, cell: cell, qMin: qMin, xMin: xMin,
-                               heightMode: heightMode, zRef: zRef, means: means, hits: hits)
-        try statsCSV(stats).write(to: folder.appendingPathComponent("TopoStats.csv"), atomically: true, encoding: .utf8)
+        // Files: every output is written under a temporary name first and only renamed once all of them
+        // succeeded, so a failure never leaves a mix of new and old files.
         let valueName = heightMode ? "mean_height_mm" : "mean_distance_mm"
-        try profileCSV(across, header: "across_mm", valueName: valueName)
-            .write(to: folder.appendingPathComponent("AcrossProfile.csv"), atomically: true, encoding: .utf8)
-        try profileCSV(along, header: "along_mm", valueName: valueName)
-            .write(to: folder.appendingPathComponent("AlongProfile.csv"), atomically: true, encoding: .utf8)
-        try JSONEncoder.pretty.encode(stats).write(to: folder.appendingPathComponent("TopoStats.json"), options: .atomic)
-        try JSONEncoder().encode(profiles).write(to: folder.appendingPathComponent("TopoProfiles.json"), options: .atomic)
+        try Self.writeAll(in: folder, [
+            ("TopoMapGrid.png", { url in
+                guard Self.writePNG(image, to: url) else { throw LineError.badFile }
+            }),
+            ("TopoMap.csv", { url in try Self.writeGridCSV(gridFile, to: url) }),
+            (TopoGridFile.fileName, { url in try gridFile.write(to: url) }),
+            ("TopoStats.csv", { url in try Self.statsCSV(stats).write(to: url, atomically: false, encoding: .utf8) }),
+            ("AcrossProfile.csv", { url in
+                try Self.profileCSV(across, header: "across_mm", valueName: valueName)
+                    .write(to: url, atomically: false, encoding: .utf8)
+            }),
+            ("AlongProfile.csv", { url in
+                try Self.profileCSV(along, header: "along_mm", valueName: valueName)
+                    .write(to: url, atomically: false, encoding: .utf8)
+            }),
+            ("TopoStats.json", { url in try JSONEncoder.pretty.encode(stats).write(to: url) }),
+            ("TopoProfiles.json", { url in try JSONEncoder().encode(profiles).write(to: url) })
+        ])
 
-        return Output(stats: stats, profiles: profiles, summary: summaryLines(stats), mapImage: image)
+        return Output(stats: stats, profiles: profiles, summary: summaryLines(stats), mapImage: image, grid: gridFile)
+    }
+
+    /// Writes each file to a hidden temporary name, then renames them all into place.
+    private static func writeAll(in folder: URL, _ files: [(name: String, write: (URL) throws -> Void)]) throws {
+        let manager = FileManager.default
+        var staged: [(temp: URL, final: URL)] = []
+        do {
+            for file in files {
+                let temp = folder.appendingPathComponent(".\(file.name).partial")
+                staged.append((temp, folder.appendingPathComponent(file.name)))
+                try? manager.removeItem(at: temp)
+                try file.write(temp)
+            }
+            for item in staged {
+                if manager.fileExists(atPath: item.final.path) {
+                    _ = try manager.replaceItemAt(item.final, withItemAt: item.temp)
+                } else {
+                    try manager.moveItem(at: item.temp, to: item.final)
+                }
+            }
+        } catch {
+            for item in staged { try? manager.removeItem(at: item.temp) }
+            throw error
+        }
     }
 
     // MARK: - Text
@@ -411,6 +491,29 @@ enum TopoMapBuilder {
         return lines
     }
 
+    /// Lines written by `summaryLines` (or a failed build), recognised so a rebuild can replace them in the
+    /// scan record without touching other summary lines.
+    private static let mapSummaryPrefixes = [
+        "Scanned ", "Height above baseline mean", "Distance mean", "Range ", "Across-width profile",
+        "Along-travel profile", "Local residual", "Speed mean", "Speed: no texture lock", "Colours:",
+        "Map not built"
+    ]
+
+    static func isMapSummaryLine(_ line: String) -> Bool {
+        mapSummaryPrefixes.contains { line.hasPrefix($0) }
+    }
+
+    /// The scan record's summary after a rebuild: the recording line(s) kept, the map lines replaced.
+    static func recordSummary(existing: [String], info: LineRecordingInfo, map: [String]) -> [String] {
+        var lines = existing.filter { !isMapSummaryLine($0) }
+        if lines.isEmpty {
+            lines = [String(format: "%ld frames, %.1f s, material travel %@",
+                            info.frames.count, info.frames.last?.time ?? 0, info.direction.label)]
+        }
+        lines.insert(contentsOf: map, at: 1)
+        return lines
+    }
+
     static func statsCSV(_ s: TopoStats) -> String {
         func f(_ v: Double?, _ digits: Int = 2) -> String {
             guard let v else { return "" }
@@ -431,7 +534,7 @@ enum TopoMapBuilder {
             [p + "_mean", f(s.mean, 2), "mm"],
             [p + "_variance", f(s.variance, 3), "mm^2"],
             [p + "_std_dev", f(s.stdDev, 3), "mm"],
-            [p + "_cv", f(s.cvPercent, 3), "%"],
+            [p + "_cv", s.heightMode == true ? "" : f(s.cvPercent, 3), "%"],
             [p + "_min", f(s.minimum, 1), "mm"],
             [p + "_max", f(s.maximum, 1), "mm"],
             [p + "_range", f(s.range, 1), "mm"],
@@ -472,22 +575,24 @@ enum TopoMapBuilder {
         return (t < 0 ? "-" : "") + "\(a / 10).\(a % 10)"
     }
 
-    /// Rows = across (top → bottom of the screen), columns = along (left → right). Blank = no data.
-    private static func writeGridCSV(to url: URL, rows: Int, cols: Int, cell: Double, xMin: Double,
-                                     zRef: Float, means: [Float], hits: [UInt16]) throws {
+    /// Rows = across (top → bottom of the screen, mm from the image centre line), columns = along (left → right,
+    /// mm from the left edge of the map). Blank = no data. Same cells as TopoGrid.bin.
+    private static func writeGridCSV(_ grid: TopoGridFile, to url: URL) throws {
+        let rows = grid.rows
+        let cols = grid.columns
         let writer = try TextFileWriter(url: url)
         var header = ["across_mm \\ along_mm"]
         header.reserveCapacity(cols + 1)
-        for c in 0..<cols { header.append(String(format: "%.0f", (Double(c) + 0.5) * cell)) }
+        for c in 0..<cols { header.append(String(format: "%.0f", (Double(c) + 0.5) * grid.cell)) }
         try writer.line(header.joined(separator: ","))
         var fields = [String]()
         fields.reserveCapacity(cols + 1)
         for r in 0..<rows {
             fields.removeAll(keepingCapacity: true)
-            fields.append(String(format: "%.0f", xMin + (Double(r) + 0.5) * cell))
+            fields.append(String(format: "%.0f", grid.xMin + (Double(r) + 0.5) * grid.cell))
             for c in 0..<cols {
-                let idx = r * cols + c
-                fields.append(hits[idx] > 0 ? tenths(zRef + means[idx]) : "")
+                let v = grid.values[r * cols + c]
+                fields.append(v.isFinite ? tenths(v) : "")
             }
             try writer.line(fields.joined(separator: ","))
         }

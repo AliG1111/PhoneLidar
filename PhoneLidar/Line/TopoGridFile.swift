@@ -9,6 +9,9 @@ import Foundation
 struct TopoGridFile {
     static let fileName = "TopoGrid.bin"
     static let headerSize = 48
+    static let version: UInt32 = 1
+    /// Largest grid the map builder makes (columns × rows); larger files are treated as damaged.
+    static let maxCells = 3_000_000
 
     var columns: Int
     var rows: Int
@@ -22,14 +25,14 @@ struct TopoGridFile {
     /// rows × columns, NaN = no data.
     var values: [Float]
 
-    static func write(to url: URL, columns: Int, rows: Int, cell: Double, qMin: Double, xMin: Double,
-                      heightMode: Bool, zRef: Float, means: [Float], hits: [UInt16]) throws {
+    /// Writes the grid (non-atomically: the map builder writes to a temporary name and renames it).
+    func write(to url: URL) throws {
         let count = columns * rows
-        guard count > 0, means.count >= count, hits.count >= count else { return }
+        guard columns > 0, rows > 0, count <= Self.maxCells, values.count == count else { throw LineError.badFile }
         var data = Data()
-        data.reserveCapacity(headerSize + count * 4)
+        data.reserveCapacity(Self.headerSize + count * 4)
         data.append(contentsOf: Array("PLTG".utf8))
-        data.appendUInt32(1)
+        data.appendUInt32(Self.version)
         data.appendUInt32(UInt32(columns))
         data.appendUInt32(UInt32(rows))
         data.appendFloat64(cell)
@@ -37,22 +40,20 @@ struct TopoGridFile {
         data.appendFloat64(xMin)
         data.appendUInt32(heightMode ? 1 : 0)
         data.appendUInt32(0)
-        var values = [Float](repeating: .nan, count: count)
-        for i in 0..<count where hits[i] > 0 {
-            values[i] = zRef + means[i]
-        }
-        data.append(values.withUnsafeBufferPointer { Data(buffer: $0) })
-        try data.write(to: url, options: .atomic)
+        values.withUnsafeBufferPointer { data.append($0) }
+        try data.write(to: url)
     }
 
     static func load(from folder: URL) -> TopoGridFile? {
         guard let data = try? Data(contentsOf: folder.appendingPathComponent(fileName), options: .alwaysMapped),
               data.count >= headerSize,
               String(decoding: data.prefix(4), as: UTF8.self) == "PLTG" else { return nil }
+        guard data.readUInt32(at: 4) == version else { return nil }
         let columns = Int(data.readUInt32(at: 8))
         let rows = Int(data.readUInt32(at: 12))
-        let count = columns * rows
-        guard columns > 0, rows > 0, data.count >= headerSize + count * 4 else { return nil }
+        let (count, overflow) = columns.multipliedReportingOverflow(by: rows)
+        guard columns > 0, rows > 0, !overflow, count <= maxCells,
+              data.count >= headerSize + count * 4 else { return nil }
         let cell = data.readFloat64(at: 16)
         let qMin = data.readFloat64(at: 24)
         let xMin = data.readFloat64(at: 32)

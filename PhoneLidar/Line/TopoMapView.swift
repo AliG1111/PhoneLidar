@@ -6,16 +6,30 @@ import UIKit
 struct TopoMapView: View {
     let folder: URL
 
+    @Environment(ScanStore.self) private var store
     @State private var stats: TopoStats?
     @State private var profiles: TopoProfiles?
     @State private var mapImage: UIImage?
     @State private var direction: TravelDirection = .rightToLeft
+    @State private var loaded = false
     @State private var building = false
+    /// Last rebuild failure; shown even when an older map is still on screen.
     @State private var message: String?
 
     var body: some View {
         List {
             Section {
+                if let message {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
+                if building {
+                    HStack {
+                        ProgressView()
+                        Text("Building topographic map…")
+                    }
+                }
                 if let mapImage {
                     ZoomableImage(image: mapImage)
                         .frame(height: 280)
@@ -33,13 +47,8 @@ struct TopoMapView: View {
                           systemImage: direction == .rightToLeft ? "arrow.left" : "arrow.right")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                } else if building {
-                    HStack {
-                        ProgressView()
-                        Text("Building topographic map…")
-                    }
-                } else {
-                    Text(message ?? "No map yet.")
+                } else if !building {
+                    Text(loaded ? "Map not built yet. Tap Rebuild map." : "Loading…")
                         .foregroundStyle(.secondary)
                 }
             } header: {
@@ -54,7 +63,7 @@ struct TopoMapView: View {
                     row("Standard deviation", "%.3f mm", stats.stdDev)
                     row("Variance", "%.3f mm²", stats.variance)
                     if !heightMode {
-                        row("Coefficient of variation", "%.3f %%", stats.cvPercent)
+                        row("Coefficient of variation", stats.cvPercent.map { String(format: "%.3f %%", $0) } ?? "—")
                     }
                     row(heightMode ? "Minimum (lowest)" : "Minimum (closest)", "%.1f mm", stats.minimum)
                     row(heightMode ? "Maximum (highest)" : "Maximum (farthest)", "%.1f mm", stats.maximum)
@@ -125,7 +134,7 @@ struct TopoMapView: View {
         }
         .navigationTitle("Topographic map")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { load() }
+        .task { await load() }
     }
 
     private var heightMode: Bool { stats?.heightMode == true }
@@ -140,51 +149,85 @@ struct TopoMapView: View {
         }
     }
 
-    private func load() {
-        if let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
-           let info = try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data) {
-            direction = info.direction
-        }
-        if let data = try? Data(contentsOf: folder.appendingPathComponent("TopoStats.json")) {
-            stats = try? JSONDecoder.iso.decode(TopoStats.self, from: data)
-        }
-        if let data = try? Data(contentsOf: folder.appendingPathComponent("TopoProfiles.json")) {
-            profiles = try? JSONDecoder().decode(TopoProfiles.self, from: data)
-        }
-        mapImage = UIImage(contentsOfFile: folder.appendingPathComponent("TopoMapGrid.png").path)
-        if mapImage == nil && message == nil {
-            message = "Map not built yet. Tap Rebuild map."
-        }
+    private struct Loaded {
+        var direction: TravelDirection?
+        var stats: TopoStats?
+        var profiles: TopoProfiles?
+        var image: UIImage?
+    }
+
+    /// Reads the saved map files off the main thread.
+    private func load() async {
+        let folder = self.folder
+        let result = await Task.detached(priority: .userInitiated) { () -> Loaded in
+            var out = Loaded()
+            if let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
+               let info = try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data) {
+                out.direction = info.direction
+            }
+            if let data = try? Data(contentsOf: folder.appendingPathComponent("TopoStats.json")) {
+                out.stats = try? JSONDecoder.iso.decode(TopoStats.self, from: data)
+            }
+            if let data = try? Data(contentsOf: folder.appendingPathComponent("TopoProfiles.json")) {
+                out.profiles = try? JSONDecoder().decode(TopoProfiles.self, from: data)
+            }
+            out.image = UIImage(contentsOfFile: folder.appendingPathComponent("TopoMapGrid.png").path)
+            return out
+        }.value
+        if let value = result.direction { direction = value }
+        stats = result.stats
+        profiles = result.profiles
+        mapImage = result.image
+        loaded = true
     }
 
     private func rebuild() {
-        guard let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
-              let info = try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data) else {
-            message = "Recording.json is missing."
-            return
-        }
+        guard !building else { return }
         building = true
-        mapImage = nil
+        message = nil
         let folder = self.folder
         Task { @MainActor in
-            let result = await Task.detached(priority: .userInitiated) { () -> Result<TopoMapBuilder.Output, Error> in
+            let result = await Task.detached(priority: .userInitiated) {
+                () -> Result<(info: LineRecordingInfo, output: TopoMapBuilder.Output), Error> in
                 do {
-                    return .success(try TopoMapBuilder.build(folder: folder, info: info))
+                    guard let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
+                          let info = try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data) else {
+                        throw RebuildError.recordingMissing
+                    }
+                    let output = try TopoMapBuilder.build(folder: folder, info: info)
+                    return .success((info: info, output: output))
                 } catch {
                     return .failure(error)
                 }
             }.value
             switch result {
-            case .success(let output):
-                TopoMapRenderer.writeComposite(map: output.mapImage, stats: output.stats, direction: info.direction,
+            case .success(let built):
+                TopoMapRenderer.writeComposite(map: built.output.mapImage, stats: built.output.stats,
+                                               direction: built.info.direction,
                                                to: folder.appendingPathComponent("TopoMap.png"))
+                updateScanRecord(info: built.info, mapSummary: built.output.summary)
                 message = nil
             case .failure(let error):
-                message = "Map not built: \(error.localizedDescription)"
+                message = "Map not rebuilt: \(error.localizedDescription)"
             }
+            await load()
             building = false
-            load()
         }
+    }
+
+    /// New and replaced files appear in the scan's file list and the summary shows the new statistics.
+    private func updateScanRecord(info: LineRecordingInfo, mapSummary: [String]) {
+        let target = folder.standardizedFileURL.path
+        guard var record = store.scans.first(where: { store.folderURL(for: $0).standardizedFileURL.path == target })
+        else { return }
+        record.summary = TopoMapBuilder.recordSummary(existing: record.summary, info: info, map: mapSummary)
+        try? store.save(record)
+    }
+
+    private enum RebuildError: LocalizedError {
+        case recordingMissing
+
+        var errorDescription: String? { "Recording.json is missing or damaged." }
     }
 
     private static func thinned(_ points: [ProfilePoint], to limit: Int) -> [ProfilePoint] {
