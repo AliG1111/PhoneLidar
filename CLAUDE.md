@@ -82,8 +82,9 @@ Full matrix: docs/implementation-plan.md §2. Every plan task names its assignme
 - Severity: Critical (crash, data loss, privacy exposure, wrong measurement in output files) › High (wrong results in
   common use, thread-safety bug, leak during capture, CI break) › Medium (edge-case errors, missing error handling,
   performance that affects use) › Low (maintainability, polish).
-- Cycle: review → triage → fix → CI green → re-review changed code and neighbours; repeat until no new
-  Critical/High/Medium; every Low fixed or logged in the P10 backlog with a reason.
+- Cycle: review → triage → fix → CI green → re-review changed code and neighbours; repeat until a review yields
+  no new findings of any severity (owner's rule). Critical/High/Medium are always fixed; a Low is fixed or, if
+  risky or large, logged in the P10 backlog with a reason. CI green at a branch head before any merge.
 - Reviewers are fresh agents (Opus 5.5 / high); final review Opus 5.5 / max. Record each cycle in
   `docs/reviews/<YYYY-MM-DD>-<milestone>.md` (ID, severity, file:line, summary, status).
 

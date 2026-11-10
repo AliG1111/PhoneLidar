@@ -82,10 +82,11 @@ Severity:
 - **Medium** — wrong behaviour in edge cases, missing user-visible error handling, performance problem that affects use.
 - **Low** — maintainability, naming, duplication, minor UX polish.
 
-Cycle: review → triage → fix → CI green → re-review of the changed code and anything it touches → repeat until a pass yields no new Critical/High/Medium findings and every Low is fixed or logged in P10 with a reason.
+Cycle: review → triage → fix → CI green → re-review of the changed code and anything it touches → repeat **until a review yields no new findings** (owner's rule). "New" means any finding, of any severity, that is not already fixed or recorded in the P10 backlog with a reason. Critical/High/Medium are always fixed; a Low is fixed or, when the fix is risky or large, deferred to P10 with a reason, and the next review checks the fixes.
 
 - Milestone review cycles: fresh agents, Opus 5.5 / high, split by area when large.
-- Final review: Opus 5.5 / max, after the last cycle is clean (and at milestones when this plan calls for it).
+- Final review: Opus 5.5 / max, after the milestone cycles; if it yields findings, they are fixed and re-reviewed at Opus 5.5 / max until a review yields no new findings.
+- Every branch merged into an integration branch or `main` has a green CI run at its head commit first.
 - Each cycle is recorded in `docs/reviews/<YYYY-MM-DD>-<milestone>.md` with finding ID, severity, file:line, summary, fix branch/PR, status.
 
 ## 6. Phased checklists
@@ -166,7 +167,7 @@ Milestone M1 reviews and fixes
 - [x] P8.12 Area B fixes, topo/replay/playback B-1…B-18 — branch `fix-topo` (Opus 5.5 / high)
 - [x] P8.13 Area C fixes, apps/storage C-1…C-8, C-12…C-18 (incl. Critical C-1 photo-library key, C-2 photo deletion; High C-3, C-4) — branch `fix-apps` (Sonnet 5.5 / high)
 - [x] P8.14 Triage the additional findings reported during docs alignment (map cell rounding R-08, grid binning truncation, stale last speed after a direction change, CMMotionManager thread use, silent baseline-copy failure, Line-screen auto-lock, folder-name collisions) into cycle 2 (Opus 5.5 / high)
-- [x] P8.15 M1 review cycle 2 and further cycles on the changed code and its neighbours until a pass has no new Critical/High/Medium findings; Lows fixed or moved to P10 with a reason (Opus 5.5 / high)
+- [x] P8.15 M1 review cycles 2 and 3 on the changed code and its neighbours (Opus 5.5 / high)
 - [x] P8.16 Update requirements traceability (statuses of FR-*-Not implemented items closed by the fixes), design (formats/algorithms changed by B-4, A-3, …), `README.md` and `CLAUDE.md` (Sonnet 5.5 / medium; redone after cycle 3 if its fixes change behaviour)
 - [ ] P8.17 Final review of the whole codebase and docs (Opus 5.5 / max)
 - [ ] P8.18 Merge order agreed by the orchestrator; every branch green (build + unit tests, 0 warnings) before merge (Sonnet 5.5 / medium)
