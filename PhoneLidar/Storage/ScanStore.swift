@@ -73,6 +73,9 @@ struct ScanRecord: Codable, Identifiable, Hashable {
     var files: [String] = []
     var summary: [String] = []
     var measurements: [PointMeasurement] = []
+    /// The kind text exactly as read from scan.json when this build does not know it (`kind == .unknown`),
+    /// so a rename or re-save writes a newer build's kind back unchanged. Nil for known kinds.
+    var unknownKindText: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, kind, name, created, folderName, primaryModel, files, summary, measurements
@@ -90,6 +93,10 @@ extension ScanRecord {
         let folder = (decoder.userInfo[ScanRecord.folderNameInfoKey] as? String) ?? ""
         id = (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID.stable(from: folder)
         kind = (try? c.decodeIfPresent(ScanKind.self, forKey: .kind)) ?? .unknown
+        if kind == .unknown, let text = try? c.decodeIfPresent(String.self, forKey: .kind),
+           text != ScanKind.unknown.rawValue {
+            unknownKindText = text
+        }
         name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? folder
         created = (try? c.decodeIfPresent(Date.self, forKey: .created)) ?? Date.distantPast
         folderName = (try? c.decodeIfPresent(String.self, forKey: .folderName)) ?? folder
@@ -97,6 +104,24 @@ extension ScanRecord {
         files = (try? c.decodeIfPresent([String].self, forKey: .files)) ?? []
         summary = (try? c.decodeIfPresent([String].self, forKey: .summary)) ?? []
         measurements = (try? c.decodeIfPresent([PointMeasurement].self, forKey: .measurements)) ?? []
+    }
+
+    /// Same keys and values as the synthesized encoder, except that an unknown kind is written back as read.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        if kind == .unknown, let unknownKindText {
+            try c.encode(unknownKindText, forKey: .kind)
+        } else {
+            try c.encode(kind, forKey: .kind)
+        }
+        try c.encode(name, forKey: .name)
+        try c.encode(created, forKey: .created)
+        try c.encode(folderName, forKey: .folderName)
+        try c.encodeIfPresent(primaryModel, forKey: .primaryModel)
+        try c.encode(files, forKey: .files)
+        try c.encode(summary, forKey: .summary)
+        try c.encode(measurements, forKey: .measurements)
     }
 }
 
