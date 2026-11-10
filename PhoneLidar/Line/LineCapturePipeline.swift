@@ -629,6 +629,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                 }
                 recorder = created
                 autoStopReason = nil
+                // Travel in the recording comes only from speeds measured in it (this frame is its first).
+                speedTracker.beginRecording(currentReading: rawSpeed)
                 onEvent?(.recordingStarted)
             } catch {
                 onEvent?(.recordingStartFailed("the recording files could not be created (\(error.localizedDescription))"))

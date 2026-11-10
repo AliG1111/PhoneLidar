@@ -445,7 +445,8 @@ enum TopoMapBuilder {
         }
         try Self.writeAll(in: folder, files)
 
-        return Output(stats: stats, profiles: profiles, summary: summaryLines(stats), mapImage: image, grid: gridFile)
+        return Output(stats: stats, profiles: profiles, summary: summaryLines(stats, travel: Self.travelRange(frames)),
+                      mapImage: image, grid: gridFile)
     }
 
     /// Largest distance (mm) on the surface between neighbouring depth pixels anywhere in the frame: the smallest
@@ -548,7 +549,24 @@ enum TopoMapBuilder {
 
     // MARK: - Text
 
-    static func summaryLines(_ s: TopoStats) -> [String] {
+    /// Distance (mm) between the smallest and largest recorded travel of the frames: 0 when the material did not
+    /// move in the map.
+    static func travelRange(_ frames: [LineFrameInfo]) -> Double {
+        guard let first = frames.first else { return 0 }
+        var lo = first.travel
+        var hi = first.travel
+        for f in frames {
+            lo = min(lo, f.travel)
+            hi = max(hi, f.travel)
+        }
+        let range = hi - lo
+        return range.isFinite ? range : 0
+    }
+
+    /// Summary lines of a map. `travel` is `travelRange` of the frames used: without any speed reading it says
+    /// whether the map has zero travel or, in recordings from builds before Z-1, travel integrated from the speed
+    /// held from before Record.
+    static func summaryLines(_ s: TopoStats, travel: Double = 0) -> [String] {
         var lines = [
             String(format: "Scanned %.2f m long × %.2f m wide, %.0f mm cells, %.0f%% coverage",
                    s.lengthMM / 1000, s.widthMM / 1000, s.cellSize, s.coveragePercent),
@@ -566,6 +584,9 @@ enum TopoMapBuilder {
         if let m = s.speedMean, let sd = s.speedStdDev {
             lines.append(String(format: "Speed mean %.0f mm/s (%.2f m/min), std dev %.1f mm/s, tracked %.0f%% of frames",
                                 m, m * 0.06, sd, s.speedTrackedPercent))
+        } else if travel >= 0.5 {
+            lines.append(String(format: "Speed: no texture lock; map travel %.0f mm comes from the speed held from "
+                                + "before Record", travel))
         } else {
             lines.append("Speed: no texture lock (map uses zero travel)")
         }

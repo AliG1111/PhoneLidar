@@ -250,6 +250,14 @@ struct LineSpeedTracker {
         lastValidSpeed = nil
         recent.removeAll()
     }
+
+    /// A recording starts with the frame whose reading is `currentReading` (nil = no lock), already added with
+    /// `add`: only that reading is kept as the held speed and in the window, so a recording without texture lock
+    /// records zero travel instead of integrating a speed measured before Record (Z-1).
+    mutating func beginRecording(currentReading: Double?) {
+        lastValidSpeed = currentReading
+        recent = [currentReading ?? .nan]
+    }
 }
 
 /// Rolling average of the zone speeds over the last `windowFrames` frames, for the live overlay.

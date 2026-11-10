@@ -212,6 +212,29 @@ final class LineMotionMathTests: XCTestCase {
         XCTAssertEqual(tracker.travel, 10, accuracy: 1e-12)
     }
 
+    func testARecordingDoesNotInheritTheSpeedHeldFromBeforeRecord() {
+        // Z-1: lock is lost before Record and never regained: the recording's travel stays put.
+        var tracker = LineSpeedTracker()
+        for _ in 0..<5 { _ = tracker.add(rawSpeed: 300, dt: 0.1) }
+        _ = tracker.add(rawSpeed: nil, dt: 0.1)
+        tracker.beginRecording(currentReading: nil)      // first recorded frame, no lock
+        let start = tracker.travel
+        for _ in 0..<30 { XCTAssertNil(tracker.add(rawSpeed: nil, dt: 0.1)) }      // the old average is gone too
+        XCTAssertEqual(tracker.travel, start)
+        XCTAssertNil(tracker.lastValidSpeed)
+    }
+
+    func testARecordingKeepsTheReadingOfItsFirstFrame() {
+        var tracker = LineSpeedTracker()
+        _ = tracker.add(rawSpeed: 300, dt: 0.1)
+        _ = tracker.add(rawSpeed: 50, dt: 0.1)
+        tracker.beginRecording(currentReading: 50)       // the first recorded frame measured 50 mm/s
+        let start = tracker.travel
+        XCTAssertEqual(tracker.add(rawSpeed: nil, dt: 0.1), nil)       // one reading in the window: no average yet
+        XCTAssertEqual(tracker.travel - start, 5, accuracy: 1e-12)     // held 50 mm/s × 0.1 s
+        XCTAssertEqual(tracker.lastValidSpeed, 50)
+    }
+
     func testSmoothedSpeedNeedsThreeValidReadings() throws {
         var tracker = LineSpeedTracker()
         XCTAssertEqual(tracker.add(rawSpeed: 100, dt: 0.1), 100)          // raw until three readings
