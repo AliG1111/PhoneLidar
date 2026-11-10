@@ -35,15 +35,41 @@ final class BaselineTests: XCTestCase {
         return frames
     }
 
-    private func build(_ frames: [[Float]], verify: Int = 10) -> Baseline? {
-        Baseline.build(frames: frames, width: width, height: height, verify: verify,
-                       tiltX: 0.4, tiltY: -0.2, filtered: true)
+    private func build(_ frames: [[Float]], verify: Int = 10) throws -> Baseline {
+        try Baseline.build(frames: frames, width: width, height: height, verify: verify,
+                           tiltX: 0.4, tiltY: -0.2, filtered: true)
+    }
+
+    /// The calibration frames with the first `missing` pixels (row-major) never returning data.
+    private func calibrationFrames(withoutFirstPixels missing: Int) -> [[Float]] {
+        var frames = calibrationFrames()
+        for index in frames.indices {
+            for pixel in 0..<missing { frames[index][pixel] = 0 }
+        }
+        return frames
+    }
+
+    /// Fails the test unless `error` is `BaselineError.notEnoughFrames`; returns nothing else.
+    private func assertNotEnoughFrames(_ error: Error, file: StaticString = #filePath, line: UInt = #line) {
+        guard case BaselineError.notEnoughFrames = error else {
+            XCTFail("Expected notEnoughFrames, got \(error)", file: file, line: line)
+            return
+        }
+    }
+
+    /// Fails the test unless `error` is `BaselineError.lowCoverage`; returns its percentage.
+    private func lowCoveragePercent(_ error: Error, file: StaticString = #filePath, line: UInt = #line) -> Double? {
+        guard case BaselineError.lowCoverage(let percent) = error else {
+            XCTFail("Expected lowCoverage, got \(error)", file: file, line: line)
+            return nil
+        }
+        return percent
     }
 
     // MARK: - Building
 
     func testTrimmedMeanIgnoresOutliersAndMissingReadings() throws {
-        let baseline = try XCTUnwrap(build(calibrationFrames()))
+        let baseline = try build(calibrationFrames())
         XCTAssertEqual(baseline.values.count, width * height)
         for v in 0..<height {
             for u in 0..<width {
@@ -53,7 +79,7 @@ final class BaselineTests: XCTestCase {
     }
 
     func testInfoDescribesTheCalibration() throws {
-        let baseline = try XCTUnwrap(build(calibrationFrames()))
+        let baseline = try build(calibrationFrames())
         let info = baseline.info
         XCTAssertEqual(info.width, width)
         XCTAssertEqual(info.height, height)
@@ -76,13 +102,13 @@ final class BaselineTests: XCTestCase {
     }
 
     func testCorrectedFlatSurfaceHasNoSpread() throws {
-        let baseline = try XCTUnwrap(build(calibrationFrames()))
+        let baseline = try build(calibrationFrames())
         XCTAssertEqual(baseline.info.correctedStdDev, 0, accuracy: 0.001)
         XCTAssertGreaterThan(baseline.info.rawStdDev, 1)   // the tilt was removed by the correction
     }
 
     func testSummaryLine() throws {
-        let baseline = try XCTUnwrap(build(calibrationFrames()))
+        let baseline = try build(calibrationFrames())
         XCTAssertTrue(baseline.summary.hasPrefix("Baseline 1006 mm away · flat surface spread "), baseline.summary)
         XCTAssertTrue(baseline.summary.hasSuffix("0.00 mm σ after correction"), baseline.summary)
     }
@@ -90,36 +116,95 @@ final class BaselineTests: XCTestCase {
     func testPixelsWithTooFewReadingsAreFilledFromAFittedPlane() throws {
         var frames = calibrationFrames()
         for index in frames.indices { frames[index][0] = 0 }     // pixel (0, 0) never has data
-        let baseline = try XCTUnwrap(build(frames))
+        let baseline = try build(frames)
         XCTAssertEqual(baseline.values[0], surface(0, 0), accuracy: 0.05)
         XCTAssertEqual(baseline.values[1], surface(1, 0), accuracy: 0.001)
         XCTAssertEqual(baseline.info.coveragePercent, 99.5, accuracy: 1e-9)
     }
 
-    func testBuildNeedsAtLeastTenUsableFrames() {
-        XCTAssertNil(build(Array(calibrationFrames().prefix(9))))
-        XCTAssertNotNil(build(Array(calibrationFrames().prefix(10))))
+    func testBuildNeedsAtLeastTenUsableFrames() throws {
+        XCTAssertThrowsError(try build(Array(calibrationFrames().prefix(9)))) { assertNotEnoughFrames($0) }
+        XCTAssertNoThrow(try build(Array(calibrationFrames().prefix(10))))
     }
 
     func testBuildIgnoresFramesOfTheWrongSize() {
         var frames = Array(calibrationFrames().prefix(9))
         frames.append([1, 2, 3])
         frames.append([Float](repeating: 1000, count: width * height + 1))
-        XCTAssertNil(build(frames))     // only 9 usable frames remain
+        // only 9 usable frames remain
+        XCTAssertThrowsError(try build(frames)) { assertNotEnoughFrames($0) }
     }
 
-    func testBuildFailsWhenTooFewPixelsHaveData() {
-        XCTAssertNil(build([[Float]](repeating: [Float](repeating: 0, count: width * height), count: 30)))
-        // Only 5 of the 200 pixels (2.5 %) ever have data: below the 10 % minimum.
+    func testBuildRefusesWhenNoPixelHasData() {
+        XCTAssertThrowsError(try build([[Float]](repeating: [Float](repeating: 0, count: width * height), count: 30))) {
+            XCTAssertEqual(lowCoveragePercent($0) ?? -1, 0, accuracy: 1e-9)
+        }
+    }
+
+    func testBuildRefusesWhenTooFewPixelsHaveData() {
+        // Only 5 of the 200 pixels (2.5 %) ever have data: far below the 50 % minimum.
         var sparse = [Float](repeating: 0, count: width * height)
         for i in 0..<5 { sparse[i] = 1000 }
-        XCTAssertNil(build([[Float]](repeating: sparse, count: 30)))
+        XCTAssertThrowsError(try build([[Float]](repeating: sparse, count: 30))) {
+            XCTAssertEqual(lowCoveragePercent($0) ?? -1, 2.5, accuracy: 1e-9)
+        }
+    }
+
+    // MARK: - Coverage thresholds (A-8)
+
+    func testCoverageThresholdConstants() {
+        XCTAssertEqual(Baseline.minimumCoveragePercent, 50)
+        XCTAssertEqual(Baseline.goodCoveragePercent, 80)
+    }
+
+    func testCalibrationBelowHalfCoverageIsRefused() {
+        // 101 of 200 pixels without data: 49.5 % coverage.
+        XCTAssertThrowsError(try build(calibrationFrames(withoutFirstPixels: 101))) {
+            XCTAssertEqual(lowCoveragePercent($0) ?? -1, 49.5, accuracy: 1e-9)
+        }
+    }
+
+    func testCalibrationAtExactlyHalfCoverageIsAccepted() throws {
+        // The first five rows (100 of 200 pixels) never return data: exactly 50 %.
+        let baseline = try build(calibrationFrames(withoutFirstPixels: 100))
+        XCTAssertEqual(baseline.info.coveragePercent, 50, accuracy: 1e-9)
+        // The rest comes from the fitted plane, which is exact for this tilted flat surface.
+        XCTAssertEqual(baseline.values.count, width * height)
+        for v in 0..<height {
+            for u in 0..<width {
+                XCTAssertEqual(baseline.values[v * width + u], surface(u, v), accuracy: 0.05, "pixel (\(u), \(v))")
+            }
+        }
+    }
+
+    func testCoverageBelowEightyPercentIsReportedAsPoor() throws {
+        // 42 of 200 pixels without data: 79 % coverage, accepted but below the "good" mark.
+        let poor = try build(calibrationFrames(withoutFirstPixels: 42))
+        XCTAssertEqual(poor.info.coveragePercent, 79, accuracy: 1e-9)
+        XCTAssertLessThan(poor.info.coveragePercent, Baseline.goodCoveragePercent)
+        // 40 of 200 pixels without data: exactly 80 %, no warning needed.
+        let good = try build(calibrationFrames(withoutFirstPixels: 40))
+        XCTAssertEqual(good.info.coveragePercent, 80, accuracy: 1e-9)
+        XCTAssertGreaterThanOrEqual(good.info.coveragePercent, Baseline.goodCoveragePercent)
+    }
+
+    func testFullCoverageIsOneHundredPercent() throws {
+        XCTAssertEqual(try build(calibrationFrames()).info.coveragePercent, 100, accuracy: 1e-9)
+    }
+
+    func testErrorMessagesNameTheCauseAndTheMinimum() {
+        let low = BaselineError.lowCoverage(percent: 30).errorDescription ?? ""
+        XCTAssertTrue(low.contains("30 %"), low)
+        XCTAssertTrue(low.contains("at least 50 %"), low)
+        XCTAssertTrue((BaselineError.notEnoughFrames.errorDescription ?? "").contains("not enough LiDAR readings"))
+        XCTAssertEqual(BaselineError.cancelled("the phone moved").errorDescription,
+                       "Calibration cancelled: the phone moved. Tap Calibrate again when the phone is steady.")
     }
 
     // MARK: - Heights above the surface
 
     func testHeightsAreBaselineMinusDistance() throws {
-        let baseline = try XCTUnwrap(build(calibrationFrames()))
+        let baseline = try build(calibrationFrames())
         // A flat surface reads zero height everywhere, whatever the tilt.
         for h in baseline.heights(surfaceFrame()) { XCTAssertEqual(h, 0, accuracy: 0.001) }
         // 5 mm closer to the camera = 5 mm high; 3 mm farther = 3 mm low.
@@ -128,7 +213,7 @@ final class BaselineTests: XCTestCase {
     }
 
     func testHeightsOfPixelsWithoutDepthAreNaN() throws {
-        let baseline = try XCTUnwrap(build(calibrationFrames()))
+        let baseline = try build(calibrationFrames())
         var frame = surfaceFrame(offset: -2)
         frame[7] = 0
         frame[50] = -1
@@ -139,7 +224,7 @@ final class BaselineTests: XCTestCase {
     }
 
     func testHeightsKeepTheFrameLengthAndLeaveExtraPixelsNaN() throws {
-        let baseline = try XCTUnwrap(build(calibrationFrames()))
+        let baseline = try build(calibrationFrames())
         let longer = surfaceFrame() + [1000, 1000]
         let heights = baseline.heights(longer)
         XCTAssertEqual(heights.count, width * height + 2)
@@ -158,7 +243,7 @@ final class BaselineTests: XCTestCase {
     }
 
     func testMatchesChecksTheDepthMapSize() throws {
-        let baseline = try XCTUnwrap(build(calibrationFrames()))
+        let baseline = try build(calibrationFrames())
         XCTAssertTrue(baseline.matches(width: width, height: height))
         XCTAssertFalse(baseline.matches(width: height, height: width))
         XCTAssertFalse(baseline.matches(width: width, height: height + 1))
@@ -175,7 +260,7 @@ final class BaselineTests: XCTestCase {
     // MARK: - Files
 
     func testSaveAndLoadRoundTrip() throws {
-        let baseline = try XCTUnwrap(build(calibrationFrames()))
+        let baseline = try build(calibrationFrames())
         let folder = try makeTempFolder().appendingPathComponent("Calibration", isDirectory: true)
         try baseline.save(to: folder)
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent(Baseline.fileName).path))
@@ -196,7 +281,7 @@ final class BaselineTests: XCTestCase {
     }
 
     func testLoadRejectsMissingOrInconsistentFiles() throws {
-        let baseline = try XCTUnwrap(build(calibrationFrames()))
+        let baseline = try build(calibrationFrames())
         let folder = try makeTempFolder()
         XCTAssertNil(Baseline.load(from: folder))
         try baseline.save(to: folder)
@@ -219,7 +304,7 @@ final class BaselineTests: XCTestCase {
     }
 
     func testDeleteRemovesBothFiles() throws {
-        let baseline = try XCTUnwrap(build(calibrationFrames()))
+        let baseline = try build(calibrationFrames())
         let folder = try makeTempFolder()
         try baseline.save(to: folder)
         Baseline.delete(from: folder)
