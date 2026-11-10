@@ -70,7 +70,8 @@ enum LineRecordingRecovery {
         /// Repaired recordings with frames and no scan.json, still marked: the caller adds each to the library
         /// and then clears its marker (`LineRecordingRepair.clearMarker`).
         var recovered: [Recovered] = []
-        /// Marked folders whose Recording.json could not be read or repaired: folder name → reason.
+        /// Marked folders without a readable scan.json (listed under Incomplete scans) whose Recording.json could
+        /// not be read or repaired: folder name → reason. Saved scans that fail are left marked and not listed.
         var failed: [String: String] = [:]
         /// Some folders were skipped because they were in use or only just written: run again later.
         var deferred = false
@@ -111,7 +112,12 @@ enum LineRecordingRecovery {
             do {
                 loaded = try LineRecordingRepair.loadInfo(folder: folder)
             } catch {
-                outcome.failed[name] = ScanError.message(for: error)      // kept marked: retried next pass
+                // Kept marked: retried next pass. Only a folder listed under Incomplete scans (no readable
+                // scan.json) is reported; a saved scan stays under Saved scans and its viewers say why it
+                // cannot be played, so reporting it would repeat the notice on every pass (G-1).
+                if !ScanStore.hasReadableRecord(in: folder) {
+                    outcome.failed[name] = ScanError.message(for: error)
+                }
                 continue
             }
             let info = loaded.info

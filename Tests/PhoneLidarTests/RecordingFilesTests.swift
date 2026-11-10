@@ -383,6 +383,34 @@ final class LineRecordingRecoveryTests: XCTestCase {
         XCTAssertTrue(LineRecordingRepair.hasMarker(folder))
     }
 
+    func testAnUnreadableSavedScanIsKeptMarkedButNotReported() throws {
+        // G-1: a saved scan (readable scan.json) is under Saved scans; reporting it would repeat the
+        // "kept under Incomplete scans" notice on every pass.
+        let folder = try makeUnsavedRecording(frames: nil, withScanJSON: true)
+        try Data("{\"depthW".utf8).write(to: folder.appendingPathComponent("Recording.json"))
+        try ageFolder(folder)
+        let outcome = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        XCTAssertTrue(outcome.recovered.isEmpty)
+        XCTAssertTrue(outcome.failed.isEmpty)
+        XCTAssertFalse(outcome.deferred)
+        // Still marked, so a later pass (after storage is freed) can repair it; the file is left as it was.
+        XCTAssertTrue(LineRecordingRepair.hasMarker(folder))
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("Recording.json"), encoding: .utf8),
+                       "{\"depthW")
+    }
+
+    func testAnUnreadableRecordingWithADamagedScanRecordIsReported() throws {
+        // A scan.json the library cannot read leaves the folder under Incomplete scans, so the failure is shown.
+        let folder = try makeUnsavedRecording(frames: nil)
+        try Data("{\"depthW".utf8).write(to: folder.appendingPathComponent("Recording.json"))
+        try Data("not json".utf8).write(to: folder.appendingPathComponent("scan.json"))
+        try ageFolder(folder)
+        XCTAssertFalse(ScanStore.hasReadableRecord(in: folder))
+        let outcome = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        XCTAssertEqual(Array(outcome.failed.keys), ["line_2026-11-10_101500"])
+        XCTAssertTrue(LineRecordingRepair.hasMarker(folder))
+    }
+
     func testFoldersWithoutTheMarkerOrTheLinePrefixAreIgnored() throws {
         let unmarked = try makeUnsavedRecording(stamp: "2026-11-10_090000", frames: 5)
         LineRecordingRepair.clearMarker(in: unmarked)

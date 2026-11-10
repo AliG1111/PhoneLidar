@@ -421,7 +421,13 @@ final class ScanStore {
         return url
     }
 
-    private static func decodeRecord(in folder: URL) -> ScanRecord? {
+    /// True if the folder has a scan.json the library can read, so it is listed under Saved scans (not Incomplete).
+    /// Reads files only: safe to call off the main thread (line-recording recovery does).
+    nonisolated static func hasReadableRecord(in folder: URL) -> Bool {
+        decodeRecord(in: folder) != nil
+    }
+
+    nonisolated private static func decodeRecord(in folder: URL) -> ScanRecord? {
         guard let data = try? Data(contentsOf: folder.appendingPathComponent("scan.json")) else { return nil }
         let decoder = JSONDecoder.iso
         decoder.userInfo[ScanRecord.folderNameInfoKey] = folder.lastPathComponent
