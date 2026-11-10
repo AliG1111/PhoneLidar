@@ -1,0 +1,715 @@
+# Phone LiDAR — Design
+
+| | |
+|---|---|
+| Document | Architecture, module design, data flow, concurrency, algorithms, on-disk formats, technology choices, risks |
+| Describes | `main` at `1cf693e` (PR #8, CI build #23), verified line by line against the source |
+| Date | 2026-11-10 |
+| Related | [requirements.md](requirements.md), [implementation-plan.md](implementation-plan.md), [../CLAUDE.md](../CLAUDE.md) |
+
+Source paths are relative to `PhoneLidar/` unless they start with `Support/`, `.github/` or `project.yml`. Review IDs (`A-1`, `B-4`, `C-2`, …) refer to the M1 review cycle 1; fixes are in progress (see the plan, P8). This document describes the code before those fixes.
+
+---
+
+## 1. Scope
+
+The app has four capture modes and shared library functions. Room, Equipment and Object capture are thin wrappers around Apple frameworks plus exporters. Line scan is the bulk of the code (15 of 27 Swift files, 6,550 of 8,383 lines): a real-time capture pipeline, a speed estimator, a calibration model, a recorder with custom binary formats, a playback screen, a map builder with statistics, and a SceneKit replay.
+
+## 2. Architecture overview
+
+A single-scene SwiftUI app. `ScanStore` (main actor, `@Observable`) owns the list of saved scans and is injected through the SwiftUI environment. Each capture mode is a SwiftUI view with an `@Observable` controller on the main actor; device frameworks are bridged with `UIViewRepresentable`. Line scan moves frame processing to two serial dispatch queues; heavy post-processing runs in detached Swift tasks.
+
+```mermaid
+flowchart LR
+  subgraph App
+    APP["PhoneLidarApp + AppDelegate"]
+    HOME["HomeView"]
+    ORI["OrientationLock"]
+  end
+  subgraph Storage
+    STORE["ScanStore - Observable, MainActor"]
+    FMT["Units, CSV"]
+  end
+  subgraph Library
+    DETAIL["ScanDetailView"]
+  end
+  subgraph Viewer
+    VIEW["ModelViewerScreen + ViewerModel"]
+  end
+  subgraph Room
+    ROOM["RoomScanView + RoomScanController"]
+    RREP["RoomReport"]
+  end
+  subgraph Mesh
+    MESH["MeshScanView + MeshScanController"]
+    MEXP["MeshExporter"]
+  end
+  subgraph Object
+    OBJ["ObjectScanView + ObjectCaptureController"]
+  end
+  subgraph Line
+    LSV["LineScanView + LineScanModel"]
+    PIPE["LineCapturePipeline"]
+    SPD["SpeedEstimator"]
+    BASE["Baseline"]
+    REC["LineRecorder, DepthFileWriter, DepthFileReader"]
+    PLAY["LinePlaybackView + PlaybackModel"]
+    TMB["TopoMapBuilder"]
+    TMR["TopoMapRenderer"]
+    TMV["TopoMapView"]
+    TGF["TopoGridFile"]
+    RPV["TopoReplayView"]
+    RPM["TopoReplayModel"]
+    RPD["TopoReplaySource, TopoDisplayGrid"]
+    RPS["TopoReplayScene"]
+    COL["DepthColors, ReplayPalette"]
+  end
+  subgraph Apple["Apple frameworks"]
+    RP["RoomPlan"]
+    AR["ARKit + RealityKit"]
+    OC["Object Capture + Photogrammetry"]
+    AV["AVFoundation LiDAR depth + video"]
+    CM["CoreMotion"]
+    SK["SceneKit + ModelIO"]
+  end
+  APP --> HOME
+  HOME --> STORE
+  HOME --> ROOM & MESH & OBJ & LSV
+  HOME --> DETAIL
+  DETAIL --> VIEW & TMV & RPV & PLAY
+  ROOM --> RP
+  ROOM --> RREP --> FMT
+  MESH --> AR
+  MESH --> MEXP --> SK
+  OBJ --> OC
+  VIEW --> SK
+  ROOM & MESH & OBJ & LSV --> STORE
+  LSV --> PIPE
+  PIPE --> AV & CM
+  PIPE --> SPD & BASE & REC
+  LSV --> TMB & TMR
+  TMB --> REC & BASE & TGF & COL
+  TMV --> TMB & TMR
+  PLAY --> REC & BASE & COL
+  RPV --> TGF & TMB & RPM
+  RPM --> RPD & RPS
+  RPS --> SK
+  RPV --> ORI
+```
+
+## 3. Modules
+
+### 3.1 App (`App/`)
+- `PhoneLidarApp` — `@main`; creates `ScanStore` and injects it; installs `AppDelegate` through `@UIApplicationDelegateAdaptor`.
+- `AppDelegate` + `OrientationLock` — `supportedInterfaceOrientationsFor` returns `OrientationLock.mask` (default `.portrait`). `OrientationLock.allow(_:rotateTo:)` changes the mask, calls `setNeedsUpdateOfSupportedInterfaceOrientations()` and `requestGeometryUpdate`. `Info.plist` lists portrait and both landscapes so the replay can rotate.
+- `HomeView` — navigation stack keyed by scan `UUID`; new-scan rows gated by capability checks; capture screens in `fullScreenCover`; `finished(_:)` closes the cover and pushes the new scan after 450 ms.
+
+### 3.2 Storage (`Storage/`)
+- `ScanStore` — root `Documents/Scans`. `newFolder(kind:)` creates `<kind>_<yyyy-MM-dd_HHmmss>` (en_US_POSIX, local time); `save(_:)` refreshes `files` (top-level regular files except `scan.json`, sorted) and writes `scan.json` atomically, then `reload()`; `reload()` decodes every `*/scan.json`, overwrites `folderName` with the real directory name, sorts by `created` descending. Types: `ScanKind` (`room`, `mesh`, `object`, `line`), `ScanRecord`, `PointMeasurement`, `ScanError`; `JSONEncoder.pretty` (pretty, sorted keys, ISO 8601) and `JSONDecoder.iso`.
+- `Formatting` — `Units` (m with 3 decimals + ft-in with 0.1 in, carrying 12.0 in into the next foot; area m² + ft²) and `CSV` (`escape`, `make`, `measurements`).
+
+### 3.3 Library (`Library/`)
+- `ScanDetailView` — per-scan sections (FR-LIB-01), `ShareLink` for each file and for all files, Quick Look AR preview for USDZ, rename alert, delete confirmation.
+
+### 3.4 Room (`Room/`)
+- `RoomScanController` — owns one `RoomCaptureView` (created lazily) and a `RoomDelegate` (`NSObject`, `RoomCaptureViewDelegate`, which inherits `NSCoding`). Phases `scanning → processing → review`. `save(store:)` exports `Room.usdz` (`.parametric`), `RoomMesh.usdz` (`.mesh`, `try?`), `CapturedRoom.json`, `RoomReport.csv`, then saves the record. Runs synchronously on the main actor (C-13).
+- `RoomReport` — CSV rows and summary lines; floor area from polygon corners (|Σ cross(pᵢ, pᵢ₊₁)| / 2), fallback width × height.
+
+### 3.5 Mesh (`Mesh/`)
+- `MeshScanController` — one `ARView` with manual session configuration (§FR-MESH-01), mesh debug overlay, measuring via `hitTest(…, mask: .sceneUnderstanding)` then `raycast(…, .estimatedPlane)`; markers are `AnchorEntity` spheres (r = 6 mm) and a 2 mm bar. `save(store:)` pauses the session, exports, writes `Measurements.csv`.
+- `MeshExporter` (`@MainActor`) — transforms each `ARMeshAnchor`'s vertices to world space (`transform × v`) and normals by the rotation part, concatenates index buffers with offsets (triangles only), writes OBJ (text), PLY (binary LE) and USDZ (SceneKit `SCNScene.write`). Reads Metal buffers through `ARGeometrySource.float3(at:)` and `ARGeometryElement.index(primitive:corner:)` (16- or 32-bit indices).
+
+### 3.6 Object (`Object/`)
+- `ObjectCaptureController` — creates the scan folder with `Images/` and `Checkpoint/`, starts `ObjectCaptureSession`, mirrors `session.stateUpdates` into `captureState` (the session is not `ObservableObject` in the iOS 26 SDK), and on `.completed` releases the session and runs `PhotogrammetrySession` (`.modelFile(detail: .reduced)`), reporting `requestProgress`. `cancel()` stops everything and deletes the folder unless done.
+- `ObjectScanView` / `CaptureOverlay` — state-specific buttons and hints; Area mode on iOS 18+.
+
+### 3.7 Viewer (`Viewer/`)
+- `ViewerModel` — loads USDZ with `SCNScene(url:)`, OBJ/PLY with `MDLAsset` → `SCNScene(mdlAsset:)` and a grey double-sided material; adds a camera at `centre + (0, 0.6r, 2.2r)` looking at the bounding-sphere centre (fov 55°, zNear 0.005r, zFar 50r); ruler mode hit-tests taps, ignoring marker nodes. Loading is synchronous in `onAppear` (C-15).
+
+### 3.8 Line (`Line/`)
+
+| File | Responsibility |
+|---|---|
+| `LineCapturePipeline.swift` | AVCaptureSession setup and format choice, synchronized frame handler, depth → mm, speed scaling, zone speeds, travel, live overlay, calibration capture, recorder lifecycle, gravity and surface tilt, `LiveUpdate` to the UI. Static helpers `fastest`, `spread`, `surfaceTilt`, `regionMedian`, `centerMedian`. |
+| `SpeedEstimator.swift` | Luma pyramid and SAD block matching: `process(_:)` → `TextureShift` (main) and `lastTiles` (24 `TileShift?`). Grid constants `tileColumns = 6`, `tileRows = 4`. |
+| `Baseline.swift` | `BaselineInfo` (Codable), `Baseline` (immutable values + info; `load`, `save`, `delete`, `heights`, `sample`, `build`, plane fit, 3×3 Cramer solver). |
+| `LineRecording.swift` | `LineError`, `TravelDirection`, `LineFrameInfo`, `LineRecordingInfo`, `SpeedText`, `ZoneGrid` (zone ↔ picture/depth mapping), `LineMath` (centred moving average, frame index by time), `Data` UInt32 LE helpers, `TextFileWriter`, `DepthFileWriter`, `DepthFileReader`, `LineRecorder`. |
+| `LineScanView.swift` | Recording screen and `LineScanModel` (phases `starting, ready, recording, saving, building, failed`), `CameraPreview`, `SpeedSparkline`, `BubbleLevel`, `FastestMarker`. |
+| `DepthColors.swift` | Jet palette (`rgb`, 256-entry `lut`), colour index for distance and height, RGBA image builders, P2–P98 range helpers, `DepthLegend`. |
+| `LinePlaybackView.swift` | Playback screen, `PlaybackModel` (AVPlayer, per-frame depth rendering, smoothed speeds, probe), `ProbeStats`, `PlayerLayerView`, `ProbeMarker`, `ProbeTimeline`, `SpeedTimeline`. |
+| `TopoMapBuilder.swift` | `ProfilePoint`, `TopoProfiles`, `TopoStats`; `build(folder:info:)` (stitching, statistics, image, all map files); text and CSV helpers; `writePNG`. |
+| `TopoMapRenderer.swift` | `TopoMap.png` composite (title, map, legend, statistics) with UIKit drawing on the main actor. |
+| `TopoMapView.swift` | Map screen, `ProfileChart` (Swift Charts), `ZoomableImage` (UIScrollView). |
+| `TopoGridFile.swift` | `TopoGrid.bin` writer/reader; Float64 LE helpers. |
+| `TopoReplayData.swift` | `ReplayPalette`, `TopoReplaySource` (crop, reorder, reveal positions, run-out, defaults), `TopoDisplayGrid` (block averaging, gap fill, smoothing), `ReplayNumbers` (nice numbers, ticks). |
+| `TopoReplayModel.swift` | Replay clock (CADisplayLink), transport, window computation, readouts, `saveImage`, header texts; `DisplayLinkTarget` breaks the link → model retain cycle. |
+| `TopoReplayScene.swift` | SceneKit content: orthographic sheared camera, surface strip with walls, tolerance planes, newest-line bar, axes and billboard labels. |
+| `TopoReplayView.swift` | Replay screen: loading (builds the grid if missing), landscape/portrait layouts, `ReplaySceneView` (SCNView + gestures), `AlongChart`, `AcrossPanel`, `ColorBar`, `ReplaySettingsView`, `ActivityView`. |
+
+## 4. Data flow
+
+### 4.1 Line scan: capture → recording files → map → replay
+
+```mermaid
+sequenceDiagram
+  actor U as Owner
+  participant V as LineScanView and LineScanModel (main)
+  participant P as LineCapturePipeline (data queue)
+  participant S as AVCaptureSession (session queue)
+  participant R as LineRecorder (data queue)
+  participant F as Scan folder
+  participant B as TopoMapBuilder (detached task)
+  participant ST as ScanStore (main)
+  U->>V: open Line scan
+  V->>P: configure, setDirection, setBaseline, start
+  P->>S: startRunning, short shutter after 1 s
+  loop every synchronized video + depth frame (30 fps)
+    S-->>P: dataOutputSynchronizer callback
+    P->>P: depth to mm, speed, zone speeds, travel, overlay, tilt
+    P-->>V: LiveUpdate via Task on MainActor
+  end
+  U->>V: Record
+  V->>ST: newFolder(line)
+  V->>P: startRecording(folder)
+  P->>R: create recorder on the next frame
+  P->>F: copy Baseline.bin and Baseline.json
+  loop each frame while recording
+    P->>R: append(sample buffer, depth mm, LineFrameInfo)
+    R->>F: HEVC sample to Video.mov, one record to Depth.bin
+  end
+  U->>V: Stop
+  V->>P: stopRecording
+  P->>R: finish
+  R->>F: Recording.json, Frames.csv, ZoneSpeeds.csv
+  R->>F: finishWriting Video.mov
+  R-->>V: Result via Task on MainActor
+  V->>P: stop camera and motion
+  V->>B: build(folder, info)
+  B->>F: TopoMapGrid.png, TopoMap.csv, TopoGrid.bin, TopoStats.csv and json, profiles
+  B-->>V: Output
+  V->>F: TopoMap.png (TopoMapRenderer, main)
+  V->>ST: save ScanRecord, writes scan.json
+  V-->>U: scan detail opens
+```
+
+```mermaid
+sequenceDiagram
+  actor U as Owner
+  participant RV as TopoReplayView (main)
+  participant BG as Detached tasks
+  participant RM as TopoReplayModel (main, CADisplayLink)
+  participant SC as TopoReplayScene (SceneKit)
+  U->>RV: open Topographic replay
+  RV->>RV: decode Recording.json, try TopoGrid.bin
+  alt TopoGrid.bin missing
+    RV->>BG: TopoMapBuilder.build
+    BG-->>RV: Output, TopoGrid.bin written
+    RV->>RV: TopoMap.png, refresh scan file list
+  end
+  RV->>BG: TopoGridFile.load and TopoReplaySource.make
+  BG-->>RV: TopoReplaySource
+  RV->>RM: init, start, togglePlay (1x)
+  loop each display refresh, 30 to 60 Hz
+    RM->>RM: playhead += min(dt, 0.1 s) x speed
+    RM->>RM: reveal position, window columns jLo..jHi
+    alt visible columns changed
+      RM->>SC: setStrip (new geometry)
+    else
+      RM->>SC: moveStrip (offset only)
+    end
+    RM->>RM: readouts at most 20 Hz while playing
+  end
+```
+
+### 4.2 File dependencies
+
+```mermaid
+flowchart LR
+  CAM["Camera + LiDAR 30 fps"] --> PIPE["LineCapturePipeline"]
+  CAL["Documents/Calibration/Baseline.*"] --> PIPE
+  PIPE --> MOV["Video.mov"]
+  PIPE --> DEP["Depth.bin"]
+  PIPE --> META["Recording.json, Frames.csv, ZoneSpeeds.csv"]
+  PIPE --> BC["Baseline.bin + Baseline.json copy"]
+  DEP --> TMB["TopoMapBuilder"]
+  META --> TMB
+  BC --> TMB
+  TMB --> GRID["TopoGrid.bin"]
+  TMB --> CSVS["TopoMap.csv, TopoStats.csv, AcrossProfile.csv, AlongProfile.csv"]
+  TMB --> JS["TopoStats.json, TopoProfiles.json"]
+  TMB --> PNG["TopoMapGrid.png"]
+  PNG --> COMP["TopoMap.png"]
+  GRID --> SRC["TopoReplaySource"]
+  META --> SRC
+  SRC --> DG["TopoDisplayGrid"] --> SCN["TopoReplayScene"]
+  MOV --> PB["PlaybackModel"]
+  DEP --> PB
+  META --> PB
+  BC --> PB
+  JS --> PB
+  JS --> TMV["TopoMapView"]
+  PNG --> TMV
+```
+
+### 4.3 Other modes
+- Room: `RoomCaptureView` → delegate `captureView(didPresent:error:)` → `RoomScanController.received` (main) → Save → files + `scan.json`.
+- Mesh: `ARView` session → `currentFrame.anchors` (`ARMeshAnchor`) → `MeshExporter` → files + `scan.json`.
+- Object: `ObjectCaptureSession` writes photos to `Images/` → `.completed` → `PhotogrammetrySession` → `Model.usdz` + `scan.json`.
+
+## 5. Threading and concurrency
+
+Swift 5 language mode (`SWIFT_VERSION: "5.0"`), so strict concurrency checking is minimal. All `@Observable` models and UI are `@MainActor`.
+
+| Execution context | Owns / runs |
+|---|---|
+| Main actor | SwiftUI views; `ScanStore`; `RoomScanController`, `MeshScanController`, `ObjectCaptureController`, `ViewerModel`, `LineScanModel`, `PlaybackModel`, `TopoReplayModel`, `TopoReplayScene`; `MeshExporter` and `TopoMapRenderer` (both `@MainActor`); `OrientationLock`; `LineCapturePipeline.configure` (called from `LineScanModel.start`); CMMotionManager start/stop. |
+| `phonelidar.line.session` (serial) | `AVCaptureSession.startRunning/stopRunning`, depth filtering toggle, exposure changes (`applyShutter`). |
+| `phonelidar.line.data` (serial, `.userInitiated`) | `AVCaptureDataOutputSynchronizer` delegate; all "data-queue state" of the pipeline: `SpeedEstimator`, travel and smoothing buffers, active `Baseline`, calibration capture, `LineRecorder` (AVAssetWriter appends, Depth.bin writes, `finish` JSON/CSV writes). Polls `CMMotionManager.deviceMotion`. |
+| Global queue (`.userInitiated`) | `Baseline.build` after calibration capture; completion hops to the main actor. |
+| AVAssetWriter completion queue | `finishWriting` completion → `stopRecording` completion → `Task { @MainActor }`. |
+| Detached tasks (`.userInitiated`) | `TopoMapBuilder.build` (after Stop, on Rebuild, on replay open), `TopoGridFile.load` + `TopoReplaySource.make`, probe sampling (`DispatchQueue.concurrentPerform` over frames). |
+| Main run loop, `.common` mode | `CADisplayLink` replay clock (preferred 60 Hz, range 30–60); `AVPlayer` periodic time observer (1/30 s, main queue). |
+| SceneKit render thread | Renders `SCNView`s; geometry is replaced from the main actor. |
+
+How frames cross threads:
+- AVFoundation delivers a `CMSampleBuffer` and `AVDepthData` on the data queue. The depth map is copied into a `[Float]` of millimetres there; the video buffer is read in place (luma pyramid) and passed directly to `AVAssetWriterInput.append` on the same queue — no hand-off.
+- The UI receives a `LiveUpdate` value (numbers plus an immutable `CGImage`) through `Task { @MainActor }`, one task per frame, without coalescing.
+- Calibration frames (`[[Float]]`) are copied into a `CalibrationCapture` value (marked `@unchecked Sendable`) and handed to a global queue.
+- Commands from the UI (`setDirection`, `setBaseline`, `captureBaseline`, `startRecording`, `stopRecording`) are `dataQueue.async` blocks, so they serialize with frame handling; recorder creation happens at the next frame.
+- `Baseline` and `DepthFileReader` are immutable after `init` and marked `@unchecked Sendable` so they can be read from several threads. `SharedFloats` lets `concurrentPerform` write disjoint elements of one buffer.
+- `LineCapturePipeline` is `@unchecked Sendable`; its `device`, `onUpdate` and `motion` are set on the main thread before the session starts and read on the queues afterwards (ordering by program flow, not by synchronization).
+
+Rules for new code: keep per-frame state on the data queue; never touch UI or `@Observable` state from it; hand results to the main actor as values; heavy post-processing in detached tasks returning `Result` values; no blocking work inside the display-link tick.
+
+## 6. Algorithms
+
+### 6.1 Coordinate conventions
+
+| Quantity | Convention |
+|---|---|
+| Camera buffers | Video and depth are used in the sensor's native landscape orientation (video connection rotation 0). |
+| Buffer x / depth u | Across the material = top → bottom of the portrait picture. |
+| Buffer y / depth v | Along the travel = right → left of the portrait picture; row 0 is the right edge. |
+| Direction sign s | `TravelDirection.bufferSign`: +1 right → left (material moves toward increasing rows), −1 left → right. |
+| Portrait picture (0…1) | x_p = 1 − v/H, y_p = u/W (`ZoneGrid`, probe mapping). Picture aspect = H_depth / W_depth (0.75 for 4:3). |
+| Zones | n = r · 6 + c; c = across column (0 = top of screen), r = along row (0 = right edge). |
+| Speed sign | + = travel direction for the main speed and every zone. |
+| Gravity tilt | tiltX = asin(−g.x)·180/π (+ = right edge high), tiltY = asin(−g.y)·180/π (+ = top edge high), phone screen-up / camera-down. |
+| Map coordinates | q = s · travel − y (mm, increases left → right on the screen, fixed to the material); x = (u − cx)·z/fx (mm from the principal-point line, increases downward). y = (v − cy)·z/fy. |
+| Replay coordinate | p = s · q, increases toward newer material. |
+
+### 6.2 Main speed (template matching)
+
+1. Pyramid (`SpeedEstimator.halfLevel`, `downsample`): L½ = 2 × 2 box mean of the luma plane (8-bit, or 10-bit shifted right by 8); L⅛ = two more 2 × 2 box downsamples. L½ needs ≥ 64 × 64 px.
+2. Coarse search on L⅛ (one step = 8 full-resolution px): template width w8/2 centred across (tx = w8/4), height th = max(12, h8/4), placed at the upstream edge (ty = 7 for s = +1, h8 − th − 7 for s = −1). Offsets d = k·s for k ∈ [−6, F], F = min(60, room), and across e ∈ [−4, 4]. Cost = sum of absolute differences (SAD) over the template. If the best k equals F the material moved farther than the search → no reading.
+3. Refinement on L½ around (4d, 4e) ± 5: template width hw/2 centred across; height max(24, hh/4), clipped so both previous and shifted positions fit; vertically centred on the previous + current positions (lowest lens distortion). SAD on every second pixel and row.
+4. Quality q = (mean cost − best cost) / mean cost, clamped to [0, 1].
+5. Sub-pixel: δ = 0.5(c₋ − c₊)/(c₋ − 2c₀ + c₊), clamped to ±0.5, separately along and across.
+6. Result: along = 2·s·(d + δ_d), across = 2·(e + δ_e) full-resolution px; tracked region = union of template and matched rectangle (normalized).
+
+Range: just under 60 coarse steps = 480 px per frame. Any change of `travelSign` or a frame-size change resets the previous level.
+
+### 6.3 Zone speeds
+
+`SpeedEstimator.matchTiles` on the same pyramid, for a 6 × 4 grid:
+- Template 16 × 16 at L⅛ (128 × 128 full-resolution px), centred in each grid cell.
+- Room: forward room = rows available in the travel direction, backward room = against it. If forward room ≥ backward room the zone matches forward (template from the previous frame, searched in the current one); otherwise backward (template from the current frame, searched in the previous one with negated offsets), so zones at the downstream edge can still measure. Search k ∈ [−min(3, back room), min(40, room)] steps, across ±2 steps. A best k at the room limit → no reading (≤ 39 steps ≈ 312–320 px per frame).
+- Refinement on L½: 64 × 64 template, offsets (4k + i, 4e + j), i ∈ [−4, 4], j ∈ [−3, 3], SAD on every second pixel/row; needs ≥ 9 valid offsets; quality and sub-pixel as above; along = 2·(4k + i + δ).
+
+### 6.4 Pixel → millimetre scaling
+
+- Depth intrinsics (depth px): from `AVDepthData.cameraCalibrationData.intrinsicMatrix` scaled by (W_depth / ref_width, H_depth / ref_height); fallback fx = fy = W/2 / tan(fov/2) with the format's `videoFieldOfView` (default 64°), cx = W/2, cy = H/2.
+- Focal length in video px along the travel: f = fy · H_video / H_depth.
+- Main speed: v = along · Z / f / Δt, Z = median depth (every 2nd pixel, ≥ 8 samples) in the tracked region, else the central-half median. Valid if q ≥ 0.1 and 0.001 s < Δt < 1 s (Δt from presentation timestamps).
+- Zone speed: same, Z = median over the zone's depth rectangle (u ∈ [c/6, (c+1)/6)·W, v ∈ [r/4, (r+1)/4)·H); valid if zone quality ≥ 0.12.
+- Map: x = (u − cx)·z/fx, y = (v − cy)·z/fy with each pixel's own z (pinhole, no distortion correction).
+- Probe position: right = −(v − cy)·z/fy, down = (u − cx)·z/fx with z = current probe distance or the frame median.
+
+### 6.5 Smoothing, travel and angle
+
+| Value | Rule |
+|---|---|
+| Live speed | Mean of valid readings in the last 15 frames (missing = NaN placeholder); needs ≥ 3, else the current raw reading. |
+| Live zone speeds | Mean of the last 15 frames per zone, needs ≥ 4 readings. Fastest = largest absolute value, signed. |
+| Recorded values | Raw per-frame speeds and zone speeds (no smoothing). |
+| Playback / replay speed | `LineMath.smoothed(radius: 7)`: centred 15-frame mean skipping missing values. |
+| Travel | Every frame with 0 < Δt < 1 s: T += (v ?? v_last ?? 0)·Δt. T runs from session start; the recorder stores T − T_at_record_start. `v_last` is not reset by direction changes. |
+| Angle | atan2(across, absolute along)·180/π when the absolute along shift > 2 px. |
+| Flatness σ | Population std dev of finite, non-zero values over the central 80 % (every 3rd pixel and row), needs > 20 samples; heights in height mode, distances otherwise. |
+| Median distance | Median of positive depths over the central half (every 2nd pixel). |
+
+### 6.6 Baseline calibration and tilt warning
+
+`LineScanModel.calibrateBaseline` → `captureBaseline(frames: 90)`; the data queue collects 90 depth frames of one size plus gravity tilts, then `Baseline.build(frames:width:height:verify: 30, …)` on a global queue:
+
+1. Usable frames = frames of W × H; need ≥ 10. verifyCount = min(30, usable/3); build frames = the first (usable − verifyCount) (60 of 90).
+2. Per pixel: readings z > 0 across the build frames; need ≥ max(3, build/3) (20); sort; mean of the middle half (indices ⌊n/4⌋ … n − ⌊n/4⌋ − 1). Need valid pixels ≥ W·H/10.
+3. Raw statistics over valid pixels: mean distance, population σ ("raw σ"), P99 − P1 ("raw range").
+4. Plane fill: least-squares plane z = a·u + b·v + c through valid pixels (every 2nd pixel) by Cramer's rule; invalid pixels get the plane value when it is > 0.
+5. Corrected σ: for each verify frame, population σ of (baseline − z) over pixels with both > 0 (every 2nd pixel, > 10 samples); mean over frames.
+6. Coverage = valid pixels before fill / W·H × 100. Tilt = mean gravity tilt during capture.
+
+Use: height = baseline − distance where both > 0, else NaN. The baseline is applied only when its W × H equals the current depth map. Tilt warning: √((x − x_cal)² + (y − y_cal)²) > 0.3° using the raw gravity tilt (not the level zero). Filter warning: `info.filteredDepth != current setting`.
+
+### 6.7 Bubble level and surface tilt
+
+- Gravity from `CMMotionManager.deviceMotion` (30 Hz), read each frame on the data queue (§6.1 signs). Shown tilt = gravity tilt − saved zero (when zeroed). Bubble offset = (x, y)/3°, clamped to the rim, +y drawn upward. Colour by √(x² + y²): ≤ 0.5° green, ≤ 2° yellow, else red. Rings drawn at 0.5° and 1.5° (colour bands are 0.5°/2°; A-11).
+- Surface tilt (`surfaceTilt`, every odd frame): sample every 4th pixel inside a border of max(2, min(W, H)/16); camera coordinates X = (u − cx)z/fx (toward the screen bottom), Y = (v − cy)z/fy (toward the screen left), Z = z; need ≥ 50 points; solve the normal equations of Z = a·X + b·Y + c by Cramer's rule (|det| > 1e−9); tiltY = −atan(a)·180/π, tiltX = −atan(b)·180/π.
+
+### 6.8 Topographic stitching
+
+`TopoMapBuilder.build(folder:info:)`:
+1. Frames = `info.frames` truncated to the number of `Depth.bin` frames; need ≥ 2. Baseline from the folder if its size matches → height mode.
+2. z_typ = median of the positive per-frame `medianDepth`. Border b = max(2, min(W, H)/32) px on every edge is ignored.
+3. Bounds: for each frame (z = its median or z_typ), q ∈ [s·T − y(H−1−b), s·T − y(b)], x ∈ [x(b), x(W−1−b)]. Pad = 6 % of the across width, added on all four sides.
+4. Cell = max(2, round(z_typ / fx_mid)) mm, fx_mid from the middle frame; while columns × rows > 3,000,000, cell × 1.25. Columns = ⌈(q_max − q_min)/cell⌉ + 1, rows likewise.
+5. For every frame and pixel inside the border with z > 0 (and baseline b_px > 0 in height mode): value = z or b_px − z; q = s·T − (v − cy)/fy·z; x = (u − cx)/fx·z; col = Int((q − q_min)/cell), row = Int((x − x_min)/cell) (truncation toward zero); skip outside the grid. Welford update of d = value − z_ref (z_ref = z_typ in distance mode, 0 in height mode) in Float: n ← n+1, δ = d − mean, mean += δ/n, M2 += δ·(d − mean). Hit counters are UInt16 and saturate at 65,535 (further readings skipped).
+6. Cell value = z_ref + mean.
+
+Known effects: the coverage ceiling from the pad (B-4) and possible empty rows when the rounded cell is smaller than a depth pixel's footprint (§11, R-08).
+
+### 6.9 Map statistics
+
+All over cells with data (one value per cell, equal weight; N = cells):
+- mean, population variance and σ; CV = 100·σ/mean in distance mode, 0 in height mode (B-7); min, max, range.
+- Percentiles: sorted values, index round((N − 1)·p) for p = 0.01, 0.05, 0.5, 0.95, 0.99.
+- Across profile: mean of each row having ≥ max(1, max-row-count/10) cells; position = x_min + (r + 0.5)·cell. Along profile: mean of each column having ≥ max(1, max-column-count/10) cells; position = (c + 0.5)·cell from the left edge of the grid. Profile σ (population) and range over profile points.
+- Residual σ: RMS of (cell − row mean − column mean + overall mean) over cells whose row and column both have a profile mean.
+- Repeat-reading noise: √(mean over cells with n ≥ 3 of M2/(n − 1)).
+- Readings per cell = total hits / N. Coverage = N / (columns × rows) × 100. Length = columns × cell, width = rows × cell (padded grid).
+- Speed: over frames with a recorded speed: mean, population σ, min, max; tracked % = frames with speed / frames × 100.
+- Colour range: height mode blue = P1, red = max(P99, P1 + 0.5); distance mode red = P1 (near), blue = max(P99, P1 + 1) (far).
+
+### 6.10 Replay data preparation
+
+`TopoReplaySource.make(grid:info:)`:
+1. Distance mode: reference = median of grid values (sampled with step ⌈count/200,000⌉); value → reference − value (relative height, + = closer).
+2. Crop rows to those with ≥ 30 % of the fullest row's cells (first to last), columns to the first … last column with data; need > 2 of each.
+3. Reorder so column 0 is the oldest material: s = +1 keeps order, s = −1 reverses. p_start = q_min + c0·cell (s = +1) or −(q_min + (c1 + 1)·cell) (s = −1).
+4. Reveal position per frame: the downstream edge row (H − 1 − b for s = +1, b for s = −1) projected at the frame's median distance: p = T − s·(row − cy)·z/fy; running maximum (never decreases); leading invalid frames copy the first valid value.
+5. Run-out speed: travel change over the last 1 s (if that span ≥ 0.2 s), else over the whole recording; 0 if ≤ 1 mm/s or not finite. Run-out time = min(60, (p_end − last reveal)/speed). Duration = recording duration + run-out time.
+6. Defaults: median and robust σ = (P84 − P16)/2 (≥ 0.05 mm) of the cropped values (sampled); tolerance = max(nice(robust σ), 0.05); stepper step = nice(tolerance/5); target = median rounded to the step. nice() picks 1, 2, 2.5, 5 or 10 × 10ⁿ.
+7. `revealPosition(at:)` interpolates linearly between frames; after the recording: last + (t − T_rec)·speed (capped at p_end), or, without run-out, p_end once t ≥ duration. `revealTime(of:)` is the inverse (binary search).
+
+### 6.11 Replay display grid and rendering
+
+- Block factor k = ⌈max(window columns/260, rows/90)⌉ (≥ 1); rebuilt when k changes (window length or data).
+- Block value = mean of finite cells in the k × k block; rows = ⌊rows/k⌋ (the last block row absorbs the remainder), columns = ⌈columns/k⌉.
+- Gap fill (in place): linear interpolation down each column with no gap limit, leading/trailing gaps extended; then along each row for gaps ≤ 8 blocks, edges extended up to 8 blocks. Smoothed copy = 3 × 3 mean of finite neighbours where the centre is finite. Column means and per-column reveal times are precomputed. Readouts and statistics use the filled blocks (B-3).
+- Window: newest = revealPosition(playhead); window start = newest − length (length = factor × strip width); jHi = ⌊(newest − p_start)/block − 0.5⌋, jLo = ⌈(start − p_start)/block − 0.5⌉.
+- Scene: metres; x along the window, y up, z across (back = top of the recording screen). Height h = H·clamp((v − base)/(top − base), 0, 1.25) with base = target − 4·tol, top = target + 3·tol, H = width × height scale. Colour t = (v − (target − 2·tol))/(4·tol) through the 9-stop palette (no data = grey 0.8). Walls on all four sides (front, newest end, oldest end, back), shade 0.93 × edge colour. Tolerance planes at target ± tol, `renderingOrder` −20/−19, no depth read/write, so the surface hides them. Newest-line bar on top (no depth read). Camera: orthographic; world transform shears z into x (column 2 = (−shear, 0, 1, 0)); elevation 5°–90° (90° in Map mode); orthographic scale fitted to the window plus margins and divided by zoom. Labels are billboarded `SCNText` nodes outside the sheared node, positioned with the same shear.
+- Geometry is rebuilt only when (jLo, jHi, smooth, k) changes; otherwise the strip node is moved by the sub-block offset.
+
+### 6.12 Replay timing
+
+Each display-link tick: if playing, playhead += clamp(now − last, 0, 0.1)·speed, stopping at the duration. Speed ∈ [0.05, 20] (controls offer 0.1–20). Readouts refresh at most every 0.05 s while playing and immediately when paused. Step: ±1 recorded frame, or ±1/30 s past the last frame.
+
+### 6.13 Playback probe
+
+- Mapping: u = ⌊y_p·W⌋, v = ⌊(1 − x_p)·H⌋ (clamped).
+- Current: median of positive depths in the 3 × 3 window (radius 1) of the frame on screen; height mode: baseline 3 × 3 median − that value.
+- Whole recording (after lift): for every frame i < min(frames, depth frames), the same 3 × 3 median (decompressing each frame) in `concurrentPerform`; NaN when empty. Statistics over finite values: min/max with times, mean, population σ, valid/total counts; trace thinned by a fixed stride to ≤ 600 points. A generation counter discards results for an outdated probe position.
+
+## 7. On-disk formats
+
+### 7.1 General
+- All files of a scan live in its folder (§8). Text is UTF-8 without BOM. Numbers are written with `String(format:)` (not localized: "." decimal separator) or by `JSONEncoder`.
+- Binary integers and floats are little-endian (iOS is little-endian; headers are written explicitly LE, bulk Float32/UInt16 arrays in host order).
+- JSON written with `JSONEncoder.pretty` has sorted keys and ISO 8601 dates; optional properties that are `nil` are omitted; `nil` elements inside arrays are `null`.
+
+### 7.2 `scan.json` (every scan)
+
+`ScanRecord`, pretty-printed, sorted keys:
+
+| Key | Type | Notes |
+|---|---|---|
+| `created` | string, ISO 8601 | Save time. |
+| `files` | [string] | Top-level regular files except `scan.json`, sorted; refreshed on every save. |
+| `folderName` | string | Overwritten on load with the real directory name. |
+| `id` | string (UUID) | |
+| `kind` | `"room"`, `"mesh"`, `"object"`, `"line"` | |
+| `measurements` | [object] | `PointMeasurement`: `end` [x, y, z] (m), `id` (UUID), `label` ("M1"…), `meters`, `start` [x, y, z]. |
+| `name` | string | Default "<Room/Equipment/Object/Line> <abbreviated date, short time>" (locale-dependent). |
+| `primaryModel` | string, optional | `Room.usdz`, `Mesh.usdz` or `Mesh.obj`, `Model.usdz`; absent for line scans. |
+| `summary` | [string] | Lines shown on the scan screen. |
+
+`files`, `summary` and `measurements` are required by the decoder (C-17); a folder whose `scan.json` fails to decode is skipped.
+
+### 7.3 CSV conventions
+- First row = header. Comma separator. A field is quoted only if it contains a comma, a double quote or a line feed; quotes inside are doubled (feet-inches values such as `8' 0.0"` are therefore written `"8' 0.0"""`).
+- Rows end with LF (`\n`), including the last row. Missing values are empty fields.
+- `TopoMap.csv` is written line by line by `TextFileWriter` (1 MB buffer) without the escape function (no field needs quoting).
+
+### 7.4 Room scan
+- `Room.usdz` — `CapturedRoom.export(to:exportOptions: .parametric)`: walls, doors, windows, openings and objects as boxes. Required.
+- `RoomMesh.usdz` — `.mesh` export; omitted if the export throws.
+- `CapturedRoom.json` — Apple's `CapturedRoom` `Codable` representation, pretty, sorted keys, ISO 8601 dates.
+- `RoomReport.csv` — header `type,category,number,width_m,height_m,depth_m,width_ft_in,height_ft_in,depth_ft_in,center_x_m,center_y_m,center_z_m,confidence`. Rows in the order walls, doors, windows, openings, floors, objects; `type` ∈ wall, door, window, opening, floor, object; `category` = Swift description of the RoomPlan category (for example `door(isOpen: true)`, `table`); `number` 1-based per type; dimensions = `dimensions.x/y/z` with `%.4f` and feet-inches; centre = translation column of `transform` (`%.4f`, m, RoomPlan world space); `confidence` = `high`, `medium` or `low`. No summary rows (floor area and wall length are only in `scan.json` `summary`; C-16).
+
+### 7.5 Equipment scan
+- `Mesh.obj` — text: `# Phone LiDAR mesh export`, `# Units: metres, Y up`, then `v x y z` per vertex (Swift `Float` description), `vn nx ny nz` per vertex, `f a//a b//b c//c` per triangle (1-based; normal index = vertex index). World space of the AR session, metres, Y up.
+- `Mesh.ply` — ASCII header, exactly:
+  ```
+  ply
+  format binary_little_endian 1.0
+  comment Phone LiDAR mesh export, units metres, Y up
+  element vertex <N>
+  property float x
+  property float y
+  property float z
+  property float nx
+  property float ny
+  property float nz
+  element face <F>
+  property list uchar int vertex_indices
+  end_header
+  ```
+  (each line ends with LF), then N × 24 bytes (six Float32 LE: x, y, z, nx, ny, nz), then F × 13 bytes (UInt8 `3`, three Int32 LE vertex indices, 0-based).
+- `Mesh.usdz` — `SCNScene.write` of one node `LidarMesh` with vertex and normal sources, one triangle element (UInt32 indices), a double-sided diffuse material (white 0.78). Omitted if SceneKit returns false; then `primaryModel = "Mesh.obj"`.
+- `Measurements.csv` — header `label,distance_m,distance_ft_in,start_x_m,start_y_m,start_z_m,end_x_m,end_y_m,end_z_m`; values `%.4f`; feet-inches quoted (§7.3). Written only when measurements exist.
+
+### 7.6 Object capture
+- `Images/` — photos written by `ObjectCaptureSession` (format chosen by the framework).
+- `Checkpoint/` — photogrammetry checkpoint; deleted after a successful reconstruction.
+- `Model.usdz` — `PhotogrammetrySession` `.modelFile(url:detail: .reduced)`: textured, metres.
+
+### 7.7 `Video.mov`
+QuickTime movie, one HEVC video track, no audio. Width × height = camera buffer in sensor orientation (landscape, e.g. 1920 × 1440, from `Recording.json`), average bit rate 16,000,000 bit/s, track transform = rotation by π/2 (plays in portrait). The writer session starts at the first frame's presentation time, so movie time 0 = frame 0 (`time` 0 in `Recording.json`). Frames for which the writer was not ready are missing from the movie but present in `Depth.bin`.
+
+### 7.8 `Depth.bin`
+
+| Offset | Size | Type | Field |
+|---|---|---|---|
+| 0 | 4 | ASCII | Magic `PLDP` |
+| 4 | 4 | UInt32 LE | Version = 1 |
+| 8 | 4 | UInt32 LE | Width W (depth px, sensor landscape) |
+| 12 | 4 | UInt32 LE | Height H |
+| 16 | … | records | One record per recorded frame, in order |
+
+Record: UInt32 LE n = compressed byte count, then n bytes of an LZFSE stream (`NSData.compressed(using: .lzfse)`, Apple Compression `COMPRESSION_LZFSE`, decodable with the open-source `lzfse` library). Decompressed payload: W × H UInt16 LE, row-major (index v·W + u), unit 0.1 mm, value = UInt16(mm·10 + 0.5) for 0 < mm < 6500, otherwise 0 (no data or ≥ 6.5 m).
+
+Reader rules (`DepthFileReader`): memory-mapped; requires the magic and W, H > 0; does not check the version; scans records until a length of 0 or a record that runs past the end of the file (a truncated tail is ignored); a frame whose payload is shorter than W·H·2 bytes reads as missing. Record i corresponds to `frames[i]` in `Recording.json`.
+
+### 7.9 `Recording.json`
+
+`LineRecordingInfo`, pretty-printed, sorted keys:
+
+| Key | Type | Notes |
+|---|---|---|
+| `depthHeight`, `depthWidth` | int | Depth map size. |
+| `direction` | `"rightToLeft"` or `"leftToRight"` | |
+| `filteredDepth` | bool | Apple depth filtering on. |
+| `frames` | [object] | `LineFrameInfo`, one per `Depth.bin` record. |
+| `shortShutter` | bool | |
+| `tileColumns`, `tileRows` | int, optional | 6 and 4; absent before PR #7. |
+| `videoHeight`, `videoWidth` | int | Camera buffer size (landscape). |
+
+`LineFrameInfo`:
+
+| Key | Type | Unit / meaning |
+|---|---|---|
+| `index` | int | 0-based frame number. |
+| `time` | double | s since the first recorded frame (presentation timestamps). |
+| `speed` | double, optional | Raw main speed, mm/s, + = travel direction. |
+| `travel` | double | mm since recording start (§6.5). |
+| `shiftPixels`, `crossShiftPixels` | double, optional | Main along / across shift, full-resolution video px. |
+| `quality` | double | Main match quality 0–1 (0 when no match). |
+| `medianDepth` | double | Central-half median distance, mm. |
+| `fx`, `fy`, `cx`, `cy` | float | Depth intrinsics in depth px. |
+| `tiltX`, `tiltY` | double, optional | Gravity tilt, degrees (§6.1). |
+| `surfaceTiltX`, `surfaceTiltY` | double, optional | LiDAR plane-fit tilt, degrees (last computed value). |
+| `tileSpeeds` | [double or null], optional | 24 raw zone speeds, mm/s, index n = r·6 + c. |
+| `fastestSpeed`, `fastestTile` | double / int, optional | Zone with the largest absolute raw speed. |
+
+Readers must treat every optional key as possibly absent (older recordings).
+
+### 7.10 `Frames.csv`
+Header `frame,time_s,speed_mm_s,speed_m_min,travel_mm,shift_px,cross_shift_px,track_quality,median_distance_mm,tilt_x_deg,tilt_y_deg,surface_tilt_x_deg,surface_tilt_y_deg,fastest_speed_mm_s,fastest_zone`. Formats: `%.4f` time; `%.1f` speed, travel, distance, fastest speed; `%.3f` m/min (= mm/s × 0.06) and quality; `%.2f` shifts and tilts; integer frame and zone. Missing values empty.
+
+### 7.11 `ZoneSpeeds.csv`
+Header `frame,time_s,zone0_across0_along0_mm_s,…,zone23_across5_along3_mm_s` (zone n: across = n mod 6, along = ⌊n/6⌋). Raw per-frame zone speeds `%.1f` mm/s, + = travel direction; empty = no reading. Across 0 = top of the screen, along 0 = right edge of the screen.
+
+### 7.12 `Baseline.bin` and `Baseline.json`
+Stored in `Documents/Calibration/` and copied into each recording folder at Record.
+- `Baseline.bin` — no header; W × H Float32 (LE), row-major, mm from the camera to the empty surface per depth pixel, after plane fill (pixels whose fitted plane value is ≤ 0 stay 0). Length must equal W·H·4 bytes or the baseline is rejected.
+- `Baseline.json` — `BaselineInfo`, pretty, sorted keys: `coveragePercent`, `correctedStdDev` (mm), `created` (ISO 8601), `filteredDepth`, `frames` (usable frames), `height`, `meanDistance` (mm), `rawRange` (P99 − P1, mm), `rawStdDev` (mm), `tiltX`, `tiltY` (degrees, optional), `width`.
+
+### 7.13 `TopoGrid.bin`
+
+| Offset | Size | Type | Field |
+|---|---|---|---|
+| 0 | 4 | ASCII | Magic `PLTG` |
+| 4 | 4 | UInt32 LE | Version = 1 |
+| 8 | 4 | UInt32 LE | Columns (along) |
+| 12 | 4 | UInt32 LE | Rows (across) |
+| 16 | 8 | Float64 LE | Cell size, mm |
+| 24 | 8 | Float64 LE | q_min: map coordinate of the left edge of column 0, mm |
+| 32 | 8 | Float64 LE | x_min: across position of the top edge of row 0, mm from the principal-point line |
+| 40 | 4 | UInt32 LE | Height mode: 1 = heights above the baseline, 0 = distances from the camera |
+| 44 | 4 | UInt32 LE | Reserved = 0 |
+| 48 | 4·R·C | Float32 LE | Values, row-major (row = across, top → bottom of the screen; column = along, left → right), mm, NaN = no data |
+
+Values are absolute (distance mode: z_typ + cell mean). The reader requires the magic, columns and rows > 0, enough bytes, and a finite positive cell size; it does not check the version or overflow of rows × columns (B-9). Same cells as `TopoMap.csv`.
+
+### 7.14 `TopoMap.csv`
+Row 1: `across_mm \ along_mm` followed by each column centre (c + 0.5)·cell as `%.0f` mm from the left edge of the grid. Each following row: the row centre x_min + (r + 0.5)·cell as `%.0f` mm, then one value per column with one decimal (rounded to 0.1 mm, e.g. `-0.3`, `1234.5`) or empty. Values: heights in height mode, distances otherwise.
+
+### 7.15 `TopoStats.csv` and `TopoStats.json`
+- CSV header `metric,value,unit`, rows in this order (P = `height` or `distance`): `values` (`height_above_flat_baseline` / `distance_from_camera`), `frames`, `duration` (s, 2 dp), `cell_size` (mm, 1 dp), `map_length` (mm, 0 dp), `map_width`, `coverage` (%, 1 dp), `cells_with_data`, `readings_per_cell_mean` (1 dp), `P_mean` (2 dp), `P_variance` (mm^2, 3 dp), `P_std_dev` (3 dp), `P_cv` (%, 3 dp), `P_min`, `P_max`, `P_range`, `P_p1`, `P_p5`, `P_median`, `P_p95`, `P_p99` (1 dp), `across_profile_std_dev` (3 dp), `across_profile_range` (2 dp), `along_profile_std_dev` (3 dp), `along_profile_range` (2 dp), `residual_std_dev` (3 dp), `repeat_reading_std_dev` (3 dp), `speed_mean` (mm/s, 1 dp), `speed_std_dev` (2 dp), `speed_min`, `speed_max` (1 dp), `speed_tracked` (%, 1 dp), `colour_dark_red` (mm, 1 dp), `colour_dark_blue` (1 dp). Speed values are empty when no frame had a speed.
+- JSON: `TopoStats` (pretty, sorted keys): `acrossRange`, `acrossStdDev`, `alongRange`, `alongStdDev`, `cellSize`, `cellsWithData`, `colorFar`, `colorNear`, `columns`, `coveragePercent`, `cvPercent`, `duration`, `frames`, `heightMode` (optional; absent in pre-baseline recordings), `lengthMM`, `maximum`, `mean`, `meanHitsPerCell`, `median`, `minimum`, `p1`, `p5`, `p95`, `p99`, `range`, `repeatStdDev`, `residualStdDev`, `rows`, `speedMax`, `speedMean`, `speedMin`, `speedStdDev` (optional), `speedTrackedPercent`, `stdDev`, `variance`, `widthMM`. In height mode `colorFar` is the low (blue) end and `colorNear` the high (red) end.
+
+### 7.16 Profiles
+- `AcrossProfile.csv` — header `across_mm,<value>,cells`; `across_mm` = row centre, mm from the principal-point line (`%.1f`).
+- `AlongProfile.csv` — header `along_mm,<value>,cells`; `along_mm` = column centre from the left edge of the grid (`%.1f`).
+- `<value>` = `mean_height_mm` (height mode) or `mean_distance_mm` (`%.2f`); `cells` = cells averaged.
+- `TopoProfiles.json` — compact JSON `{"across": [ProfilePoint], "along": [ProfilePoint]}`, `ProfilePoint` = `position`, `value`, `cells` (key order not guaranteed).
+
+### 7.17 Images
+- `TopoMapGrid.png` — RGBA 8-bit (premultiplied alpha, device RGB); width ⌊columns/f⌋, height ⌊rows/f⌋ with f = ⌈columns/12,000⌉; pixel = mean of the cells with data in its f × f block, jet colour over the §6.9 range; transparent = no data. Orientation as on the recording screen (leading edge left for right → left travel).
+- `TopoMap.png` — opaque composite: scale s = max(1, min(8, ⌊1600/map width⌋)); width = max(map width·s, 1100); height = 70 + map height·s + 150; bold 26 pt title "Topographic map — <values> (material travel <arrow>, leading edge on the <side>)"; map drawn without interpolation on a grey background; 600 px legend bar with Low/High (or Far/Near) labels; two statistics lines.
+- `TopoReplay_<t>s.png` — name `String(format: "TopoReplay_%07.2fs.png", playhead)`, e.g. `TopoReplay_0012.34s.png`; SCNView snapshot centred under a 64 pt header (title, time and statistics) and above a 76 pt footer (colour bar with five labels and caption); width max(snapshot, 900) pt at the screen scale.
+
+### 7.18 Preferences
+`UserDefaults.standard`: `lineLevelZeroed` (Bool), `lineLevelZeroX`, `lineLevelZeroY` (Double, degrees).
+
+## 8. Storage layout
+
+```
+<app container>/Documents/            shared with the Files app (On My iPhone › Phone LiDAR)
+├── Scans/
+│   ├── room_2026-11-09_141500/       scan.json, Room.usdz, RoomMesh.usdz, CapturedRoom.json, RoomReport.csv
+│   ├── mesh_…/                       scan.json, Mesh.obj, Mesh.ply, Mesh.usdz, Measurements.csv
+│   ├── object_…/                     scan.json, Model.usdz, Images/…, (Checkpoint/ while reconstructing)
+│   └── line_…/                       scan.json, Video.mov, Depth.bin, Recording.json, Frames.csv, ZoneSpeeds.csv,
+│                                     Baseline.bin, Baseline.json, TopoMapGrid.png, TopoMap.png, TopoMap.csv,
+│                                     TopoGrid.bin, TopoStats.csv, TopoStats.json, TopoProfiles.json,
+│                                     AcrossProfile.csv, AlongProfile.csv, TopoReplay_*.png
+└── Calibration/                      Baseline.bin, Baseline.json (current calibration)
+```
+
+Lifecycle: the folder is created when capture starts (Object, Line) or at save (Room, Mesh); `scan.json` is written last, and a folder without a valid `scan.json` is invisible in the app (C-12). Delete removes the whole folder. There is no quota, cleanup or free-space check.
+
+## 9. Error handling
+
+Error types: `ScanError` (`noData`, `noMesh`, `unsupported`, `cancelled`) and `LineError` (`noLiDAR`, `configuration(String)`, `badFile`, `notEnoughData`), both `LocalizedError` with user-facing messages.
+
+| Situation | Behaviour (as built) |
+|---|---|
+| Capability missing | Mode disabled on Home. |
+| Line camera configuration fails | `LineScanModel.phase = .failed(message)` shown in yellow; only Close works. |
+| Calibration: too few readings | "Calibration failed: not enough LiDAR readings. Check the surface is in view and 0.3–4 m away." |
+| Calibration: save fails | Baseline used for the session; "Baseline in use but not saved: …". |
+| Recorder cannot be created | Silent (`try?`); UI shows REC with 0 frames; Stop reports "Not enough frames…" (A-5). |
+| Depth write fails mid-recording | Frame silently dropped (A-2). |
+| Stop fails | "Recording not saved: …" for 3 s, folder deleted (A-2). |
+| Map build fails after Stop | Scan saved with "Map not built: <reason>". |
+| Scan save fails after Stop | Phase `.failed`, camera already stopped, folder left without `scan.json`. |
+| Baseline copy into recording fails | Silent; the recording is processed in distance mode. |
+| Playback: `Depth.bin` unreadable | Video-only playback, no probe. Missing `Recording.json` → "Cannot open recording". Video not loaded → silent (B-6). |
+| Map screen: `Recording.json` missing on Rebuild | "Recording.json is missing." Build error → "Map not built: …" (hidden if an old map exists; B-5). |
+| Replay: missing/damaged `Recording.json` or build failure | "Cannot replay this recording" with the reason. Corrupt `TopoGrid.bin` → treated as missing and rebuilt. |
+| Room: processing error / save error | Red banner; Save can be retried. `RoomMesh.usdz` failure is silent. |
+| Mesh: no mesh / export error | Message; the AR session stays paused after a failed export (C-6). |
+| Object: capture or reconstruction failure | Message; Close deletes the folder with the photos (C-2). |
+| Viewer: model cannot be opened | "Could not open <file>: …" over an empty scene. |
+| Library: undecodable `scan.json` | Folder skipped silently (C-17). |
+
+## 10. Technology recommendations
+
+### 10.1 Summary
+
+| Area | Decision | Main reason |
+|---|---|---|
+| Language / UI | Native Swift + SwiftUI (UIKit bridges) | RoomPlan, ARKit scene reconstruction, AVFoundation LiDAR depth and Object Capture are native-only APIs. |
+| Project generation | XcodeGen (`project.yml`) | No Mac to edit or merge `.pbxproj`. |
+| CI | GitHub Actions `macos-26` | Free for public repos, same place as the code, scriptable with `gh`. |
+| Distribution | Sideloadly (default), TestFlight (optional job) | Free; TestFlight when the owner pays for the developer program. |
+| 3D viewer and replay | SceneKit | Custom per-frame geometry, orthographic sheared camera, `SCNText`, snapshot and hit testing on iOS 17. |
+| Unit tests | XCTest (host-less bundle on the iOS Simulator) | Mature `xcodebuild` reporting; runs without device frameworks. |
+| Image processing | Plain Swift loops now; Accelerate/vImage after profiling | Correctness first; optimise measured hot spots with regression tests. |
+| Persistence | Plain files (JSON, CSV, binary) in `Documents` | Windows tools, Files app, no database needed. |
+
+### 10.2 Native Swift/SwiftUI vs Flutter, React Native, Unity
+- **Required APIs:** `RoomCaptureView`/`RoomCaptureSession` (RoomPlan), `ARWorldTrackingConfiguration.sceneReconstruction` + `ARMeshAnchor` (ARKit), `AVCaptureDevice.builtInLiDARDepthCamera` + `AVCaptureDataOutputSynchronizer` (synchronized 30 fps depth + video), `ObjectCaptureSession` / `ObjectCaptureView` / `PhotogrammetrySession` (RealityKit), `AVAssetWriter` (HEVC), CoreMotion, SceneKit/ModelIO.
+- **Flutter / React Native:** each API needs a custom native plugin written in Swift anyway; 30 fps frames would cross a platform bridge (copies of large buffers); two toolchains to maintain; Xcode is still required to build. Rejected.
+- **Unity (AR Foundation):** covers ARKit meshing and environment depth, but not RoomPlan, Object Capture or the AVFoundation LiDAR depth camera with synchronized video; large runtime; Xcode export step. Rejected.
+- **Native:** direct access to every API, smallest app, one language; SwiftUI + Observation (iOS 17) keeps UI code short. Chosen.
+
+### 10.3 XcodeGen vs committed `.xcodeproj` (and alternatives)
+- Committed `.xcodeproj`: cannot be edited reliably without Xcode; `project.pbxproj` merge conflicts; every new file needs a project edit. Rejected.
+- XcodeGen: readable YAML, folder-based sources (new files are included automatically), generated in CI in seconds (`brew install xcodegen`). Chosen.
+- Tuist: Swift manifests and more features, but evaluating manifests needs a Swift toolchain — unavailable locally. Not chosen.
+- Swift Package Manager only: an iOS app target with Info.plist, asset catalog and signing settings still needs an Xcode project. Not chosen.
+
+### 10.4 GitHub Actions vs Codemagic vs Xcode Cloud
+- GitHub Actions (`macos-26`, Xcode 26.x): unlimited standard-runner minutes for public repositories, artifacts and logs next to the code, `gh` CLI (REST) usable by agents, secrets for the optional TestFlight job. Chosen.
+- Codemagic: hosted macOS builds with a free tier and a web UI; a second service and account to manage. Its open-source CLI (`codemagic-cli-tools`) is already used inside the TestFlight job for signing, without the hosted service.
+- Xcode Cloud: needs the paid Apple Developer Program, and workflows are set up from Xcode/App Store Connect around a signed app. Not a fit while distribution is unsigned and free.
+
+### 10.5 Sideloadly vs TestFlight
+- Sideloadly + free Apple ID: no cost; needs a Windows PC with iTunes/iCloud (non-Store versions) and USB or Wi-Fi refresh; builds expire after 7 days; 3 apps and 10 App IDs per 7 days. Default.
+- TestFlight: 99 USD/year; over-the-air installs; builds last 90 days; needs four GitHub secrets; the workflow's `testflight` job does signing through the App Store Connect API (no Mac keychain). Optional.
+- AltStore (similar to Sideloadly, also 7-day signing) offers no advantage here.
+
+### 10.6 SceneKit vs RealityKit for the viewer and replay
+- SceneKit: custom `SCNGeometry` from arrays each time the replay window shifts, orthographic camera with a custom shear transform, `SCNText` labels with billboard constraints, `SCNView.snapshot()` for Save image, hit testing for the viewer ruler, OBJ/PLY import through ModelIO, USDZ load; all available on iOS 17; builds warning-free on Xcode 26. Chosen.
+- RealityKit: Apple's actively developed 3D framework and already used for AR capture (`ARView`, Object Capture). Efficient dynamic meshes (`LowLevelMesh`) need iOS 18+, above the deployment target. Risk: SceneKit receives no new features; plan a migration when the deployment target moves to iOS 18+ (backlog).
+
+### 10.7 XCTest vs Swift Testing
+- XCTest: host-less `bundle.unit-test` target compiling the pure-logic sources directly (no `TEST_HOST`), so tests run on any simulator without LiDAR frameworks; `xcodebuild test` prints `Test Case … passed/failed` lines that the CI summary parses. Chosen for P8 (branch `test-infra`).
+- Swift Testing (`import Testing`, `@Test`, `#expect`): ships with Xcode 26 and can coexist in the same target; parameterized tests suit format and algorithm tables. May be adopted for new tests later; the CI summary step would need to understand its output.
+
+### 10.8 Accelerate / vImage
+Current hot paths are scalar Swift: depth Float32 → mm conversion, luma pyramid, SAD block matching (main + 24 zones per frame), percentile sorts, colour mapping, LZFSE per frame. Recommendation: measure per-frame processing time on the device first (P9 V1). If the 33 ms budget is at risk, candidates are `vDSP` for the depth conversion and reductions, `vImageScale_Planar8`/box filters for the pyramid, `vImageTableLookUp_ARGB8888` for colouring, and SIMD SAD. Any optimisation must reproduce the current numeric results within stated tolerances, proven by unit tests on fixed synthetic inputs, because the values are written to output files. Alternatives considered: Metal compute (overkill at 320 × 240 depth, more code); Vision `VNTranslationalImageRegistrationRequest` / optical flow (less control over sub-pixel accuracy and quality metrics).
+
+### 10.9 Other choices
+- HEVC (not H.264): about half the bit rate for the same quality; Windows needs the HEVC video extension to play `Video.mov`.
+- LZFSE for depth: fast on device; Windows readers need the open-source `lzfse` library (Python: `pyliblzfse` or similar).
+- Swift Charts for profile charts; `Canvas` for lightweight sparklines, timelines and replay charts.
+
+## 11. Known limitations and design risks
+
+| ID | Limitation / risk | Consequence | Tracking |
+|---|---|---|---|
+| R-01 | Pinhole model without lens-distortion correction (no `lensDistortionLookupTable`). | Speed scale and map geometry drift toward the image edges; the main tracker is centred to limit this, zones near the edges are affected. | Backlog |
+| R-02 | Travel comes only from texture motion; during lock loss the last valid speed is held (also from before recording, also across a direction change). | Map stretch or compression when the material stops or changes speed while untracked; no absolute reference. | Backlog |
+| R-03 | Texture dependence: blank or specular surfaces give no lock; the short shutter needs light; "lock %" is a relative SAD contrast, not a calibrated confidence. | Gaps in speed; tracked % in statistics. | Owner guidance |
+| R-04 | LiDAR sampling: ~15 real samples/s and ≈ 5 cm spot spacing at 1 m (build guide); the depth map is interpolated; filtered depth is temporally smoothed; distances ≥ 6.5 m are stored as no data. | Small features and sharp edges are smoothed; heights of small objects read low. | P9, documentation |
+| R-05 | Recording metadata is held in memory and written only at Stop (pretty JSON). | Crash or kill loses the metadata; memory and file size grow with duration; decode on the main thread. | A-1, A-3, B-11 |
+| R-06 | No capture-session interruption, runtime-error or thermal handling. | Frozen REC state; gaps in travel. | A-4 |
+| R-07 | Main-thread heavy work: mesh export, model load, playback model init, display-grid rebuild, `TopoMapRenderer`, Room save. | UI stalls on large data. | C-7, C-13, C-15, B-11, B-12 |
+| R-08 | Map cell size is rounded to the nearest whole mm; when it is smaller than a depth pixel's footprint across, some across rows receive no readings (and along columns too for stationary material). | Periodic empty rows in `TopoMap.csv`/`TopoGrid.bin`, lower coverage. | Reported for M1 cycle 2 |
+| R-09 | Coverage, length and width are computed over the 6 %-padded grid. | Gap-free scans read ≈ 85–89 % coverage; width +12 %. | B-4 |
+| R-10 | Replay statistics include gap-filled blocks; the newest displayed column can include not-yet-complete material through block averaging and smoothing. | Statistics and saved PNG include synthetic values. | B-3, B-8 |
+| R-11 | SceneKit is in maintenance mode at Apple. | Future migration cost. | Backlog |
+| R-12 | Concurrency safety rests on conventions: Swift 5 mode, `@unchecked Sendable` (5 places), CMMotionManager used from two threads, one main-actor task per frame without coalescing. | Latent races; main-queue backlog if the UI stalls. | Backlog (Swift 6 migration) |
+| R-13 | Free Apple ID signing expires every 7 days. | App stops opening on the plant floor until re-signed. | Owner process / TestFlight |
+| R-14 | Windows readability: HEVC codec extension and an LZFSE decoder are needed. | Extra setup for analysis. | Documentation |
+| R-15 | Storage grows without quota; orphan folders without `scan.json` are invisible. | Phone storage fills silently. | A-2 (free space), C-12 |
+| R-16 | Public repository: plant imagery, recordings and the replay look reference must not be committed. | Data exposure. | CLAUDE.md rule |
+| R-17 | Map, playback and replay read `Recording.json` frame fields; formats are coupled. | Format changes must keep old fields readable (optional new fields, version bump for binary changes). | CLAUDE.md rule |
+
+## 12. Guide vs code discrepancies
+
+The code wins; the build guide should be corrected (or the code changed, where a review finding says so).
+
+| ID | Build guide | Code |
+|---|---|---|
+| GC-01 | `RoomReport.csv` lists "every wall, door, window, object … floor area, wall length". | CSV rows cover walls, doors, windows, openings, floors and objects (with centre and confidence); floor area and total wall length are only in the scan summary (`scan.json`). C-16 adds summary rows. |
+| GC-02 | Line-scan file list. | Also writes `TopoStats.json` and `TopoProfiles.json` (read by the map screen and playback) and, like every mode, `scan.json`. |
+| GC-03 | Object capture `Images/` folder; all files shareable. | The scan screen lists only top-level regular files, so `Images/` is reachable only through the Files app (C-18). `Checkpoint/` exists during reconstruction and is left behind if the app is terminated. |
+| GC-04 | Equipment scan always produces `Mesh.usdz` and `Measurements.csv`; Room produces `RoomMesh.usdz`. | `Mesh.usdz` only if the SceneKit write succeeds (else the primary model is `Mesh.obj` and there is no AR Quick Look); `Measurements.csv` only with ≥ 1 measurement; `RoomMesh.usdz` is best-effort. |
+| GC-05 | `Depth.bin`: UInt16 distances in 0.1 mm, 0 = no data. | Also 0 for distances ≥ 6500 mm (maximum 6499.9 mm). The version field is not checked; a truncated tail is ignored. |
+| GC-06 | Replay run-out "at the last measured speed". | Mean travel speed over the last 1 s of the recording (fallback: whole recording); no run-out at ≤ 1 mm/s (the rest appears at once at the end); run-out capped at 60 s, so for very slow material the end is never revealed (B-2). |
+| GC-07 | Replay statistics use the display blocks. | The blocks are gap-filled (unlimited down columns, ≤ 8 along rows, edges extended) before statistics, so averages, σ, min/max and % in tolerance include interpolated values (B-3). |
+| GC-08 | Replay redrawn "at every screen refresh". | Display link capped at 60 Hz (range 30–60) on the 120 Hz display; geometry rebuilt only when the visible columns change; readouts ≤ 20 Hz while playing. |
+| GC-09 | Map coverage, length and width (no definition). | Computed over the grid padded by 6 % of the width on each side: a gap-free scan reads ≈ 85–89 % coverage and the width is ≈ 12 % larger than the material (B-4). |
+| GC-10 | Speed ±0.2–0.3 % "once the distance scale is checked against a known speed or length". | No scale-correction setting exists; a correction has to be applied outside the app (FR-SPD-08, backlog). |
+| GC-11 | Probe position "in mm from the picture centre". | Relative to the principal point (cx, cy) of the depth intrinsics, using the probe's current distance (or the frame median). |
+| GC-12 | 3D strip has front and end walls. | A back wall is also drawn. Values below target − 4 tolerances sit at the base; above target + 4.75 tolerances they are clipped. |
+| GC-13 | Saved replay image `TopoReplay_<time>s.png`. | Exact pattern `TopoReplay_%07.2fs.png`, e.g. `TopoReplay_0012.34s.png`. |
+| GC-14 | "Every push to `main` also starts a build"; "Changing the app: push to `main`". | Pushes that change only `*.md` files do not build (`paths-ignore`). The mandatory process is feature branch → PR → CI green → merge; nobody pushes to `main` directly. |
+| GC-15 | Baseline "copied into every recording". | Copied only when its size matches the depth map, and a failed copy is ignored silently (the recording then has no height mode). |
+| GC-16 | Statistics include CV. | In height mode CV is written as 0 to `TopoStats.csv`/`.json` (B-7) and hidden on screen. |
+| GC-17 | Short shutter (1/1000 s). | Exposure is set once to a custom 1/1000 s with ISO scaled from the auto-exposure value 1 s after the camera starts; it does not adapt to later light changes (A-7). |
+| GC-18 | `README.md` (in the repo) describes the app. | The README predates Line scan (C-22); the build guide is the current user documentation. |
