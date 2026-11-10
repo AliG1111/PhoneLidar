@@ -695,23 +695,28 @@ final class LineRecorder: @unchecked Sendable {
 
     /// `f` must be sanitized (no NaN / inf).
     static func framesRow(_ f: LineFrameInfo) -> String {
-        [
-            "\(f.index)",
-            String(format: "%.4f", f.time),
-            f.speed.map { String(format: "%.1f", $0) } ?? "",
-            f.speed.map { String(format: "%.3f", $0 * 0.06) } ?? "",
-            String(format: "%.1f", f.travel),
-            f.shiftPixels.map { String(format: "%.2f", $0) } ?? "",
-            f.crossShiftPixels.map { String(format: "%.2f", $0) } ?? "",
-            String(format: "%.3f", f.quality),
-            String(format: "%.1f", f.medianDepth),
-            f.tiltX.map { String(format: "%.2f", $0) } ?? "",
-            f.tiltY.map { String(format: "%.2f", $0) } ?? "",
-            f.surfaceTiltX.map { String(format: "%.2f", $0) } ?? "",
-            f.surfaceTiltY.map { String(format: "%.2f", $0) } ?? "",
-            f.fastestSpeed.map { String(format: "%.1f", $0) } ?? "",
-            f.fastestTile.map { "\($0)" } ?? ""
-        ].joined(separator: ",")
+        func fixed(_ value: Double?, _ format: String) -> String {
+            guard let value else { return "" }
+            return String(format: format, value)
+        }
+        var fields: [String] = []
+        fields.reserveCapacity(framesHeader.count)
+        fields.append(String(f.index))
+        fields.append(fixed(f.time, "%.4f"))
+        fields.append(fixed(f.speed, "%.1f"))
+        fields.append(fixed(f.speed.map { $0 * 0.06 }, "%.3f"))
+        fields.append(fixed(f.travel, "%.1f"))
+        fields.append(fixed(f.shiftPixels, "%.2f"))
+        fields.append(fixed(f.crossShiftPixels, "%.2f"))
+        fields.append(fixed(f.quality, "%.3f"))
+        fields.append(fixed(f.medianDepth, "%.1f"))
+        fields.append(fixed(f.tiltX, "%.2f"))
+        fields.append(fixed(f.tiltY, "%.2f"))
+        fields.append(fixed(f.surfaceTiltX, "%.2f"))
+        fields.append(fixed(f.surfaceTiltY, "%.2f"))
+        fields.append(fixed(f.fastestSpeed, "%.1f"))
+        fields.append(f.fastestTile.map { String($0) } ?? "")
+        return fields.joined(separator: ",")
     }
 
     static func zonesRow(_ f: LineFrameInfo, count: Int) -> String {
