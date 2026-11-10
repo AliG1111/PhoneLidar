@@ -24,6 +24,7 @@ final class TopoReplayModel {
     nonisolated static let speedPresets: [Double] = [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]
     nonisolated static let defaultElevation = 42.0
     nonisolated static let defaultShear = 0.36
+    nonisolated static let defaultLengthFactor = 2.0
 
     let folder: URL
     let title: String
@@ -50,7 +51,7 @@ final class TopoReplayModel {
     /// Height of the value range (base → top) as a fraction of the strip width.
     var heightScale = 0.8
     /// Window length as a multiple of the strip width.
-    var lengthFactor = 2.0
+    var lengthFactor = TopoReplayModel.defaultLengthFactor
     var target: Double
     var tolerance: Double
 
@@ -59,6 +60,8 @@ final class TopoReplayModel {
     var currentSpeed: Double?
     /// Heights across the newest line (top of the recording screen first), mm, NaN = no data.
     var newestProfile: [Float] = []
+    /// Position of each profile value across the strip, 0 = top of the recording screen, 1 = bottom.
+    var acrossFractions: [Double] = []
     /// Heights across the material averaged over the last second of replay.
     var averageProfile: [Float] = []
     /// Mean height of each visible column: x = 0…1 across the window, y = mm.
@@ -76,8 +79,9 @@ final class TopoReplayModel {
     @ObservationIgnored var viewAspect: Double = 2
     @ObservationIgnored private var playhead: Double = 0
     @ObservationIgnored private var grid: TopoDisplayGrid?
+    /// Display factor of the grid being built in the background.
+    @ObservationIgnored private var buildingFactor: Int?
     @ObservationIgnored private var displayLink: CADisplayLink?
-    @ObservationIgnored private var linkTarget: DisplayLinkTarget?
     @ObservationIgnored private var lastTimestamp: CFTimeInterval?
     @ObservationIgnored private var lastLayout: TopoReplayScene.Layout?
     @ObservationIgnored private var lastCamera: TopoReplayScene.CameraSettings?
@@ -92,11 +96,13 @@ final class TopoReplayModel {
         var factor: Int
     }
 
-    init(folder: URL, title: String, created: Date?, source: TopoReplaySource) {
+    /// `grid` is the display grid for the default window (built off the main thread by the caller).
+    init(folder: URL, title: String, created: Date?, source: TopoReplaySource, grid: TopoDisplayGrid?) {
         self.folder = folder
         self.title = title
         self.created = created
         self.source = source
+        self.grid = grid
         sceneContent = TopoReplayScene()
         let tol = max(ReplayNumbers.nice(source.robustStdDev), 0.05)
         let step = ReplayNumbers.nice(tol / 5)
@@ -120,20 +126,17 @@ final class TopoReplayModel {
 
     func start() {
         guard displayLink == nil else { return }
-        let proxy = DisplayLinkTarget { [weak self] link in
-            self?.tick(link)
+        lastTimestamp = nil
+        displayLink = DisplayLinkProxy.makeLink { [weak self] link in
+            guard let self else { return false }
+            self.tick(link)
+            return true
         }
-        let link = CADisplayLink(target: proxy, selector: #selector(DisplayLinkTarget.tick(_:)))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
-        link.add(to: .main, forMode: .common)
-        linkTarget = proxy
-        displayLink = link
     }
 
     func stop() {
         displayLink?.invalidate()
         displayLink = nil
-        linkTarget = nil
         isPlaying = false
         lastTimestamp = nil
     }
@@ -214,24 +217,43 @@ final class TopoReplayModel {
 
     // MARK: Rendering
 
-    private func displayFactor(lengthMM: Double) -> Int {
+    /// Block size (cells) that keeps the window within about 260 blocks along and 90 across.
+    nonisolated static func displayFactor(source: TopoReplaySource, lengthMM: Double) -> Int {
         let columnsInWindow = lengthMM / max(source.cell, 0.1)
         let factor = max(columnsInWindow / 260, Double(source.rows) / 90)
-        return max(1, Int(factor.rounded(.up)))
+        guard factor.isFinite else { return 1 }
+        return max(1, Int(min(factor, 10_000).rounded(.up)))
     }
 
-    private func render(now: CFTimeInterval) {
+    /// Builds the display grid for a new block size in the background and swaps it in when ready. Changes made
+    /// while a build runs (e.g. dragging the window-length slider) are coalesced: when it finishes, only the
+    /// block size wanted at that moment is built next. The current grid stays on screen meanwhile.
+    private func requestGrid(factor: Int) {
+        guard buildingFactor == nil else { return }
+        buildingFactor = factor
+        let source = self.source
+        Task { @MainActor [weak self] in
+            let built = await Task.detached(priority: .userInitiated) {
+                TopoDisplayGrid.make(source: source, factor: factor)
+            }.value
+            guard let self else { return }
+            self.buildingFactor = nil
+            self.grid = built
+            self.lastStrip = nil
+            self.readoutDue = true
+            let wanted = Self.displayFactor(source: self.source, lengthMM: self.stripLengthMM)
+            if wanted != built.factor { self.requestGrid(factor: wanted) }
+        }
+    }
+
+    private func render(now: CFTimeInterval, forceReadout: Bool = false) {
         if isPlaying { readoutDue = true }
         let lengthMM = stripLengthMM
-        let factor = displayFactor(lengthMM: lengthMM)
-        if grid?.factor != factor {
-            grid = TopoDisplayGrid.make(source: source, factor: factor)
-            lastStrip = nil
-            readoutDue = true
-        }
+        let factor = Self.displayFactor(source: source, lengthMM: lengthMM)
+        if grid?.factor != factor { requestGrid(factor: factor) }
         guard let grid else { return }
 
-        let widthM = Float(Double(grid.rows) * grid.cellMM / 1000)
+        let widthM = Float(grid.widthMM / 1000)
         let tol = max(tolerance, 1e-3)
         let layout = TopoReplayScene.Layout(
             length: Float(lengthMM / 1000), width: widthM, height: widthM * Float(heightScale),
@@ -252,30 +274,33 @@ final class TopoReplayModel {
             lastCamera = camera
         }
 
-        // Window: newest complete line at the right edge, `lengthMM` of older material to its left.
+        // Window: newest complete line at the right edge, `lengthMM` of older material to its left. Only blocks
+        // whose whole length is complete are shown (the newest one may sit up to one block left of the edge).
         let newest = source.revealPosition(at: playhead)
         let windowStart = newest - lengthMM
-        let jHi = min(grid.columns - 1, Int(floor((newest - grid.pStart) / grid.cellMM - 0.5)))
-        let jLo = max(0, Int(ceil((windowStart - grid.pStart) / grid.cellMM - 0.5)))
+        let jHi = grid.newestCompleteColumn(newest: newest)
+        let startColumn = ((windowStart - grid.pStart) / grid.cellMM - 0.5).rounded(.up)
+        let jLo = startColumn.isFinite ? Int(min(max(startColumn, 0), Double(grid.columns))) : 0
         if jHi - jLo >= 1 {
             let offset = Float((grid.p(ofColumn: jLo) - windowStart) / 1000)
             let key = StripKey(jLo: jLo, jHi: jHi, smooth: smooth, factor: grid.factor)
             if key != lastStrip {
-                sceneContent.setStrip(values: smooth ? grid.smooth : grid.raw, rows: grid.rows, columns: grid.columns,
-                                      jLo: jLo, jHi: jHi, offset: offset)
+                sceneContent.setStrip(values: grid.window(jLo: jLo, jHi: jHi, smooth: smooth), rows: grid.rows,
+                                      columns: jHi - jLo + 1, rowCenters: grid.rowCenterMM,
+                                      blockLength: Float(grid.cellMM / 1000), offset: offset)
                 lastStrip = key
                 readoutDue = true
             } else {
                 sceneContent.moveStrip(offset: offset)
             }
         } else if lastStrip != nil || readoutDue {
-            sceneContent.setStrip(values: [], rows: 0, columns: 0, jLo: 0, jHi: -1, offset: 0)
+            sceneContent.setStrip(values: [], rows: 0, columns: 0, rowCenters: [], blockLength: 0, offset: 0)
             lastStrip = nil
             readoutDue = true
         }
 
-        let interval = isPlaying ? 0.05 : 0
-        if readoutDue && now - lastReadout >= interval {
+        let interval = isPlaying && !forceReadout ? 0.05 : 0
+        if (readoutDue || forceReadout) && now - lastReadout >= interval {
             updateReadouts(grid: grid, jLo: jLo, jHi: jHi, windowStart: windowStart, lengthMM: lengthMM)
             lastReadout = now
             readoutDue = false
@@ -288,7 +313,7 @@ final class TopoReplayModel {
         if playhead <= source.recordingDuration {
             currentSpeed = frameIndex < source.speeds.count ? source.speeds[frameIndex] : nil
         } else {
-            currentSpeed = source.runOutSpeed > 1 ? source.runOutSpeed : nil
+            currentSpeed = source.runOutSpeed > 0 ? source.runOutSpeed : nil
         }
 
         guard jHi >= 0, jHi >= jLo, jHi < grid.columns else {
@@ -304,9 +329,14 @@ final class TopoReplayModel {
             inTolerancePercent = nil
             return
         }
-        let values = grid.raw
+        // Measured blocks only: filled gaps are for the surface, not for statistics or profiles.
+        let values = grid.observed
         let rows = grid.rows
         let columns = grid.columns
+        if grid.widthMM > 0 {
+            let fractions = grid.rowCenterMM.map { $0 / grid.widthMM }
+            if fractions != acrossFractions { acrossFractions = fractions }
+        }
 
         var newest = [Float](repeating: .nan, count: rows)
         var newestSum = 0.0
@@ -401,6 +431,8 @@ final class TopoReplayModel {
     /// Saves the current view with a title and colour bar as a PNG in the scan folder.
     func saveImage() -> URL? {
         guard let view = scnView else { return nil }
+        // Bring the header readouts up to the playhead so the text, the picture and the file name agree.
+        render(now: CACurrentMediaTime(), forceReadout: true)
         let shot = view.snapshot()
         let width = max(shot.size.width, 900)
         let header: CGFloat = 64
@@ -480,19 +512,5 @@ final class TopoReplayModel {
         let digits = ReplayNumbers.decimals(for: valueStep)
         return valueName + " (mm): green = target " + ReplayNumbers.text(target, decimals: digits)
             + " ±" + ReplayNumbers.text(tolerance, decimals: digits) + " mm, blue = lower, red = higher"
-    }
-}
-
-/// CADisplayLink keeps a strong reference to its target; this small object breaks the cycle with the model.
-@MainActor
-private final class DisplayLinkTarget: NSObject {
-    let callback: @MainActor (CADisplayLink) -> Void
-
-    init(_ callback: @escaping @MainActor (CADisplayLink) -> Void) {
-        self.callback = callback
-    }
-
-    @objc func tick(_ link: CADisplayLink) {
-        callback(link)
     }
 }

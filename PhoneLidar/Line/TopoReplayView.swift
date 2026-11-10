@@ -13,6 +13,8 @@ struct TopoReplayView: View {
     @State private var model: TopoReplayModel?
     @State private var status = "Loading recording…"
     @State private var failure: String?
+    /// False once the screen has gone away: a replay that finishes loading afterwards is not started.
+    @State private var visible = false
 
     var body: some View {
         Group {
@@ -31,10 +33,12 @@ struct TopoReplayView: View {
             await load()
         }
         .onAppear {
+            visible = true
             OrientationLock.allow(.allButUpsideDown, rotateTo: .landscapeRight)
             model?.start()
         }
         .onDisappear {
+            visible = false
             model?.stop()
             OrientationLock.allow(.portrait, rotateTo: .portrait)
         }
@@ -48,15 +52,46 @@ struct TopoReplayView: View {
         }
     }
 
+    private struct Opened {
+        var info: LineRecordingInfo
+        var grid: TopoGridFile?
+    }
+
+    private struct Prepared {
+        var source: TopoReplaySource
+        var grid: TopoDisplayGrid
+    }
+
+    private enum LoadError: LocalizedError {
+        case recording
+        case build(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .recording: return "Recording.json is missing or damaged."
+            case .build(let reason): return "The topographic map could not be built: \(reason)"
+            }
+        }
+    }
+
+    /// Reads, builds (once, for old recordings) and prepares everything off the main thread. The grid file is
+    /// read once and handed on. Nothing is started if the screen went away meanwhile.
     private func load() async {
         guard model == nil, failure == nil else { return }
         let folder = self.folder
-        guard let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
-              let info = try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data) else {
-            failure = "Recording.json is missing or damaged."
+        let opened = await Task.detached(priority: .userInitiated) { () -> Opened? in
+            guard let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
+                  let info = try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data) else { return nil }
+            return Opened(info: info, grid: TopoGridFile.load(from: folder))
+        }.value
+        guard !Task.isCancelled else { return }
+        guard let opened else {
+            failure = LoadError.recording.localizedDescription
             return
         }
-        if TopoGridFile.load(from: folder) == nil {
+        let info = opened.info
+        var gridFile = opened.grid
+        if gridFile == nil {
             // Recordings made before the replay existed: build the map once (this also writes TopoGrid.bin).
             status = "Building the topographic grid…"
             let built = await Task.detached(priority: .userInitiated) { () -> Result<TopoMapBuilder.Output, Error> in
@@ -68,29 +103,39 @@ struct TopoReplayView: View {
             }.value
             switch built {
             case .success(let output):
+                // The files are written whether or not the screen is still open; keep the set complete.
                 TopoMapRenderer.writeComposite(map: output.mapImage, stats: output.stats, direction: info.direction,
                                                to: folder.appendingPathComponent("TopoMap.png"))
                 refreshFileList()
+                gridFile = output.grid
             case .failure(let error):
-                failure = "The topographic map could not be built: \(error.localizedDescription)"
+                failure = LoadError.build(error.localizedDescription).localizedDescription
                 return
             }
+            guard !Task.isCancelled else { return }
         }
+        guard let grid = gridFile else { return }
         status = "Preparing replay…"
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<TopoReplaySource, Error> in
-            guard let grid = TopoGridFile.load(from: folder) else { return .failure(LineError.badFile) }
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<Prepared, Error> in
             do {
-                return .success(try TopoReplaySource.make(grid: grid, info: info))
+                let source = try TopoReplaySource.make(grid: grid, info: info)
+                let factor = TopoReplayModel.displayFactor(
+                    source: source, lengthMM: source.widthMM * TopoReplayModel.defaultLengthFactor)
+                return .success(Prepared(source: source, grid: TopoDisplayGrid.make(source: source, factor: factor)))
             } catch {
                 return .failure(error)
             }
         }.value
+        guard !Task.isCancelled else { return }
         switch result {
-        case .success(let source):
-            let replay = TopoReplayModel(folder: folder, title: title, created: created, source: source)
+        case .success(let prepared):
+            let replay = TopoReplayModel(folder: folder, title: title, created: created, source: prepared.source,
+                                         grid: prepared.grid)
             model = replay
-            replay.start()
-            replay.togglePlay()
+            if visible {
+                replay.start()
+                replay.togglePlay()
+            }
         case .failure(let error):
             failure = error.localizedDescription
         }
@@ -482,6 +527,7 @@ private struct AcrossPanel: View {
     var body: some View {
         let newest = model.newestProfile
         let average = model.averageProfile
+        let fractions = model.acrossFractions
         let target = model.target
         let tolerance = max(model.tolerance, 1e-6)
         let digits = ReplayNumbers.decimals(for: model.valueStep)
@@ -526,7 +572,8 @@ private struct AcrossPanel: View {
                             started = false
                             continue
                         }
-                        let q = point(across: (CGFloat(i) + 0.5) / CGFloat(max(n, 1)), value: Double(v))
+                        let across = fractions.count == n ? CGFloat(fractions[i]) : (CGFloat(i) + 0.5) / CGFloat(max(n, 1))
+                        let q = point(across: across, value: Double(v))
                         if started { path.addLine(to: q) } else { path.move(to: q) }
                         started = true
                     }
