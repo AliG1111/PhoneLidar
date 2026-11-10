@@ -540,7 +540,6 @@ final class LineScanModel {
                 self?.handle(event)
             }
         }
-        recoverUnsavedRecordings(store: store)
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             openCamera()
@@ -570,28 +569,6 @@ final class LineScanModel {
     private func denyCamera() {
         cameraDenied = true
         phase = .failed("Camera access is off for Phone LiDAR. Turn it on in Settings › Privacy & Security › Camera, then reopen Line scan.")
-    }
-
-    /// Adds recordings left unsaved by an earlier run (app closed or killed while recording) to the library.
-    private func recoverUnsavedRecordings(store: ScanStore) {
-        let root = store.root
-        let active = recordingFolder?.name
-        Task { @MainActor in
-            let found = await Task.detached(priority: .utility) {
-                LineRecordingRecovery.scan(root: root, skipping: active)
-            }.value
-            for item in found where !store.scans.contains(where: { $0.folderName == item.folderName }) {
-                let record = ScanRecord(id: UUID(),
-                                        kind: .line,
-                                        name: "Line " + item.created.formatted(date: .abbreviated, time: .shortened)
-                                            + " (recovered)",
-                                        created: item.created,
-                                        folderName: item.folderName,
-                                        primaryModel: nil,
-                                        summary: item.summary)
-                try? store.save(record)
-            }
-        }
     }
 
     func shutdown() {
@@ -636,7 +613,7 @@ final class LineScanModel {
             if let folder = recordingFolder {
                 try? FileManager.default.removeItem(at: folder.url)      // no frames were written
             }
-            recordingFolder = nil
+            releaseRecordingFolder()
             phase = .ready
             notice = "Recording not started: \(reason)."
         case .stopRecording(let reason):
@@ -645,8 +622,10 @@ final class LineScanModel {
             cameraBanner = "Camera paused: \(text)."
         case .cameraResumed:
             cameraBanner = nil
-        case .cameraError(let text):
-            cameraBanner = "Camera error: \(text). Restarting the camera; if the picture stays frozen, close and reopen Line scan."
+        case .cameraError(let text, let restarting):
+            cameraBanner = restarting
+                ? "Camera error: \(text). Restarting the camera; if the picture stays frozen, close and reopen Line scan."
+                : "Camera error: \(text). The camera could not be restarted: close and reopen Line scan."
         case .pressure(let level):
             pressure = level
         }
@@ -800,6 +779,7 @@ final class LineScanModel {
         do {
             let folder = try store.newFolder(kind: .line)
             recordingFolder = folder
+            store.beginLineRecording(folder.name)      // until saved: no recovery, not listed as incomplete
             stopReason = nil
             recordingWarning = nil
             elapsed = 0
@@ -838,7 +818,7 @@ final class LineScanModel {
         }
         guard let result, result.frameCount > 0 else {
             try? FileManager.default.removeItem(at: folder.url)      // nothing was recorded
-            recordingFolder = nil
+            releaseRecordingFolder()
             phase = .ready
             notice = "Recording not saved: no frames were recorded" + (stopReason.map { " (\($0))." } ?? ".")
             endBackgroundTask()
@@ -860,9 +840,12 @@ final class LineScanModel {
         do {
             try store.save(record)
         } catch {
+            // The folder keeps its marker, so library recovery adds it to the list later.
+            releaseRecordingFolder()
             phase = .ready
             notice = "The recording files are kept in Files › On My iPhone › Phone LiDAR › Scans › \(folder.name), "
-                + "but the scan could not be added to the list (\(error.localizedDescription))."
+                + "but the scan could not be added to the list (\(error.localizedDescription)). "
+                + "The app tries again the next time the library opens."
             endBackgroundTask()
             return
         }
@@ -878,7 +861,7 @@ final class LineScanModel {
             var updated = record
             updated.summary = summary + built.summary
             try? store.save(updated)          // if this fails the scan keeps its first summary
-            recordingFolder = nil
+            releaseRecordingFolder()
             endBackgroundTask()
             onSaved?(record.id)
         }
@@ -897,7 +880,7 @@ final class LineScanModel {
             }
         } catch {
             return (nil, nil, ["Recording.json could not be read back (\(error.localizedDescription)): playback and map are "
-                               + "not available. Free up storage, then open Line scan again to repair it."])
+                               + "not available. Free up storage; the app repairs it the next time the library opens."])
         }
         LineRecordingRepair.clearMarker(in: folder)
         do {
@@ -906,6 +889,14 @@ final class LineScanModel {
         } catch {
             return (nil, info.direction, summary + ["Map not built: \(error.localizedDescription)"])
         }
+    }
+
+    /// The recording folder is finished with (saved, or removed because it holds no frames).
+    private func releaseRecordingFolder() {
+        if let name = recordingFolder?.name {
+            store?.endLineRecording(name)
+        }
+        recordingFolder = nil
     }
 
     private func beginBackgroundTask() {

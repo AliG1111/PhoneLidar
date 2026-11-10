@@ -58,7 +58,8 @@ enum LineCaptureEvent: Sendable {
     case stopRecording(String)
     case cameraInterrupted(String)
     case cameraResumed
-    case cameraError(String)
+    /// The camera stopped with an error; `restarting` is false once automatic restarts are used up.
+    case cameraError(String, restarting: Bool)
     case pressure(LinePressure)
 }
 
@@ -102,7 +103,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     private var shortShutterSetting = true
     /// Session-queue state: the screen wants the camera running (restart after a runtime error).
     private var wantsRunning = false
+    /// Session-queue state: automatic restarts after runtime errors since frames last arrived (max 3).
     private var errorRestarts = 0
+    static let maxErrorRestarts = 3
 
     // Data-queue state
     private var baseline: Baseline?
@@ -266,19 +269,21 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     private func sessionFailed(_ error: AVError?) {
         let message = error?.localizedDescription ?? "unknown camera error"
         let reset = error?.code == .mediaServicesWereReset
+        // Stop the recording first, so no frame from a restarted session goes into it.
         dataQueue.async { [self] in
             awaitingResume = true
             cancelCalibrationOnDataQueue(reason: "the camera stopped with an error")
             requestAutoStop("the camera stopped with an error (\(message))")
-            onEvent?(.cameraError(message))
         }
-        // Restart the camera: always after a media services reset, up to 3 times for other errors.
+        // Restart the camera: always after a media services reset, else up to `maxErrorRestarts` times in a row
+        // (the count is reset by the first frame after a restart). The event goes out before the restart, so the
+        // "running again" report of the first new frame always follows it.
         sessionQueue.async { [self] in
-            guard wantsRunning, !session.isRunning else { return }
-            if !reset {
-                guard errorRestarts < 3 else { return }
-                errorRestarts += 1
-            }
+            let needed = wantsRunning && !session.isRunning
+            let restart = needed && (reset || errorRestarts < Self.maxErrorRestarts)
+            onEvent?(.cameraError(message, restarting: restart || !needed))
+            guard restart else { return }
+            if !reset { errorRestarts += 1 }
             session.startRunning()
             applyShutter()
         }
@@ -303,9 +308,12 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     }
 
     func start(shortShutter: Bool) {
-        if motion.isDeviceMotionAvailable && !motion.isDeviceMotionActive {
-            motion.deviceMotionUpdateInterval = 1.0 / 30
-            motion.startDeviceMotionUpdates()
+        // The motion manager is only used on the data queue (started, read per frame and stopped there).
+        dataQueue.async { [self] in
+            if motion.isDeviceMotionAvailable && !motion.isDeviceMotionActive {
+                motion.deviceMotionUpdateInterval = 1.0 / 30
+                motion.startDeviceMotionUpdates()
+            }
         }
         sessionQueue.async { [self] in
             shortShutterSetting = shortShutter
@@ -316,7 +324,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     }
 
     func stop() {
-        if motion.isDeviceMotionActive { motion.stopDeviceMotionUpdates() }
+        dataQueue.async { [self] in
+            if motion.isDeviceMotionActive { motion.stopDeviceMotionUpdates() }
+        }
         sessionQueue.async { [self] in
             wantsRunning = false
             if session.isRunning { session.stopRunning() }
@@ -342,6 +352,10 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             estimator.travelSign = direction.bufferSign
             estimator.reset()
             tileHistory.removeAll()
+            // Readings taken with the old sign must not carry into the new direction.
+            lastValidSpeed = nil
+            recentSpeeds.removeAll()
+            lastTime = nil
         }
     }
 
@@ -469,6 +483,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         if awaitingResume {
             awaitingResume = false
             onEvent?(.cameraResumed)
+            sessionQueue.async { [self] in errorRestarts = 0 }      // frames again: the restart worked
         }
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 

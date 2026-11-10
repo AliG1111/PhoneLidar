@@ -73,6 +73,9 @@ struct ScanRecord: Codable, Identifiable, Hashable {
     var files: [String] = []
     var summary: [String] = []
     var measurements: [PointMeasurement] = []
+    /// The kind text exactly as read from scan.json when this build does not know it (`kind == .unknown`),
+    /// so a rename or re-save writes a newer build's kind back unchanged. Nil for known kinds.
+    var unknownKindText: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, kind, name, created, folderName, primaryModel, files, summary, measurements
@@ -90,6 +93,10 @@ extension ScanRecord {
         let folder = (decoder.userInfo[ScanRecord.folderNameInfoKey] as? String) ?? ""
         id = (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID.stable(from: folder)
         kind = (try? c.decodeIfPresent(ScanKind.self, forKey: .kind)) ?? .unknown
+        if kind == .unknown, let text = try? c.decodeIfPresent(String.self, forKey: .kind),
+           text != ScanKind.unknown.rawValue {
+            unknownKindText = text
+        }
         name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? folder
         created = (try? c.decodeIfPresent(Date.self, forKey: .created)) ?? Date.distantPast
         folderName = (try? c.decodeIfPresent(String.self, forKey: .folderName)) ?? folder
@@ -97,6 +104,24 @@ extension ScanRecord {
         files = (try? c.decodeIfPresent([String].self, forKey: .files)) ?? []
         summary = (try? c.decodeIfPresent([String].self, forKey: .summary)) ?? []
         measurements = (try? c.decodeIfPresent([PointMeasurement].self, forKey: .measurements)) ?? []
+    }
+
+    /// Same keys and values as the synthesized encoder, except that an unknown kind is written back as read.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        if kind == .unknown, let unknownKindText {
+            try c.encode(unknownKindText, forKey: .kind)
+        } else {
+            try c.encode(kind, forKey: .kind)
+        }
+        try c.encode(name, forKey: .name)
+        try c.encode(created, forKey: .created)
+        try c.encode(folderName, forKey: .folderName)
+        try c.encodeIfPresent(primaryModel, forKey: .primaryModel)
+        try c.encode(files, forKey: .files)
+        try c.encode(summary, forKey: .summary)
+        try c.encode(measurements, forKey: .measurements)
     }
 }
 
@@ -124,6 +149,33 @@ struct IncompleteScan: Identifiable, Hashable {
     let date: Date
     let bytes: Int64
     let fileCount: Int
+    /// A line recording still marked as in progress that has a Recording.json: the app was closed while it was
+    /// recording or saving. Line-recording recovery repairs it and adds it to the saved scans.
+    var interruptedRecording = false
+}
+
+/// Names of scan folders that a capture is writing to right now. Background work (line-recording recovery)
+/// checks it between folders, and the library neither lists nor deletes these folders as incomplete.
+/// `@unchecked Sendable`: every access to `names` holds `lock`.
+final class ActiveFolderSet: @unchecked Sendable {
+    private let lock = NSLock()
+    private var names: Set<String> = []
+
+    func insert(_ name: String) {
+        lock.withLock { _ = names.insert(name) }
+    }
+
+    func remove(_ name: String) {
+        lock.withLock { _ = names.remove(name) }
+    }
+
+    func contains(_ name: String) -> Bool {
+        lock.withLock { names.contains(name) }
+    }
+
+    var isEmpty: Bool {
+        lock.withLock { names.isEmpty }
+    }
 }
 
 /// Navigation value for the incomplete-scan screen.
@@ -181,6 +233,20 @@ final class ScanStore {
     /// Folders without a readable scan.json (interrupted recordings and captures).
     private(set) var incomplete: [IncompleteScan] = []
     let root: URL
+    /// Folders a line recording is writing to, from Record until its map is built (set by the Line scan screen).
+    let activeLineFolders = ActiveFolderSet()
+
+    // Line-recording recovery state, driven by `recoverLineRecordings()` (LineRecordingRecovery.swift).
+    /// Message about recordings recovered in the background, shown on the Home screen until dismissed.
+    var recoveryNotice: String?
+    /// Interrupted recordings whose last recovery attempt failed: folder name → reason.
+    var recoveryFailures: [String: String] = [:]
+    /// True while a recovery pass is running.
+    var recoveryRunning = false
+    /// A recovery pass was asked for while one was running or a recording was active: run one more.
+    @ObservationIgnored var recoveryRerunRequested = false
+    /// Delayed retries in a row for folders that were still being written (bounded).
+    @ObservationIgnored var recoveryRetries = 0
 
     init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -258,11 +324,12 @@ final class ScanStore {
     }
 
     /// Deletes a folder that has no readable scan.json (an incomplete scan, or a failed save).
-    /// A folder that holds a saved scan is never removed by this call.
+    /// A folder that holds a saved scan, or that a line recording is writing to, is never removed by this call.
     @discardableResult
     func deleteIncomplete(folderName: String) -> Bool {
         defer { reload() }
-        guard let url = validatedScanFolder(named: folderName), Self.decodeRecord(in: url) == nil else { return false }
+        guard !activeLineFolders.contains(folderName),
+              let url = validatedScanFolder(named: folderName), Self.decodeRecord(in: url) == nil else { return false }
         do {
             try FileManager.default.removeItem(at: url)
             return true
@@ -287,16 +354,31 @@ final class ScanStore {
             if var record = Self.decodeRecord(in: folder) {
                 if record.created == Date.distantPast { record.created = Self.folderDate(folder) }
                 loaded.append(record)
-            } else {
+            } else if !activeLineFolders.contains(folder.lastPathComponent) {
+                // A folder a recording is still writing to is not incomplete: it is left out until saved.
                 let files = Self.allFiles(under: folder)
                 orphans.append(IncompleteScan(folderName: folder.lastPathComponent,
                                               date: Self.folderDate(folder),
                                               bytes: files.reduce(Int64(0)) { $0 + $1.bytes },
-                                              fileCount: files.count))
+                                              fileCount: files.count,
+                                              interruptedRecording: Self.isInterruptedRecording(folder)))
             }
         }
         scans = loaded.sorted { $0.created > $1.created }
         incomplete = orphans.sorted { $0.date > $1.date }
+        if !recoveryFailures.isEmpty {
+            // Forget failures of folders that were recovered, deleted or are no longer marked as interrupted.
+            let interrupted = Set(orphans.filter { $0.interruptedRecording }.map { $0.folderName })
+            recoveryFailures = recoveryFailures.filter { interrupted.contains($0.key) }
+        }
+    }
+
+    /// A `line_` folder with the recording-in-progress marker and a Recording.json (see `IncompleteScan`).
+    static func isInterruptedRecording(_ folder: URL) -> Bool {
+        let manager = FileManager.default
+        return folder.lastPathComponent.hasPrefix("line_")
+            && manager.fileExists(atPath: folder.appendingPathComponent(LineRecorder.inProgressMarker).path)
+            && manager.fileExists(atPath: folder.appendingPathComponent("Recording.json").path)
     }
 
     /// Top-level items of a scan folder. Files are listed as they are; a sub-folder carries every file inside it.

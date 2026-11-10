@@ -158,15 +158,15 @@ enum LineStorage {
 // MARK: - Speed text
 
 enum SpeedText {
+    /// "612 mm/s" or "— mm/s".
     static func main(_ mmPerSecond: Double?) -> String {
         guard let v = mmPerSecond else { return "— mm/s" }
         return String(format: "%.0f mm/s", v)
     }
 
-    /// "612 mm/s" or "— mm/s".
+    /// Text for secondary speed labels (fastest zone, probe); currently the same as `main`.
     static func short(_ mmPerSecond: Double?) -> String {
-        guard let v = mmPerSecond else { return "— mm/s" }
-        return String(format: "%.0f mm/s", v)
+        main(mmPerSecond)
     }
 
     static func perMinute(_ mmPerSecond: Double?) -> String {
@@ -371,8 +371,9 @@ final class DepthFileWriter {
         try handle.write(contentsOf: header)
     }
 
-    /// `millimetres` is row-major, width × height, 0 = no data. Callers stop appending after an error
-    /// (a cut-off last record is ignored by DepthFileReader).
+    /// `millimetres` is row-major, width × height, 0 = no data. Missing values at the end (a short array)
+    /// are written as no data. Callers stop appending after an error (a cut-off last record is ignored by
+    /// DepthFileReader).
     func append(millimetres: [Float]) throws {
         let count = min(millimetres.count, scratch.count)
         for i in 0..<count {
@@ -382,6 +383,10 @@ final class DepthFileWriter {
             } else {
                 scratch[i] = 0
             }
+        }
+        // Never repeat the previous frame's values in the part this frame did not supply.
+        for i in count..<scratch.count {
+            scratch[i] = 0
         }
         let raw = scratch.withUnsafeBytes { Data($0) }
         let compressed = try (raw as NSData).compressed(using: .lzfse) as Data
@@ -398,11 +403,17 @@ final class DepthFileWriter {
 
 /// Reads Depth.bin. Immutable after init, so frames can be read from several threads at once.
 final class DepthFileReader: @unchecked Sendable {
+    /// Largest width or height accepted from a header (LiDAR depth maps are a few hundred pixels);
+    /// a damaged header beyond this is refused instead of allocating or overflowing.
+    static let maxDimension = 8192
+
     let width: Int
     let height: Int
     private let data: Data
     private let offsets: [Int]
     private let lengths: [Int]
+    /// Bytes of one decompressed frame (width × height UInt16), checked for overflow at init.
+    private let frameBytes: Int
 
     init(url: URL) throws {
         data = try Data(contentsOf: url, options: .alwaysMapped)
@@ -411,7 +422,13 @@ final class DepthFileReader: @unchecked Sendable {
         }
         width = Int(data.readUInt32(at: 8))
         height = Int(data.readUInt32(at: 12))
-        guard width > 0, height > 0 else { throw LineError.badFile }
+        guard width > 0, height > 0, width <= Self.maxDimension, height <= Self.maxDimension else {
+            throw LineError.badFile
+        }
+        let pixels = width.multipliedReportingOverflow(by: height)
+        let bytes = pixels.partialValue.multipliedReportingOverflow(by: 2)
+        guard !pixels.overflow, !bytes.overflow else { throw LineError.badFile }
+        frameBytes = bytes.partialValue
         var foundOffsets: [Int] = []
         var foundLengths: [Int] = []
         var cursor = 16
@@ -434,7 +451,7 @@ final class DepthFileReader: @unchecked Sendable {
         let start = data.startIndex + offsets[index]
         let slice = data.subdata(in: start..<(start + lengths[index]))
         guard let raw = try? (slice as NSData).decompressed(using: .lzfse) as Data,
-              raw.count >= width * height * 2 else { return nil }
+              raw.count >= frameBytes else { return nil }
         return raw
     }
 
@@ -613,14 +630,21 @@ final class LineRecorder: @unchecked Sendable {
         do {
             try depthWriter.append(millimetres: depthMillimetres)
             try jsonWriter.append(frame)
-            try framesWriter.line(Self.framesRow(frame))
-            try zonesWriter.line(Self.zonesRow(frame, count: SpeedEstimator.tileColumns * SpeedEstimator.tileRows))
         } catch {
             stopReason = "the recording could not be written to storage (\(error.localizedDescription))"
             return
         }
+        // The frame is in Depth.bin and Recording.json: count it, so frameCount always matches Recording.json.
         frameCount += 1
         elapsed = frame.time
+        do {
+            try framesWriter.line(Self.framesRow(frame))
+            try zonesWriter.line(Self.zonesRow(frame, count: SpeedEstimator.tileColumns * SpeedEstimator.tileRows))
+        } catch {
+            // closeFiles adds the "… .csv is incomplete" note for the writer that failed.
+            stopReason = "the recording could not be written to storage (\(error.localizedDescription))"
+            return
+        }
         if frameCount % Self.storageCheckFrames == 0,
            let free = LineStorage.freeBytes(at: folder), free < LineStorage.stopBelow {
             stopReason = "iPhone storage is almost full (\(LineStorage.text(free)) left)"
