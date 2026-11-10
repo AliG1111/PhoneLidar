@@ -622,8 +622,10 @@ final class LineScanModel {
             cameraBanner = "Camera paused: \(text)."
         case .cameraResumed:
             cameraBanner = nil
-        case .cameraError(let text):
-            cameraBanner = "Camera error: \(text). Restarting the camera; if the picture stays frozen, close and reopen Line scan."
+        case .cameraError(let text, let restarting):
+            cameraBanner = restarting
+                ? "Camera error: \(text). Restarting the camera; if the picture stays frozen, close and reopen Line scan."
+                : "Camera error: \(text). The camera could not be restarted: close and reopen Line scan."
         case .pressure(let level):
             pressure = level
         }
