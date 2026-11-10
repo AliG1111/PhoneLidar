@@ -327,6 +327,7 @@ final class RecordingJSONWriter {
         guard text.hasSuffix("}") else { throw LineError.badFile }
         text.removeLast()
         try file.line(text + ",\"frames\":[")
+        try file.flush()      // header on disk at once, so even a very short cut-off recording can be repaired
     }
 
     /// `frame` must already be sanitized (the encoder refuses NaN and inf).
