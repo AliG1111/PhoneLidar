@@ -20,25 +20,29 @@ board) recording LiDAR depth + video, measuring speed, and building a topographi
 ```
 project.yml                  XcodeGen spec (targets, settings, schemes)
 Support/Info.plist           Permissions, orientations, Files-app sharing
-.github/workflows/ios-build.yml  CI: unsigned .ipa build (+ unit tests from P8), optional TestFlight job
+.github/workflows/ios-build.yml  CI: unsigned .ipa build, unit tests, optional TestFlight job (after both)
 PhoneLidar/App/              App entry, HomeView, OrientationLock (replay-only landscape)
 PhoneLidar/Storage/          ScanStore (scan folders, scan.json), Units, CSV
 PhoneLidar/Library/          ScanDetailView (sections, share, rename, delete)
 PhoneLidar/Room/ Mesh/ Object/  Capture screens + exporters for the three framework modes
 PhoneLidar/Viewer/           SceneKit 3D viewer with ruler
 PhoneLidar/Line/             Line scan: LineCapturePipeline, SpeedEstimator, Baseline, LineRecording (formats,
-                             recorder), LineScanView, LinePlaybackView, TopoMapBuilder/Renderer/View,
-                             TopoGridFile, TopoReplayData/Model/Scene/View, DepthColors
-Tests/PhoneLidarTests/       Host-less XCTest bundle (added in P8 on branch test-infra)
+                             streaming recorder, repair), LineRecordingRecovery (background recovery of killed
+                             recordings), LineScanView, LinePlaybackView, TopoMapBuilder/Renderer/View,
+                             TopoGridFile, TopoReplayData/Model/Scene/View, DepthColors, DisplayLinkProxy
+Tests/PhoneLidarTests/       Host-less XCTest bundle (pure-logic tests, run in CI)
+README.md                    User guide (the build guide); kept in sync with the claude.ai project copy
 docs/                        requirements.md, design.md, implementation-plan.md, reviews/
 ```
 
 ## Build and test
-- CI workflow `Build iOS app` (`macos-26`, Xcode 26.x): `xcodegen generate` → unsigned Release build →
-  artifact `PhoneLidar-unsigned-ipa-<run>`; `build-log-<run>` holds the full log. Build number = run number.
-- Unit tests: scheme `PhoneLidarTests`, CI job `unit-tests` on the newest iPhone simulator. The test target compiles
-  the pure-logic files listed in `project.yml`; add a file there when it gets tests. (Arrives with P8 `test-infra`;
-  until merged, CI has only the build job.)
+- CI workflow `Build iOS app` (`macos-26`, Xcode 26.x), on every pull request into `main`, on pushes to `main` that
+  change more than `*.md`, and by hand. Job `unsigned-ipa`: `xcodegen generate` (pinned release) → unsigned Release
+  build with warnings as errors plus a log gate → artifact `PhoneLidar-unsigned-ipa-<run>`; `build-log-<run>` holds
+  the full log. Build number = run number. Actions and tools are pinned; the token is read-only.
+- Unit tests: scheme `PhoneLidarTests`, CI job `unit-tests` on the newest iPhone simulator (warnings fail it;
+  `unit-test-results-<run>` is kept on failure). The test target compiles the pure-logic files listed in
+  `project.yml`; add a file there when it gets tests. The optional `testflight` job needs both jobs.
 - `gh` works through the REST API only (no GraphQL):
   ```
   gh workflow run "Build iOS app" -R AliG1111/PhoneLidar --ref <branch>
@@ -119,4 +123,5 @@ Claude-Session: https://claude.ai/code/session_014WLjMvrCLDLxVAm3jLG84p
   vs code discrepancies.
 - docs/implementation-plan.md — model matrix, workflow, self-review checklist, phases P0–P10, change log.
 - docs/reviews/ — milestone review records.
-- User guide: `phone-lidar-build-guide.md` (owner's local folder); `README.md` is being refreshed in P8.
+- User guide: `README.md` (repo), the same content as the project copy on claude.ai; the orchestrator syncs the copies,
+  and the owner's local `phone-lidar-build-guide.md` is replaced from it. Update README for every user-visible change.

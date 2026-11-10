@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | v1 feature set on `main` (`1cf693e`, build #23). P8 process alignment in progress. |
+| State | v1 feature set on `main` (`1cf693e`, build #23). P8 process alignment on branch `process-alignment`: M1 cycles 1–2 fixed and merged into it, cycle 3 in progress; not yet merged to `main`. |
 | Date | 2026-11-10 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
@@ -23,7 +23,7 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P5 | Baseline (flat-surface) calibration and height mode | Done (PR #6, build #17) |
 | P6 | Local (zone) speeds | Done (PR #7, build #19) |
 | P7 | Topographic replay | Done (PR #8, build #23) |
-| P8 | Process alignment: docs, CLAUDE.md, unit tests in CI, milestone M1 reviews and fixes, final review | In progress |
+| P8 | Process alignment: docs, CLAUDE.md, unit tests in CI, milestone M1 reviews and fixes, final review | In progress (M1 cycles 1–2 fixed, cycle 3 running; unmerged) |
 | P9 | On-device validation on the iPhone 17 Pro Max | Not started |
 | P10 | Backlog | Open |
 
@@ -145,29 +145,29 @@ Reconstructed from git history, CI runs and `REVISIONS.md`. Commits from PR #1 t
 
 ### P8 — Process alignment (in progress)
 
-Branches in flight: `process-alignment` (docs), `test-infra` (unit tests and CI), `fix-line`, `fix-topo`, `fix-apps` (M1 cycle-1 fixes).
+Branches: all fix branches (`test-infra`, `fix-line`, `fix-topo`, `fix-apps`, `cycle2-capture`, `cycle2-topo`) are merged into `process-alignment`. Review cycle 3 is in progress on it; the final review and the merge into `main` (one PR) follow. Record: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md).
 
 Documentation and agent rules
-- [ ] P8.1 Requirements, design, technology recommendations and this plan in `docs/` (Opus 5.5 / max)
-- [ ] P8.2 `CLAUDE.md` at the repo root (Opus 5.5 / max)
-- [ ] P8.3 Correct the build guide for the discrepancies in [design §12](design.md#12-guide-vs-code-discrepancies) and for behaviour changed by the M1 fixes (Sonnet 5.5 / medium)
-- [ ] P8.4 README refresh: current modes incl. Line scan, pointer to the build guide and `docs/` (finding C-22) (Sonnet 5.5 / medium)
+- [x] P8.1 Requirements, design, technology recommendations and this plan in `docs/` (Opus 5.5 / max)
+- [x] P8.2 `CLAUDE.md` at the repo root (Opus 5.5 / max)
+- [x] P8.3 Correct the build guide for the discrepancies in [design §12](design.md#12-guide-vs-code-discrepancies) and for behaviour changed by the M1 fixes (Sonnet 5.5 / medium)
+- [x] P8.4 README refresh: current modes incl. Line scan, pointer to the build guide and `docs/` (finding C-22) (Sonnet 5.5 / medium)
 
-Unit tests and CI (branch `test-infra`)
-- [ ] P8.5 Host-less XCTest target `PhoneLidarTests` compiling the pure-logic sources; first tests for formatting/CSV and `TopoGrid.bin` (Sonnet 5.5 / high)
-- [ ] P8.6 CI `unit-tests` job on the newest iOS Simulator, `pull_request` trigger, warning count in the build job, test job fails on warnings (finding C-11, C-21) (Sonnet 5.5 / high)
-- [ ] P8.7 Workflow and repo hardening: `permissions` block, secrets scoped to steps, pinned actions/tools, secret-file patterns in `.gitignore`, robust build-number step, `pipefail` in the summary step (findings C-9, C-10, C-19, C-20) (Sonnet 5.5 / high)
-- [ ] P8.8 Unit tests for `Depth.bin` round trip and truncation, `Baseline.build` on synthetic frames, `SpeedEstimator` on synthetically shifted images, `TopoMapBuilder` on a synthetic recording, `TopoReplaySource`/`TopoDisplayGrid`, `LineMath`, `ZoneGrid` (Sonnet 5.5 / high)
+Unit tests and CI (branch `test-infra`, merged into `process-alignment`)
+- [x] P8.5 Host-less XCTest target `PhoneLidarTests` compiling the pure-logic sources; first tests for formatting/CSV and `TopoGrid.bin` (Sonnet 5.5 / high)
+- [x] P8.6 CI `unit-tests` job on the newest iOS Simulator, `pull_request` trigger, warning count in the build job, test job fails on warnings (finding C-11, C-21) (Sonnet 5.5 / high)
+- [x] P8.7 Workflow and repo hardening: `permissions` block, secrets scoped to steps, pinned actions/tools, secret-file patterns in `.gitignore`, robust build-number step, `pipefail` in the summary step (findings C-9, C-10, C-19, C-20) (Sonnet 5.5 / high)
+- [x] P8.8 Unit tests for `Depth.bin` round trip and truncation, `Baseline.build` on synthetic frames, `SpeedEstimator` on synthetically shifted images, `TopoMapBuilder` on a synthetic recording, `TopoReplaySource`/`TopoDisplayGrid`, `LineMath`, `ZoneGrid` (Sonnet 5.5 / high)
 
 Milestone M1 reviews and fixes
 - [x] P8.9 M1 review cycle 1: three fresh reviewers (line capture; topo/replay/playback; apps/storage/CI) — 3 Critical, 3 High, 20 Medium, 26 Low (Opus 5.5 / high)
-- [ ] P8.10 Record cycle 1 in `docs/reviews/2026-11-10-M1.md` (finding, severity, file:line, summary, branch, status) (Sonnet 5.5 / medium)
-- [ ] P8.11 Area A fixes, line capture A-1…A-12 (incl. Critical A-1 background/interruption, High A-2 write errors and folder deletion) — branch `fix-line` (Opus 5.5 / high)
-- [ ] P8.12 Area B fixes, topo/replay/playback B-1…B-18 — branch `fix-topo` (Opus 5.5 / high)
-- [ ] P8.13 Area C fixes, apps/storage C-1…C-8, C-12…C-18 (incl. Critical C-1 photo-library key, C-2 photo deletion; High C-3, C-4) — branch `fix-apps` (Sonnet 5.5 / high)
-- [ ] P8.14 Triage the additional findings reported during docs alignment (map cell rounding R-08, grid binning truncation, stale last speed after a direction change, CMMotionManager thread use, silent baseline-copy failure, Line-screen auto-lock, folder-name collisions) into cycle 2 (Opus 5.5 / high)
-- [ ] P8.15 M1 review cycle 2 and further cycles on the changed code and its neighbours until a pass has no new Critical/High/Medium findings; Lows fixed or moved to P10 with a reason (Opus 5.5 / high)
-- [ ] P8.16 Update requirements traceability (statuses of FR-*-Not implemented items closed by the fixes), design (formats/algorithms changed by B-4, A-3, …) and `CLAUDE.md` (Sonnet 5.5 / medium)
+- [x] P8.10 Record cycle 1 in `docs/reviews/2026-11-10-M1.md` (finding, severity, file:line, summary, branch, status) (Sonnet 5.5 / medium)
+- [x] P8.11 Area A fixes, line capture A-1…A-12 (incl. Critical A-1 background/interruption, High A-2 write errors and folder deletion) — branch `fix-line` (Opus 5.5 / high)
+- [x] P8.12 Area B fixes, topo/replay/playback B-1…B-18 — branch `fix-topo` (Opus 5.5 / high)
+- [x] P8.13 Area C fixes, apps/storage C-1…C-8, C-12…C-18 (incl. Critical C-1 photo-library key, C-2 photo deletion; High C-3, C-4) — branch `fix-apps` (Sonnet 5.5 / high)
+- [x] P8.14 Triage the additional findings reported during docs alignment (map cell rounding R-08, grid binning truncation, stale last speed after a direction change, CMMotionManager thread use, silent baseline-copy failure, Line-screen auto-lock, folder-name collisions) into cycle 2 (Opus 5.5 / high)
+- [x] P8.15 M1 review cycle 2 and further cycles on the changed code and its neighbours until a pass has no new Critical/High/Medium findings; Lows fixed or moved to P10 with a reason (Opus 5.5 / high)
+- [x] P8.16 Update requirements traceability (statuses of FR-*-Not implemented items closed by the fixes), design (formats/algorithms changed by B-4, A-3, …), `README.md` and `CLAUDE.md` (Sonnet 5.5 / medium; redone after cycle 3 if its fixes change behaviour)
 - [ ] P8.17 Final review of the whole codebase and docs (Opus 5.5 / max)
 - [ ] P8.18 Merge order agreed by the orchestrator; every branch green (build + unit tests, 0 warnings) before merge (Sonnet 5.5 / medium)
 
@@ -199,12 +199,10 @@ Gaps between the requirements and the code that the M1 fixes do not cover, plus 
 
 - [ ] Speed/travel scale correction: per-mount factor entered from V2/V3, applied to speed and travel, stored as an optional field in `Recording.json` (FR-SPD-08, GC-10) (Opus 5.5 / high)
 - [ ] Lens-distortion correction for speed scaling and map projection using `AVCameraCalibrationData.lensDistortionLookupTable` (R-01) (Opus 5.5 / high)
-- [ ] Travel policy during lock loss: reset the last valid speed at record start and on direction change; mark untracked spans in `Frames.csv`; evaluate interpolation (R-02) (Opus 5.5 / high)
-- [ ] Map cell size never smaller than one depth pixel's footprint (round up or non-integer cell) — only if not fixed in M1 cycle 2 (R-08) (Opus 5.5 / high)
-- [ ] Keep the screen awake for the whole time the Line scan screen is open (mounting, levelling, calibration), not only while recording (NFR-USE-01) (Sonnet 5.5 / high)
+- [ ] Travel policy during lock loss: mark untracked spans in `Frames.csv`; evaluate interpolation (R-02). The reset of the last valid speed on direction change is done (P-3) (Opus 5.5 / high)
 - [ ] Persist Line scan settings (raw depth, short shutter, direction) between visits (Sonnet 5.5 / high)
 - [ ] Glove-friendly secondary controls (≥ 44 pt for Zero here, Reset, Recalibrate, Clear, ✕) (NFR-USE-02) (Sonnet 5.5 / high)
-- [ ] Swift 6 language mode and strict concurrency: reduce `@unchecked Sendable`, single-queue `CMMotionManager` access, coalesce `LiveUpdate` delivery to the main actor (R-12) (Opus 5.5 / high)
+- [ ] Swift 6 language mode and strict concurrency: reduce the 8 `@unchecked Sendable` types, coalesce `LiveUpdate` delivery to the main actor (R-12, P-8). Single-queue `CMMotionManager` access is done (P-4) (Opus 5.5 / high)
 - [ ] Profile per-frame processing on the device; move measured hot spots to Accelerate/vImage with regression tests on fixed inputs ([design §10.8](design.md#108-accelerate--vimage)) (Opus 5.5 / high)
 - [ ] SceneKit → RealityKit migration design for the viewer and replay when the deployment target moves to iOS 18+ (R-11) (Opus 5.5 / max)
 - [ ] Windows reader script for `Depth.bin`, `TopoGrid.bin` and `Recording.json` (Python, `lzfse`) to support P9 analysis (R-14) (Sonnet 5.5 / high)
@@ -213,9 +211,14 @@ Gaps between the requirements and the code that the M1 fixes do not cover, plus 
 
 #### Deferred review findings
 
-Placeholder: Low findings from M1 cycles that the fix branches (`fix-line`, `fix-topo`, `fix-apps`, `test-infra`) report as not fixed are added here, one line each with finding ID, reason and assignment.
+All Low, from [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md). Each needs no fix for correctness; the reason is why it waits.
 
-- (none recorded yet)
+- [ ] P-8 One main-actor task per frame, no coalescing: performance only, no observed problem; revisit after on-device profiling (P9) (Opus 5.5 / high)
+- [ ] F-2 Playback decodes LZFSE and colours each frame on the main thread: performance only; needs on-device profiling first (Opus 5.5 / high)
+- [ ] F-5 Capture session is configured on the main thread: one-off at screen open; moving it risks session-ordering regressions without device testing (Opus 5.5 / high)
+- [ ] F-11 `store.save` then reload on main after Save image or a map build: infrequent, small folders (Sonnet 5.5 / high)
+- [ ] B-13r Replay `SCNGeometry` is still rebuilt per change: performance only; part of the SceneKit → RealityKit/Metal backlog item (Opus 5.5 / high)
+- [ ] Check which unit-test class takes about 83 s on CI and whether it can be made faster (Sonnet 5.5 / medium)
 
 ## 7. Change log
 
@@ -223,7 +226,7 @@ Newest first. Build = run number of the `Build iOS app` workflow on `main` after
 
 | Date | Build | PR / commit | Summary |
 |---|---|---|---|
-| 2026-11-10 | — | Process alignment (in progress) | Docs (`requirements.md`, `design.md`, `implementation-plan.md`) and `CLAUDE.md` on `process-alignment`; unit-test target and CI test job on `test-infra` (branch run #24); M1 review cycle 1 done (3 Critical, 3 High, 20 Medium, 26 Low); fixes in progress on `fix-line`, `fix-topo`, `fix-apps`, `test-infra`. Nothing merged to `main` yet. |
+| 2026-11-10 | — | Process alignment (in progress, not merged) | On `process-alignment`: requirements, design and implementation plan, `CLAUDE.md`, README rewritten as the user guide; 313 unit tests (host-less `PhoneLidarTests`) and a `unit-tests` CI job on pull requests; CI hardening (read-only token, pinned actions and XcodeGen, warnings as errors with a log gate, TestFlight after build and tests); M1 review cycles 1–2 fixed (3 Critical, 3 High, 23 Medium; 26 + 24 Low, five deferred to P10): recordings stream to disk and survive interruptions, kills and low storage, with recovery from the library; map cell size, trimmed coverage/length/width, tolerant `scan.json`, Incomplete scans, Object photos kept on failure; cycle 3 in progress. Build number and merge commit are added at merge. |
 | 2026-11-09 | #23 | PR #8 `topo-replay` (`1cf693e`; branch runs #20–#22) | Real-time topographic replay: scrolling 3D strip (newest line right, walls, tolerance planes, marker), Map view, along/across profiles, colour bar target ± 2 tolerances, transport and 0.1×–20× speed, gestures, settings, Save image; `TopoGrid.bin`; landscape on the replay screen only; auto-play; file-list refresh. Xcode 26.6, 0 warnings. |
 | 2026-11-09 | #19 | PR #7 `local-speeds` (`ecba3d6`; branch run #18) | 6 × 4 zone speeds: Fastest marker and speed at a point while recording; Fastest on screen and Speed here in playback; `ZoneSpeeds.csv`, zone speeds in `Recording.json`, fastest zone in `Frames.csv`. Snapshot copied to the owner's folder. |
 | 2026-11-09 | #17 | PR #6 `baseline-calibration` (`bbeaa30`; branch run #15 failed, #16 green) | Flat-surface baseline calibration and height mode across live view, map, statistics, profiles and probe; tilt/filter warnings; baseline stored and copied into recordings. |
