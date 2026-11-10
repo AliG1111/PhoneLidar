@@ -13,6 +13,9 @@ settings:
     MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
     VERSIONING_SYSTEM: apple-generic
+    # Keep the build warning-free: any compiler warning fails the build (app and test targets).
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    GCC_TREAT_WARNINGS_AS_ERRORS: YES
 
 targets:
   PhoneLidar:
@@ -32,6 +35,31 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_PREVIEWS: YES
 
+  # Host-less XCTest bundle (no TEST_HOST / BUNDLE_LOADER): it compiles the pure-logic source files listed
+  # below together with the tests, so it runs on any iOS Simulator without LiDAR, RoomPlan or Object Capture.
+  # When a new pure-logic file needs tests, add it to this list.
+  PhoneLidarTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/PhoneLidarTests
+      - path: PhoneLidar/Line/Baseline.swift
+      - path: PhoneLidar/Line/DepthColors.swift
+      - path: PhoneLidar/Line/LineRecording.swift
+      - path: PhoneLidar/Line/SpeedEstimator.swift
+      - path: PhoneLidar/Line/TopoGridFile.swift
+      - path: PhoneLidar/Line/TopoMapBuilder.swift
+      - path: PhoneLidar/Line/TopoReplayData.swift
+      - path: PhoneLidar/Storage/Formatting.swift
+      - path: PhoneLidar/Storage/ScanStore.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ca.gervais.phonelidar.tests
+        PRODUCT_NAME: PhoneLidarTests
+        GENERATE_INFOPLIST_FILE: YES
+        # A unit-test bundle has no App Intents; skips the tool's "Metadata extraction skipped" notice.
+        LM_SKIP_METADATA_EXTRACTION: YES
+
 schemes:
   PhoneLidar:
     build:
@@ -41,3 +69,11 @@ schemes:
       config: Debug
     archive:
       config: Release
+  PhoneLidarTests:
+    build:
+      targets:
+        PhoneLidarTests: all
+    test:
+      config: Debug
+      targets:
+        - PhoneLidarTests

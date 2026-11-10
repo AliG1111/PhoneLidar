@@ -5,12 +5,19 @@ on:
     branches: [main]
     paths-ignore:
       - "**.md"
+  # Build and test every pull request into main before it can be merged.
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       testflight:
         description: "Also sign and upload to TestFlight (needs the 4 Apple secrets - see README)"
         type: boolean
         default: false
+
+# The workflow only reads the repository; artifacts are uploaded with the run's own token scope.
+permissions:
+  contents: read
 
 jobs:
   # Always runs. Produces an unsigned .ipa you can install with Sideloadly on Windows (free Apple ID).
@@ -21,7 +28,9 @@ jobs:
       BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -29,13 +38,11 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Set build number
-        run: |
-          sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"${BUILD_NUMBER}\"/" project.yml
-          grep CURRENT_PROJECT_VERSION project.yml
-
       - name: Generate Xcode project
-        run: xcodegen generate
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          xcodegen generate 2>&1 | tee logs/xcodegen.log
 
       - name: Build app (unsigned)
         run: |
@@ -48,7 +55,7 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/DerivedData \
-            -quiet \
+            CURRENT_PROJECT_VERSION="${BUILD_NUMBER}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -58,6 +65,9 @@ jobs:
         run: |
           APP="build/DerivedData/Build/Products/Release-iphoneos/PhoneLidar.app"
           test -d "$APP"
+          # The build number comes from the command line; make sure it really reached the app.
+          BUILT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist")
+          test "$BUILT" = "${BUILD_NUMBER}" || { echo "CFBundleVersion is '$BUILT', expected '${BUILD_NUMBER}'"; exit 1; }
           mkdir -p dist/Payload
           cp -R "$APP" dist/Payload/
           cd dist
@@ -66,28 +76,168 @@ jobs:
           ls -lh
 
       - name: Upload .ipa
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: PhoneLidar-unsigned-ipa-${{ github.run_number }}
           path: dist/*.ipa
           retention-days: 30
 
+      - name: Check for compiler warnings
+        if: always()
+        run: |
+          set -o pipefail
+          # Ignore the Xcode tool's own "Metadata extraction skipped" notice; everything else must be clean.
+          WARNINGS=$(grep -h "warning:" logs/*.log 2>/dev/null | grep -v "appintentsmetadataprocessor" | sort -u || true)
+          COUNT=$(printf '%s' "$WARNINGS" | grep -c . || true)
+          {
+            echo "## Compiler warnings: ${COUNT}"
+            if [ "${COUNT}" != "0" ]; then
+              echo '```'
+              printf '%s\n' "$WARNINGS" | head -60
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${COUNT}" != "0" ]; then
+            echo "::error::The app build has ${COUNT} distinct 'warning:' lines; the project must stay warning-free."
+            exit 1
+          fi
+
       - name: Put compile errors on the summary page
         if: failure()
         run: |
+          set -o pipefail
+          ERRORS=$(grep -h -E "error:" logs/*.log 2>/dev/null | sort -u | head -60 || true)
           {
             echo "## Build errors"
             echo '```'
-            grep -E "error:" logs/xcodebuild.log | sort -u | head -60 || echo "No 'error:' lines found - download the build log artifact."
+            if [ -n "$ERRORS" ]; then
+              printf '%s\n' "$ERRORS"
+            else
+              echo "No 'error:' lines found - download the build-log artifact."
+            fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload build log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: build-log-${{ github.run_number }}
           path: logs/
+          retention-days: 14
+
+  # Runs the PhoneLidarTests unit tests (pure logic only) on an iOS Simulator. Also runs for pull requests.
+  unit-tests:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          xcodegen generate 2>&1 | tee logs/xcodegen.log
+
+      - name: Select iOS Simulator
+        run: |
+          set -euo pipefail
+          xcrun simctl list devices available -j > simulators.json
+          python3 -I - <<'PY' >> "$GITHUB_ENV"
+          import json, re, sys
+
+          with open("simulators.json") as f:
+              runtimes = json.load(f)["devices"]
+
+          def runtime_version(key):
+              match = re.search(r"\.iOS-(\d+(?:-\d+)*)$", key)
+              return tuple(int(part) for part in match.group(1).split("-")) if match else None
+
+          best = None
+          for key, devices in runtimes.items():
+              version = runtime_version(key)
+              if version is None:
+                  continue
+              for device in devices:
+                  if not device.get("isAvailable", False) or not device["name"].startswith("iPhone"):
+                      continue
+                  generation = re.search(r"iPhone (\d+)", device["name"])
+                  # Newest iOS runtime, then newest iPhone generation, then the shortest (base) model name.
+                  rank = (version, int(generation.group(1)) if generation else 0, -len(device["name"]))
+                  if best is None or rank > best[0]:
+                      best = (rank, device["udid"], device["name"], key)
+
+          if best is None:
+              sys.stderr.write("::error::No available iPhone simulator was found on this runner.\n")
+              sys.exit(1)
+          sys.stderr.write("Using simulator %s (%s) on %s\n" % (best[2], best[1], best[3]))
+          print("SIM_UDID=" + best[1])
+          print("SIM_NAME=" + best[2])
+          PY
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          xcodebuild test \
+            -project PhoneLidar.xcodeproj \
+            -scheme PhoneLidarTests \
+            -destination "platform=iOS Simulator,id=${SIM_UDID}" \
+            -derivedDataPath build/DerivedData \
+            -resultBundlePath build/PhoneLidarTests.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee logs/unit-tests.log
+
+      - name: Summarize results
+        if: always()
+        run: |
+          set -o pipefail
+          LOG=logs/unit-tests.log
+          PASSED=$(grep -c "^Test Case .* passed" "$LOG" || true)
+          FAILED=$(grep -c "^Test Case .* failed" "$LOG" || true)
+          # Ignore the Xcode tool's own "Metadata extraction skipped" notice; everything else must be clean.
+          WARNINGS=$(grep -h "warning:" logs/*.log | grep -v "appintentsmetadataprocessor" | sort -u || true)
+          WARNING_COUNT=$(printf '%s' "$WARNINGS" | grep -c . || true)
+          {
+            echo "## Unit tests (${SIM_NAME:-no simulator})"
+            if [ "${FAILED}" = "0" ] && [ "${PASSED}" != "0" ]; then
+              echo "**PASSED**: ${PASSED} tests passed, 0 failed."
+            else
+              echo "**FAILED**: ${PASSED} passed, ${FAILED} failed (see the unit-test-results artifact)."
+              ERRORS=$(grep -h -E "error:|^Test Case .* failed|\*\* TEST FAILED \*\*|\*\* BUILD FAILED \*\*" "$LOG" | sort -u | head -60 || true)
+              echo '```'
+              if [ -n "$ERRORS" ]; then printf '%s\n' "$ERRORS"; else echo "No error lines found in the log."; fi
+              echo '```'
+            fi
+            echo "Compiler warnings: ${WARNING_COUNT}"
+            if [ "${WARNING_COUNT}" != "0" ]; then
+              echo '```'
+              printf '%s\n' "$WARNINGS" | head -60
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${WARNING_COUNT}" != "0" ]; then
+            echo "::error::The unit-test build has ${WARNING_COUNT} distinct 'warning:' lines; the project must stay warning-free."
+            exit 1
+          fi
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unit-test-results-${{ github.run_number }}
+          path: |
+            build/PhoneLidarTests.xcresult
+            logs/
           retention-days: 14
 
   # Optional. Runs only when started by hand with "testflight" ticked.
@@ -98,33 +248,41 @@ jobs:
     timeout-minutes: 60
     env:
       BUILD_NUMBER: ${{ github.run_number }}
-      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-      APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
-      APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
-      CERTIFICATE_PRIVATE_KEY: ${{ secrets.CERTIFICATE_PRIVATE_KEY }}
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Show Xcode version
+        run: xcodebuild -version
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - name: Install tools
         run: |
           brew install xcodegen
-          pip install codemagic-cli-tools
+          pip install codemagic-cli-tools==0.70.2
 
       - name: Set build number and generate project
         run: |
           sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"${BUILD_NUMBER}\"/" project.yml
+          grep -q "CURRENT_PROJECT_VERSION: \"${BUILD_NUMBER}\"" project.yml || { echo "Build number was not injected into project.yml"; exit 1; }
           xcodegen generate
 
       - name: Create / fetch signing certificate and profile
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          CERTIFICATE_PRIVATE_KEY: ${{ secrets.CERTIFICATE_PRIVATE_KEY }}
         run: |
           keychain initialize
-          BUNDLE_ID=$(xcode-project detect-bundle-id --project PhoneLidar.xcodeproj)
+          # The project also contains the PhoneLidarTests target; name the app target explicitly.
+          BUNDLE_ID=$(xcode-project detect-bundle-id --project PhoneLidar.xcodeproj --target-name PhoneLidar)
           echo "Bundle ID: $BUNDLE_ID"
           app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
           keychain add-certificates
@@ -134,6 +292,10 @@ jobs:
         run: xcode-project build-ipa --project PhoneLidar.xcodeproj --scheme PhoneLidar
 
       - name: Upload to App Store Connect (TestFlight)
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
         run: |
           IPA=$(ls build/ios/ipa/*.ipa | head -n 1)
           echo "Uploading $IPA"
@@ -141,7 +303,7 @@ jobs:
 
       - name: Keep signed .ipa
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: PhoneLidar-signed-ipa-${{ github.run_number }}
           path: build/ios/ipa/*.ipa
