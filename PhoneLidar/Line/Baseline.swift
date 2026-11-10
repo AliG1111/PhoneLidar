@@ -19,11 +19,35 @@ struct BaselineInfo: Codable {
     var filteredDepth: Bool
 }
 
+/// Why a baseline calibration was not accepted.
+enum BaselineError: LocalizedError {
+    case notEnoughFrames
+    case lowCoverage(percent: Double)
+    case cancelled(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .notEnoughFrames:
+            return "Calibration failed: not enough LiDAR readings. Check the surface is in view and 0.3–4 m away."
+        case .lowCoverage(let percent):
+            return String(format: "Calibration refused: only %.0f %% of the view had steady LiDAR readings (at least %.0f %% needed). "
+                          + "Make sure the whole picture shows the empty flat surface, 0.3–4 m away, with nothing moving, then try again.",
+                          percent, Baseline.minimumCoveragePercent)
+        case .cancelled(let reason):
+            return "Calibration cancelled: \(reason). Tap Calibrate again when the phone is steady."
+        }
+    }
+}
+
 /// Per-pixel distance to an empty, flat reference surface. Heights are measured above it:
 /// height = baseline − distance (mm, positive = closer to the camera than the surface).
 final class Baseline: @unchecked Sendable {
     static let fileName = "Baseline.bin"
     static let infoName = "Baseline.json"
+    /// Calibrations with fewer pixels that had steady readings are refused.
+    static let minimumCoveragePercent = 50.0
+    /// Below this coverage the screen warns that much of the baseline comes from the fitted plane.
+    static let goodCoveragePercent = 80.0
 
     let info: BaselineInfo
     /// mm per depth pixel, row-major info.width × info.height.
@@ -85,11 +109,14 @@ final class Baseline: @unchecked Sendable {
 
     /// Builds a baseline from frames of the empty flat surface. The last `verify` frames are not used
     /// for the baseline; they measure how flat the corrected result is.
+    /// Pixels with too few readings (LiDAR dropouts, dark or shiny spots, edges) are filled from a plane
+    /// fitted to the pixels that had readings; `coveragePercent` is the share that had readings.
+    /// Throws when fewer than `minimumCoveragePercent` of the pixels had readings.
     static func build(frames: [[Float]], width: Int, height: Int, verify: Int,
-                      tiltX: Double?, tiltY: Double?, filtered: Bool) -> Baseline? {
+                      tiltX: Double?, tiltY: Double?, filtered: Bool) throws -> Baseline {
         let pixelCount = width * height
         let usable = frames.filter { $0.count == pixelCount }
-        guard usable.count >= 10, pixelCount > 0 else { return nil }
+        guard usable.count >= 10, pixelCount > 0 else { throw BaselineError.notEnoughFrames }
         let verifyCount = min(verify, usable.count / 3)
         let buildFrames = Array(usable.prefix(usable.count - verifyCount))
         let verifyFrames = Array(usable.suffix(verifyCount))
@@ -115,7 +142,10 @@ final class Baseline: @unchecked Sendable {
             values[i] = sum / Float(hi - lo)
             validCount += 1
         }
-        guard validCount >= pixelCount / 10 else { return nil }
+        let coverage = 100 * Double(validCount) / Double(pixelCount)
+        guard validCount > 0, coverage >= minimumCoveragePercent else {
+            throw BaselineError.lowCoverage(percent: coverage)
+        }
 
         // Spread of the flat surface across the view, before correction.
         var valid: [Float] = []
@@ -132,7 +162,7 @@ final class Baseline: @unchecked Sendable {
             for v in 0..<height {
                 for u in 0..<width where values[v * width + u] <= 0 {
                     let z = plane.a * Double(u) + plane.b * Double(v) + plane.c
-                    if z > 0 { values[v * width + u] = Float(z) }
+                    if z.isFinite, z > 0, z < 65_000 { values[v * width + u] = Float(z) }
                 }
             }
         }
@@ -165,7 +195,7 @@ final class Baseline: @unchecked Sendable {
         let info = BaselineInfo(width: width, height: height, created: Date(), frames: usable.count,
                                 meanDistance: mean, rawStdDev: variance.squareRoot(), rawRange: p99 - p1,
                                 correctedStdDev: stdN > 0 ? stdSum / Double(stdN) : 0,
-                                coveragePercent: 100 * Double(validCount) / Double(pixelCount),
+                                coveragePercent: coverage,
                                 tiltX: tiltX, tiltY: tiltY, filteredDepth: filtered)
         return Baseline(info: info, values: values)
     }
