@@ -268,7 +268,8 @@ final class LineMotionMathTests: XCTestCase {
     }
 
     func testARecordingThatStartsWithLockIsUnchanged() {
-        // Y-1: with lock throughout, Record changes neither the travel nor the shown average.
+        // Y-1: with a fresh reading throughout (no-lock frames are all within 2 s of one), Record changes neither the
+        // travel nor the shown average.
         let readings: [Double?] = [100, 120, nil, 140, 160, 150, nil, nil, 170, 180, 190, nil, 200]
         var plain = LineSpeedTracker()
         var recorded = LineSpeedTracker()
@@ -292,6 +293,56 @@ final class LineMotionMathTests: XCTestCase {
         XCTAssertNil(tracker.add(rawSpeed: nil, dt: 0.1))                 // one reading in the window: no average yet
         XCTAssertEqual(tracker.travel - start, 5, accuracy: 1e-12)        // held 50 mm/s × 0.1 s
         XCTAssertEqual(tracker.lastValidSpeed, 50)
+    }
+
+    func testALongGapCountsTowardTheAgeOfTheHeldSpeed() {
+        // X-3: a gap of a second or more still advances the tracker clock (the clock sums every positive finite dt).
+        // Lock at clock 0.1 s; one no-lock frame over 60 s puts the clock at 60.1 s, so at Record the reading is
+        // 60.0 s old (> 2.0 s): the held speed is cleared. The 60 s frame itself gives no travel (dt >= 1 s).
+        var tracker = LineSpeedTracker()
+        _ = tracker.add(rawSpeed: 300, dt: 0.1)
+        XCTAssertEqual(tracker.travel, 30, accuracy: 1e-12)                // 300 mm/s × 0.1 s
+        XCTAssertNil(tracker.add(rawSpeed: nil, dt: 60))
+        XCTAssertEqual(tracker.travel, 30, accuracy: 1e-12)                // unchanged by the long gap
+        XCTAssertEqual(tracker.lastValidSpeed, 300)
+        tracker.beginRecording()
+        XCTAssertNil(tracker.lastValidSpeed)
+        let start = tracker.travel
+        for _ in 0..<30 { XCTAssertNil(tracker.add(rawSpeed: nil, dt: 0.1)) }
+        XCTAssertEqual(tracker.travel - start, 0)                          // recorded travel stays at zero
+    }
+
+    func testInvalidIntervalsDoNotAdvanceTheTrackerClock() {
+        // X-3: dt = NaN, 0 and negative do not move the clock, so they never age the held speed, and they never
+        // turn the clock into NaN.
+        var tracker = LineSpeedTracker()
+        _ = tracker.add(rawSpeed: 300, dt: 0.5)                           // reading at clock 0.5 s
+        _ = tracker.add(rawSpeed: nil, dt: 0.25)
+        _ = tracker.add(rawSpeed: nil, dt: 0.25)                          // clock 1.0 s: the reading is 0.5 s old
+        let travelBefore = tracker.travel
+        XCTAssertEqual(travelBefore, 150 + 75 + 75, accuracy: 1e-12)      // 300 mm/s × (0.5 + 0.25 + 0.25) s
+        // Three rounds so that a clock that counted |dt| (3 × 1 s extra) or went NaN would show: 1.0 s stays 1.0 s.
+        for _ in 0..<3 {
+            _ = tracker.add(rawSpeed: nil, dt: .nan)
+            _ = tracker.add(rawSpeed: nil, dt: 0)
+            _ = tracker.add(rawSpeed: nil, dt: -1)
+        }
+        XCTAssertEqual(tracker.travel, travelBefore)                      // none is a travel interval
+        tracker.beginRecording()
+        // Age at Record is 0.5 s (≤ 2.0 s): the held speed is kept.
+        XCTAssertEqual(tracker.lastValidSpeed, 300)
+        let start = tracker.travel
+        _ = tracker.add(rawSpeed: nil, dt: 0.25)
+        XCTAssertEqual(tracker.travel - start, 75, accuracy: 1e-12)       // held 300 mm/s × 0.25 s
+
+        // 3 s of valid no-lock frames: clock 1.25 + 3.0 = 4.25 s, the reading (0.5 s) is 3.75 s old > 2.0 s.
+        // A NaN clock would compare false and keep the speed, so clearing it proves the clock stayed finite.
+        for _ in 0..<12 { _ = tracker.add(rawSpeed: nil, dt: 0.25) }
+        tracker.beginRecording()
+        XCTAssertNil(tracker.lastValidSpeed)
+        let again = tracker.travel
+        _ = tracker.add(rawSpeed: nil, dt: 0.25)
+        XCTAssertEqual(tracker.travel, again)                             // no held speed left to integrate
     }
 
     func testSmoothedSpeedNeedsThreeValidReadings() throws {
