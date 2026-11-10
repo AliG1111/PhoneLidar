@@ -46,10 +46,19 @@ struct TopoReplayView: View {
 
     /// New files (TopoGrid.bin, saved images) appear in the scan's file list.
     private func refreshFileList() {
+        updateScanRecord(summary: nil)
+    }
+
+    /// Refreshes the file list and, after a map rebuild, replaces the map lines of the summary.
+    private func updateScanRecord(summary: (info: LineRecordingInfo, map: [String])?) {
         let target = folder.standardizedFileURL.path
-        if let record = store.scans.first(where: { store.folderURL(for: $0).standardizedFileURL.path == target }) {
-            try? store.save(record)
+        guard var record = store.scans.first(where: { store.folderURL(for: $0).standardizedFileURL.path == target })
+        else { return }
+        if let summary {
+            record.summary = TopoMapBuilder.recordSummary(existing: record.summary, info: summary.info,
+                                                          map: summary.map)
         }
+        try? store.save(record)
     }
 
     private struct Opened {
@@ -106,7 +115,7 @@ struct TopoReplayView: View {
                 // The files are written whether or not the screen is still open; keep the set complete.
                 TopoMapRenderer.writeComposite(map: output.mapImage, stats: output.stats, direction: info.direction,
                                                to: folder.appendingPathComponent("TopoMap.png"))
-                refreshFileList()
+                updateScanRecord(summary: (info: info, map: output.summary))
                 gridFile = output.grid
             case .failure(let error):
                 failure = LoadError.build(error.localizedDescription).localizedDescription
