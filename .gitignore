@@ -20,3 +20,10 @@ logs/
 dist/
 *.xcresult
 simulators.json
+
+# Scan and reference media must never be committed (the repository is public)
+Reference/
+Scans/
+*.mov
+*.MOV
+Depth.bin
