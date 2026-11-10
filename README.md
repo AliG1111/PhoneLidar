@@ -38,7 +38,7 @@ PhoneLidar/Viewer/              SceneKit 3D viewer with measuring
 PhoneLidar/Library/             Scan detail / share / rename / delete, incomplete scans
 PhoneLidar/Storage/             Scan storage, unit formatting, CSV
 PhoneLidar/Assets.xcassets/     App icon
-Tests/PhoneLidarTests/          Unit tests (313; run in the cloud build)
+Tests/PhoneLidarTests/          Unit tests (run in the cloud build)
 docs/                           Requirements, design, implementation plan, review records
 CLAUDE.md                       Rules for the coding agents
 .github/workflows/ios-build.yml Cloud build and tests (unsigned .ipa, optional TestFlight upload)
@@ -62,7 +62,7 @@ CLAUDE.md                       Rules for the coding agents
 2. Pick **Build iOS app** → **Run workflow** → **Run workflow**. Runs also start by themselves for every push to `main` that changes more than Markdown files, and for every pull request into `main`.
 3. Wait for the green checks (about 2–10 minutes). A run has two jobs:
    - **unsigned-ipa** builds the app and packages the `.ipa`. The project must stay free of compiler warnings: any warning fails this job, and the run summary shows the warning count (**Compiler warnings: 0**).
-   - **unit-tests** runs the 313 unit tests on the newest iPhone simulator (no LiDAR needed; they cover file formats, statistics, speed tracking, baseline, replay data and formatting). The run summary shows **PASSED: N tests passed, 0 failed**, and also fails on warnings. Both jobs should be green before a pull request is merged.
+   - **unit-tests** runs the unit tests on the newest iPhone simulator (no LiDAR needed; they cover file formats, statistics, speed tracking, baseline, replay data and formatting). The run summary shows **PASSED: N tests passed, 0 failed**, and also fails on warnings. Both jobs should be green before a pull request is merged.
 4. Open the finished run, scroll to **Artifacts**, download `PhoneLidar-unsigned-ipa-N` (signed in to GitHub). It is a zip containing `PhoneLidar-unsigned-N.ipa`; unzip it. The `.ipa` is made even if the tests fail, so install only from a run where both jobs are green.
 
 If a job fails, the run's summary page lists the compiler errors (**Build errors**) or the failed tests. Two more artifacts help:
@@ -122,7 +122,7 @@ The signing step uses Codemagic's open-source CLI tools (`codemagic-cli-tools` o
 
 - **Delete** always asks first. On Home, swipe a scan left and tap **Delete** (a full swipe does not delete); a dialog "Delete this scan and all of its files?" shows the scan's name. On the scan screen, **Delete scan** shows the same dialog. If the folder cannot be removed, "Could not delete" suggests deleting it in the Files app.
 - **Recordings recovered**: if the app was closed or killed while a Line scan was recording or saving, the app recovers that recording by itself (when Home loads, when the app comes back to the front and after a Line scan screen closes). A folder must have been untouched for 30 seconds first, so a recording that stopped moments ago is picked up shortly afterwards. The recovered scan appears under **Saved scans** named "Line <date> (recovered)", and a **Recordings recovered** notice on Home explains it until you tap **OK**. Its summary says "Recovered: the app closed before this recording was saved. The last seconds and the end of the video may be missing." and "Map not built yet": open **Topographic map** and tap **Rebuild map**. If the recording stopped normally but could not be added to the library (for example storage was full at that moment), it is recovered with its own name and summary plus a "Recovered: the recording stopped normally, but the scan could not be added…" line. When a cut-off `Recording.json` had to be repaired, the scan keeps the note that the last frames may be missing, even after **Rebuild map**.
-- **Incomplete scans** (only shown when there are some): folders that never got their `scan.json` (the app closed, crashed or ran out of space before the scan finished). Open one to see its size and files, **Share** each file (or **Share all files**), or delete it ("Delete these files?"). A folder from an interrupted Line recording is titled **Interrupted recording**; its **Recover recording** button recovers it now (do this before sharing, so `Recording.json` is repaired first; a folder touched in the last 30 seconds waits) and shows **Recovering…**, and "Last attempt failed: …" explains a failure. Its delete dialog ("Delete this interrupted recording?") reminds you that it can be recovered instead.
+- **Incomplete scans** (only shown when there are some): folders that never got their `scan.json` (the app closed, crashed or ran out of space before the scan finished). Open one to see its size and files, **Share** each file (or **Share all files**), or delete it ("Delete these files?"). A folder from an interrupted Line recording is titled **Interrupted recording**; its **Recover recording** button recovers it now (do this before sharing, so `Recording.json` is repaired first; a folder touched in the last 30 seconds waits) and shows **Recovering…**, and "Last attempt failed: …" explains a failure. Its delete dialog ("Delete this interrupted recording?") reminds you that it can be recovered instead. While a recovery is running, **Delete** is not offered for an interrupted recording.
 - A scan written by a newer version of the app, or with a damaged `scan.json` field, still opens: unreadable fields get neutral values, and a scan type this version does not know shows as type "Scan" and is left unchanged when you rename it.
 - **Save Image** / **Save Video** in the share sheet save to Photos. iOS asks for permission the first time ("Phone LiDAR saves a scan image or video to your Photos only when you choose Save Image or Save Video in the share sheet."); the app only adds, it never reads your photos.
 
@@ -134,7 +134,6 @@ The signing step uses Codemagic's open-source CLI tools (`codemagic-cli-tools` o
   - **The photos are never deleted when the model cannot be built** (error, **Stop**, or the app closed): the scan stays in the library with its photos and the summary "Reconstruction failed: …". Tap **Retry reconstruction** on the failure screen, or later on the scan screen (**3D model › Retry reconstruction**), and use **Share photos** in the scan's Files section to get the photos out.
   - If the model was built but the scan record could not be written, the screen says "3D model built, but not saved to the library" and **Try saving again** only rewrites the record; the finished `Model.usdz` and the photos are kept. **Close** on that screen tries the save once more. If it still fails, the scan screen offers **Add the finished model** ("The model was built but not added to this scan. Nothing is rebuilt.") instead of **Retry reconstruction**; a finished model is never rebuilt or deleted.
   - If even the first scan record could not be written, the failure screen says the photos are kept in the scan folder but the scan could not be added to the library, and gives the Files-app path (*Phone LiDAR › Scans › <folder>*).
-  - While a recovery is running, **Delete** is not offered for an interrupted recording.
 
 ## Line scan (moving material)
 
@@ -244,7 +243,7 @@ Scan › **Topographic replay (real time, adjustable speed)**. The screen turns 
 
 ## Changing the app
 
-Edit the Swift files (in the GitHub web editor or locally) on a branch and open a pull request into `main`. The build and the 313 unit tests run for the pull request; merge when both are green and the warning count is 0. Every merge to `main` that changes more than Markdown files builds a new `.ipa`. Install it over the old one with Sideloadly (same Apple ID) to keep existing scans.
+Edit the Swift files (in the GitHub web editor or locally) on a branch and open a pull request into `main`. The build and the unit tests run for the pull request; merge when both are green and the warning count is 0. Every merge to `main` that changes more than Markdown files builds a new `.ipa`. Install it over the old one with Sideloadly (same Apple ID) to keep existing scans.
 
 ## Developer documentation
 

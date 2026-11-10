@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | v1 feature set on `main` (`1cf693e`, build #23). P8 process alignment on branch `process-alignment`: M1 cycles 1–2 fixed and merged into it, cycle 3 in progress; not yet merged to `main`. |
+| State | v1 feature set on `main` (`1cf693e`, build #23). P8 process alignment on branch `process-alignment`: M1 review cycles 1–3 converged (no new Critical/High/Medium), final review done (0 Critical/High/Medium, 10 Lows being fixed), re-review at Opus 5.5 / max next; not yet merged to `main`. |
 | Date | 2026-11-10 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
@@ -23,7 +23,7 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P5 | Baseline (flat-surface) calibration and height mode | Done (PR #6, build #17) |
 | P6 | Local (zone) speeds | Done (PR #7, build #19) |
 | P7 | Topographic replay | Done (PR #8, build #23) |
-| P8 | Process alignment: docs, CLAUDE.md, unit tests in CI, milestone M1 reviews and fixes, final review | In progress (M1 cycles 1–2 fixed, cycle 3 running; unmerged) |
+| P8 | Process alignment: docs, CLAUDE.md, unit tests in CI, milestone M1 reviews and fixes, final review | In progress (cycles 1–3 and final review done; final-review fixes and re-review; unmerged) |
 | P9 | On-device validation on the iPhone 17 Pro Max | Not started |
 | P10 | Backlog | Open |
 

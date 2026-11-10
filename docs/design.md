@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Architecture, module design, data flow, concurrency, algorithms, on-disk formats, technology choices, risks |
-| Describes | `process-alignment` at `547de8c`: `main` `1cf693e` (PR #8, CI build #23) plus the P8 changes (unit tests, CI hardening, M1 review fixes of cycles 1–2); cycle 3 and the merge are pending. Verified against the source |
+| Describes | `process-alignment`: `main` `1cf693e` (PR #8, CI build #23) plus the P8 changes (unit tests, CI hardening, M1 review fixes of cycles 1–3 and of the final review). |
 | Date | 2026-11-10 |
 | Related | [requirements.md](requirements.md), [implementation-plan.md](implementation-plan.md), [../CLAUDE.md](../CLAUDE.md) |
 
@@ -13,7 +13,7 @@ Source paths are relative to `PhoneLidar/` unless they start with `Support/`, `.
 
 ## 1. Scope
 
-The app has four capture modes and shared library functions. Room, Equipment and Object capture are thin wrappers around Apple frameworks plus exporters. Line scan is the bulk of the code (17 of 32 Swift files, 8,308 of 11,428 lines): a real-time capture pipeline, a speed estimator, a calibration model, a streaming recorder with custom binary formats and crash recovery, a playback screen, a map builder with statistics, and a SceneKit replay. `Tests/PhoneLidarTests` (3,955 lines, 313 tests) covers the pure-logic files in a host-less XCTest bundle.
+The app has four capture modes and shared library functions. Room, Equipment and Object capture are thin wrappers around Apple frameworks plus exporters. Line scan is the bulk of the code (more than two thirds of the Swift code): a real-time capture pipeline, a speed estimator, a calibration model, a streaming recorder with custom binary formats and crash recovery, a playback screen, a map builder with statistics, and a SceneKit replay. `Tests/PhoneLidarTests` covers the pure-logic files in a host-less XCTest bundle.
 
 ## 2. Architecture overview
 
@@ -121,7 +121,7 @@ flowchart LR
 - `Formatting` — `Units` (m with 3 decimals + ft-in with 0.1 in, carrying 12.0 in into the next foot, sign taken after rounding, "—" for non-finite input; area m² + ft²; `bytes`) and `CSV` (`escape`, `make`, `measurements`, `roomSummary`).
 
 ### 3.3 Library (`Library/`)
-- `ScanDetailView` — per-scan sections (FR-LIB-01), `ShareLink` for each file, for the `Images/` photos ("Share photos", C-18) and for all files, Quick Look AR preview for USDZ, **Retry reconstruction** for an Object scan without a model (presents `ObjectScanView(resume:)`), rename alert, delete confirmation.
+- `ScanDetailView` — per-scan sections (FR-LIB-01), `ShareLink` for each file, for the `Images/` photos ("Share photos", C-18) and for all files, Quick Look AR preview for USDZ, **Retry reconstruction** for an Object scan without a model (presents `ObjectScanView(resume:)`), or **Add the finished model** when `ObjectPhotos.hasCompleteModel` (non-empty `Model.usdz`, no `Checkpoint/`) — resume then writes the complete record and never rebuilds (G-3); rename alert, delete confirmation.
 - `IncompleteScanView` — folder facts, file list with share links, **Recover recording** (calls `recoverLineRecordings()`; shows "Recovering…" and the last failure), delete confirmation; shows "Recording recovered" with a link when the folder has become a saved scan while open.
 
 ### 3.4 Room (`Room/`)
@@ -515,7 +515,7 @@ Decoding is tolerant (C-17): every key is optional. A missing `id` becomes a UUI
   end_header
   ```
   (each line ends with LF), then N × 24 bytes (six Float32 LE: x, y, z, nx, ny, nz), then F × 13 bytes (UInt8 `3`, three Int32 LE vertex indices, 0-based).
-- `Mesh.usdz` — `SCNScene.write` of one node `LidarMesh` with vertex and normal sources, one triangle element (UInt32 indices), a double-sided diffuse material (white 0.78). Omitted if SceneKit returns false; then `primaryModel = "Mesh.obj"`.
+- `Mesh.usdz` — `SCNScene.write` of one node per mesh anchor, named `LidarMesh_<i>`, each with vertex and normal sources and one triangle element (UInt32 indices), a double-sided diffuse material (white 0.78). Omitted if SceneKit returns false; then `primaryModel = "Mesh.obj"`.
 - `Measurements.csv` — header `label,distance_m,distance_ft_in,start_x_m,start_y_m,start_z_m,end_x_m,end_y_m,end_z_m`; values `%.4f`; feet-inches quoted (§7.3). Written only when measurements exist.
 
 ### 7.6 Object capture
@@ -682,7 +682,7 @@ Error types: `ScanError` (`noData`, `noMesh`, `unsupported`, `cancelled`) and `L
 | Replay: missing/damaged `Recording.json` or build failure | "Cannot replay this recording" with the reason ("The topographic map could not be built: …"). Corrupt `TopoGrid.bin` → treated as missing and rebuilt. |
 | Room: processing error / save error | Red banner; Save can be retried. `RoomMesh.usdz` failure is silent (best-effort file). |
 | Mesh: no mesh / export error | Message; the AR session keeps running until an export has succeeded, so Save can be retried (C-6). |
-| Object: capture or reconstruction failure, or Stop | Message; the photos are kept; "Retry reconstruction" is offered. The record is written before reconstruction; if only the final `scan.json` rewrite fails, "Try saving again" rewrites the record (`modelNotRecorded`). |
+| Object: capture or reconstruction failure, or Stop | Message; the photos are kept; "Retry reconstruction" is offered. The record is written before reconstruction; if only the final `scan.json` rewrite fails, "Try saving again" rewrites the record (`modelNotRecorded`); Close there tries once more, and a complete model is later recorded via "Add the finished model", never rebuilt (G-3). If no record exists at all, the screen says the photos are in the scan folder (G-7). |
 | Viewer: model cannot be opened | "Could not open <file>: …" over an empty scene. |
 | Library: undecodable `scan.json` | Folder listed under Incomplete scans (§8); missing fields get neutral values, a missing id comes from the folder name. |
 

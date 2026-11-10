@@ -21,9 +21,9 @@ board) recording LiDAR depth + video, measuring speed, and building a topographi
 project.yml                  XcodeGen spec (targets, settings, schemes)
 Support/Info.plist           Permissions, orientations, Files-app sharing
 .github/workflows/ios-build.yml  CI: unsigned .ipa build, unit tests, optional TestFlight job (after both)
-PhoneLidar/App/              App entry, HomeView, OrientationLock (replay-only landscape)
+PhoneLidar/App/              App entry, HomeView, OrientationLock (replay-only landscape), CameraAccess, KeepScreenOn
 PhoneLidar/Storage/          ScanStore (scan folders, scan.json), Units, CSV
-PhoneLidar/Library/          ScanDetailView (sections, share, rename, delete)
+PhoneLidar/Library/          ScanDetailView (sections, share, rename, delete), IncompleteScanView
 PhoneLidar/Room/ Mesh/ Object/  Capture screens + exporters for the three framework modes
 PhoneLidar/Viewer/           SceneKit 3D viewer with ruler
 PhoneLidar/Line/             Line scan: LineCapturePipeline, SpeedEstimator, Baseline, LineRecording (formats,
@@ -112,7 +112,7 @@ Full matrix: docs/implementation-plan.md §2. Every plan task names its assignme
 - Keep files focused (split beyond ~800 lines), doc comments on non-obvious maths, no third-party packages without a
   design decision, no force unwraps on file or device data, no debug `print`.
 
-## Commit trailer (required on every commit)
+## Commit trailer (required on every commit; name the model that did the work, e.g. Sonnet 5.5)
 ```
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_014WLjMvrCLDLxVAm3jLG84p
