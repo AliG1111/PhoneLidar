@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Architecture, module design, data flow, concurrency, algorithms, on-disk formats, technology choices, risks |
-| Describes | `process-alignment`: `main` `1cf693e` (PR #8, CI build #23) plus the P8 changes (unit tests, CI hardening, M1 review fixes of cycles 1–3 and of the final review). |
+| Describes | `process-alignment`: `main` `1cf693e` (PR #8, CI build #23) plus the P8 changes (unit tests, CI hardening, M1 review fixes of cycles 1–3, the final review and the re-reviews). |
 | Date | 2026-11-10 |
 | Related | [requirements.md](requirements.md), [implementation-plan.md](implementation-plan.md), [../CLAUDE.md](../CLAUDE.md) |
 

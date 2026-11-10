@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | v1 feature set on `main` (`1cf693e`, build #23). P8 process alignment on branch `process-alignment`: M1 review cycles 1–3 converged (no new Critical/High/Medium), final review done (10 Lows, fixed); re-review 1 found Y-1 (Medium) and 3 Lows (fixed); re-review 2 found 3 Lows X-1…X-3 (fixed); re-review 3 at Opus 5.5 / max next; not yet merged to `main`. |
+| State | v1 feature set on `main` (`1cf693e`, build #23). P8 process alignment on branch `process-alignment`: M1 review cycles 1–3 converged (no new Critical/High/Medium), final review done (10 Lows, fixed); re-review 1 found Y-1 (Medium) and 3 Lows (fixed); re-review 2 found 3 Lows X-1…X-3 (fixed); re-review 3 found 3 Lows W-1…W-3 (docs, fixed); re-review 4 at Opus 5.5 / max next; not yet merged to `main`. |
 | Date | 2026-11-10 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
@@ -146,7 +146,7 @@ Reconstructed from git history, CI runs and `REVISIONS.md`. Commits from PR #1 t
 
 ### P8 — Process alignment (in progress)
 
-Branches: all fix branches (`test-infra`, `fix-line`, `fix-topo`, `fix-apps`, `cycle2-capture`, `cycle2-topo`, `cycle2-rest`, `cycle3-recovery`, `cycle3-apps`) are merged into `process-alignment`. Cycle 3 found no new Critical/High/Medium; its seven Lows are fixed. The final review (Opus 5.5 / max) found ten Lows (fixed on `final-line`, `final-misc`); its re-review found Y-1 (Medium) and three Lows, fixed on `rereview-fixes` and in the docs; another fresh Opus 5.5 / max review follows, then the merge into `main` (one PR). Record: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md).
+Branches: all fix branches (`test-infra`, `fix-line`, `fix-topo`, `fix-apps`, `cycle2-capture`, `cycle2-topo`, `cycle2-rest`, `cycle3-recovery`, `cycle3-apps`, `final-line`, `final-misc`, `rereview-fixes`, `rereview2-tests`) are merged into `process-alignment`, each after a green CI run at its head. Cycles 1–3 converged on Critical/High/Medium; the final review (Opus 5.5 / max) and re-reviews 1–3 (Opus 5.5 / max) found Z-1…Z-10 + GI, Y-1…Y-4, X-1…X-3 and W-1…W-3, all fixed. Re-review 4 (Opus 5.5 / max) decides the merge into `main` (one PR). Record: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md).
 
 Documentation and agent rules
 - [x] P8.1 Requirements, design, technology recommendations and this plan in `docs/` (Opus 5.5 / max)
@@ -221,6 +221,7 @@ All Low, from [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md). Each needs n
 - [ ] B-13r Replay `SCNGeometry` is still rebuilt per change: performance only; part of the SceneKit → RealityKit/Metal backlog item (Opus 5.5 / high)
 - [ ] Split `LineScanView.swift` (~1,070 lines) and `LinePlaybackView.swift` (~1,060 lines) below the ~800-line guideline; no behaviour change (Sonnet 5.5 / high)
 - [ ] Move `ObjectPhotos.hasCompleteModel` and the Object resume decision into a Storage file so the test target can cover them (Sonnet 5.5 / high)
+- [ ] Update the pinned `actions/checkout` and `actions/upload-artifact` SHAs to releases on Node 24 (GitHub reports the Node 20 runtime as deprecated) (Sonnet 5.5 / medium)
 - [ ] Check which unit-test class takes about 83 s on CI and whether it can be made faster (Sonnet 5.5 / medium)
 
 ## 7. Change log
@@ -229,7 +230,7 @@ Newest first. Build = run number of the `Build iOS app` workflow on `main` after
 
 | Date | Build | PR / commit | Summary |
 |---|---|---|---|
-| 2026-11-10 | — | Process alignment (in progress, not merged) | On `process-alignment`: requirements, design and implementation plan, `CLAUDE.md`, README rewritten as the user guide; host-less `PhoneLidarTests` unit tests (390) and a `unit-tests` CI job on pull requests; CI hardening (read-only token, pinned actions and XcodeGen, hash-locked TestFlight tools, warnings as errors with a log gate, TestFlight after build and tests); M1 review cycles 1–3, final review and re-review fixed (3 Critical, 3 High, 24 Medium, 70 Low; five Lows deferred to P10): recordings stream to disk and survive interruptions, kills and low storage, with recovery from the library; map cell size, trimmed coverage/length/width, tolerant `scan.json`, Incomplete scans, Object photos kept and a finished model never rebuilt, speed/travel maths extracted and tested, held speed at Record limited to 2 s. Build number and merge commit are added at merge. |
+| 2026-11-10 | — | Process alignment (in progress, not merged) | On `process-alignment`: requirements, design and implementation plan, `CLAUDE.md`, README rewritten as the user guide; host-less `PhoneLidarTests` unit tests (392) and a `unit-tests` CI job on pull requests; CI hardening (read-only token, pinned actions and XcodeGen, hash-locked TestFlight tools, warnings as errors with a log gate, TestFlight after build and tests); M1 review cycles 1–3, final review and re-reviews 1–3 fixed (3 Critical, 3 High, 24 Medium, 76 Low; five Lows deferred to P10): recordings stream to disk and survive interruptions, kills and low storage, with recovery from the library; map cell size, trimmed coverage/length/width, tolerant `scan.json`, Incomplete scans, Object photos kept and a finished model never rebuilt, speed/travel maths extracted and tested, held speed at Record limited to 2 s. Build number and merge commit are added at merge. |
 | 2026-11-09 | #23 | PR #8 `topo-replay` (`1cf693e`; branch runs #20–#22) | Real-time topographic replay: scrolling 3D strip (newest line right, walls, tolerance planes, marker), Map view, along/across profiles, colour bar target ± 2 tolerances, transport and 0.1×–20× speed, gestures, settings, Save image; `TopoGrid.bin`; landscape on the replay screen only; auto-play; file-list refresh. Xcode 26.6, 0 warnings. |
 | 2026-11-09 | #19 | PR #7 `local-speeds` (`ecba3d6`; branch run #18) | 6 × 4 zone speeds: Fastest marker and speed at a point while recording; Fastest on screen and Speed here in playback; `ZoneSpeeds.csv`, zone speeds in `Recording.json`, fastest zone in `Frames.csv`. Snapshot copied to the owner's folder. |
 | 2026-11-09 | #17 | PR #6 `baseline-calibration` (`bbeaa30`; branch run #15 failed, #16 green) | Flat-surface baseline calibration and height mode across live view, map, statistics, profiles and probe; tilt/filter warnings; baseline stored and copied into recordings. |

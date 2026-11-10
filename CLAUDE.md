@@ -113,7 +113,7 @@ Full matrix: docs/implementation-plan.md §2. Every plan task names its assignme
 - Keep files focused (split beyond ~800 lines), doc comments on non-obvious maths, no third-party packages without a
   design decision, no force unwraps on file or device data, no debug `print`.
 
-## Commit trailer (required on every commit; name the model that did the work, e.g. Sonnet 5.5)
+## Commit trailer (required on every non-merge commit; name the model that did the work, e.g. Sonnet 5.5)
 ```
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_014WLjMvrCLDLxVAm3jLG84p
