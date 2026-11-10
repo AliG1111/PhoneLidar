@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Reads Recording.json back, repairing one that was cut off (app killed, storage full) while recording.
 /// The recorder writes the header and `"frames":[` on the first line and one frame per line, so a cut-off
@@ -56,7 +57,7 @@ enum LineRecordingRepair {
 }
 
 /// Finds line recordings that were never saved (the app was closed or killed while recording or saving)
-/// and makes them openable again.
+/// and makes them openable again. The library runs it in the background (`ScanStore.recoverLineRecordings`).
 enum LineRecordingRecovery {
     struct Recovered: Sendable {
         var folderName: String
@@ -64,45 +65,82 @@ enum LineRecordingRecovery {
         var summary: [String]
     }
 
+    /// Result of one pass over the Scans folder.
+    struct Outcome: Sendable {
+        /// Repaired recordings with frames and no scan.json, still marked: the caller adds each to the library
+        /// and then clears its marker (`LineRecordingRepair.clearMarker`).
+        var recovered: [Recovered] = []
+        /// Marked folders whose Recording.json could not be read or repaired: folder name → reason.
+        var failed: [String: String] = [:]
+        /// Some folders were skipped because they were in use or only just written: run again later.
+        var deferred = false
+    }
+
     /// Folders touched more recently than this are left alone (they may still be in use).
     static let quietSeconds: TimeInterval = 30
 
-    /// Repairs every `line_*` folder still marked as in progress. Returns the recordings that have frames
-    /// but no scan.json, so the caller can add them to the library. Runs off the main thread.
-    static func scan(root: URL, skipping active: String?) -> [Recovered] {
+    /// Repairs every `line_` folder still marked as in progress. Runs off the main thread. Stops (deferred)
+    /// as soon as a recording is active, and never touches a folder modified in the last `quietSeconds`
+    /// (a running recording writes Depth.bin every frame; a new one creates its folder and marker first).
+    static func scan(root: URL, active: ActiveFolderSet) -> Outcome {
         let manager = FileManager.default
-        let folders = (try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil,
-                                                        options: [.skipsHiddenFiles])) ?? []
-        var found: [Recovered] = []
-        for folder in folders where folder.lastPathComponent.hasPrefix("line_") {
+        let folders = ((try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil,
+                                                         options: [.skipsHiddenFiles])) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("line_") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        var outcome = Outcome()
+        for folder in folders {
+            // Never work next to a running recording; the next pass picks up the rest.
+            guard active.isEmpty else {
+                outcome.deferred = true
+                break
+            }
             let name = folder.lastPathComponent
-            guard name != active, LineRecordingRepair.hasMarker(folder), !recentlyModified(folder) else { continue }
+            guard LineRecordingRepair.hasMarker(folder) else { continue }
+            if recentlyModified(folder) {
+                outcome.deferred = true
+                continue
+            }
             let contents = ((try? manager.contentsOfDirectory(atPath: folder.path)) ?? [])
                 .filter { $0 != LineRecorder.inProgressMarker }
             if contents.isEmpty {
-                try? manager.removeItem(at: folder)      // recording never received a frame
+                try? manager.removeItem(at: folder)      // only the marker, long untouched: never received a frame
                 continue
             }
-            guard let loaded = try? LineRecordingRepair.loadInfo(folder: folder) else { continue }   // retried next time
-            LineRecordingRepair.clearMarker(in: folder)
+            let loaded: (info: LineRecordingInfo, repaired: Bool)
+            do {
+                loaded = try LineRecordingRepair.loadInfo(folder: folder)
+            } catch {
+                outcome.failed[name] = ScanError.message(for: error)      // kept marked: retried next pass
+                continue
+            }
             let info = loaded.info
             guard !info.frames.isEmpty,
-                  !manager.fileExists(atPath: folder.appendingPathComponent("scan.json").path) else { continue }
+                  !manager.fileExists(atPath: folder.appendingPathComponent("scan.json").path) else {
+                // Nothing to add (no frames, or already a saved scan whose map step was cut short).
+                LineRecordingRepair.clearMarker(in: folder)
+                continue
+            }
             let summary = [
                 String(format: "%ld frames, %.1f s, material travel %@",
                        info.frames.count, info.frames.last?.time ?? 0, info.direction.label),
                 "Recovered: the app closed before this recording was saved. The last seconds and the end of the video may be missing.",
                 "Map not built yet: open Topographic map and tap Rebuild map."
             ]
-            found.append(Recovered(folderName: name, created: startDate(of: folder), summary: summary))
+            outcome.recovered.append(Recovered(folderName: name, created: startDate(of: folder), summary: summary))
         }
-        return found
+        return outcome
     }
 
+    /// True if the folder itself (entries added or removed), its marker or a data file changed recently.
     private static func recentlyModified(_ folder: URL) -> Bool {
         let now = Date()
-        for file in ["Recording.json", "Depth.bin", "Video.mov"] {
-            let path = folder.appendingPathComponent(file).path
+        var paths = [folder.path]
+        for file in [LineRecorder.inProgressMarker, "Recording.json", "Depth.bin", "Video.mov",
+                     "Frames.csv", "ZoneSpeeds.csv"] {
+            paths.append(folder.appendingPathComponent(file).path)
+        }
+        for path in paths {
             if let date = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date,
                now.timeIntervalSince(date) < quietSeconds {
                 return true
@@ -120,5 +158,144 @@ enum LineRecordingRecovery {
         if let date = formatter.date(from: stamp) { return date }
         let attributes = try? FileManager.default.attributesOfItem(atPath: folder.path)
         return attributes?[.creationDate] as? Date ?? Date()
+    }
+}
+
+// MARK: - Library side (main actor)
+
+extension ScanStore {
+    /// Marks `folderName` as being written by a line recording: recovery does not run, and the library neither
+    /// lists nor deletes the folder as incomplete, until `endLineRecording`.
+    func beginLineRecording(_ folderName: String) {
+        activeLineFolders.insert(folderName)
+    }
+
+    /// The recording in `folderName` is saved (or abandoned). Runs a recovery pass that was held back.
+    func endLineRecording(_ folderName: String) {
+        activeLineFolders.remove(folderName)
+        if activeLineFolders.isEmpty, recoveryRerunRequested {
+            recoverLineRecordings()
+        }
+    }
+
+    /// Adds line recordings left unsaved by an earlier run (app closed or killed while recording or saving) to
+    /// the library, in the background, and sets `recoveryNotice` when it added any or one failed for the first
+    /// time. Call when the library loads and when the app becomes active; never runs while a recording is active
+    /// (it runs when that recording ends instead). A call during a pass schedules one more pass.
+    func recoverLineRecordings() {
+        guard activeLineFolders.isEmpty else {
+            recoveryRerunRequested = true
+            return
+        }
+        guard !recoveryRunning else {
+            recoveryRerunRequested = true
+            return
+        }
+        recoveryRunning = true
+        recoveryRerunRequested = false
+        let root = self.root
+        let active = activeLineFolders
+        // Repairs are atomic file replacements, so being suspended when background time runs out is harmless.
+        let activity = BackgroundActivity(name: "Recover line recordings")
+        Task { @MainActor in
+            let outcome = await Task.detached(priority: .utility) {
+                LineRecordingRecovery.scan(root: root, active: active)
+            }.value
+            self.addRecovered(outcome)
+            self.recoveryRunning = false
+            activity.end()
+            if self.recoveryRerunRequested {
+                self.recoverLineRecordings()
+            } else if outcome.deferred {
+                self.scheduleRecoveryRetry()
+            } else {
+                self.recoveryRetries = 0
+            }
+        }
+    }
+
+    /// Folders were still being written: look again once they have been quiet long enough (a few times at most).
+    private func scheduleRecoveryRetry() {
+        guard recoveryRetries < 4 else {
+            recoveryRetries = 0
+            return
+        }
+        recoveryRetries += 1
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(LineRecordingRecovery.quietSeconds + 2))
+            self.recoverLineRecordings()
+        }
+    }
+
+    private func addRecovered(_ outcome: LineRecordingRecovery.Outcome) {
+        let manager = FileManager.default
+        var added = 0
+        var failures = outcome.failed
+        for item in outcome.recovered {
+            let folder = folderURL(named: item.folderName)
+            // Deleted meanwhile, being recorded into, or already saved: leave it.
+            guard manager.fileExists(atPath: folder.path),
+                  !activeLineFolders.contains(item.folderName),
+                  !scans.contains(where: { $0.folderName == item.folderName }),
+                  !manager.fileExists(atPath: folder.appendingPathComponent("scan.json").path) else { continue }
+            let record = ScanRecord(id: UUID(),
+                                    kind: .line,
+                                    name: "Line " + item.created.formatted(date: .abbreviated, time: .shortened)
+                                        + " (recovered)",
+                                    created: item.created,
+                                    folderName: item.folderName,
+                                    primaryModel: nil,
+                                    summary: item.summary)
+            do {
+                try save(record)
+                LineRecordingRepair.clearMarker(in: folder)
+                added += 1
+            } catch {
+                // Still marked, so the next pass tries again.
+                failures[item.folderName] = "it could not be added to the list (\(ScanError.message(for: error)))"
+            }
+        }
+        let firstTime = failures.filter { recoveryFailures[$0.key] == nil }
+        recoveryFailures.merge(failures) { _, latest in latest }
+        reload()      // the pass may have repaired, unmarked or removed folders; also prunes recoveryFailures
+
+        var parts: [String] = []
+        if added == 1 {
+            parts.append("Recovered 1 line recording that was not saved when the app closed. It is under Saved scans "
+                         + "(marked “recovered”); open Topographic map and tap Rebuild map to build its map.")
+        } else if added > 1 {
+            parts.append("Recovered \(added) line recordings that were not saved when the app closed. They are under "
+                         + "Saved scans (marked “recovered”); open Topographic map and tap Rebuild map to build their maps.")
+        }
+        if firstTime.count == 1, let failure = firstTime.first {
+            parts.append("The interrupted recording \(failure.key) could not be recovered: \(failure.value). "
+                         + "Its files are kept under Incomplete scans.")
+        } else if firstTime.count > 1 {
+            parts.append("\(firstTime.count) interrupted recordings could not be recovered. Their files are kept under "
+                         + "Incomplete scans; open one to see why.")
+        }
+        guard !parts.isEmpty else { return }
+        let text = parts.joined(separator: " ")
+        recoveryNotice = recoveryNotice.map { $0 + "\n\n" + text } ?? text
+    }
+}
+
+/// A UIKit background task that ends exactly once: on `end()`, or when iOS runs out of background time.
+@MainActor
+final class BackgroundActivity {
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    init(name: String) {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.end()
+            }
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
     }
 }
