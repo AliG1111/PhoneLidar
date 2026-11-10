@@ -282,8 +282,10 @@ final class TopoReplayScene {
                 } else {
                     let ib = max(i - 1, 0)
                     let iff = min(i + 1, nr - 1)
-                    let ddx = (heights[jr * nr + i] - heights[jl * nr + i]) / (Float(jr - jl) * dx)
-                    let ddz = (heights[jj * nr + iff] - heights[jj * nr + ib]) / max(z[iff] - z[ib], 1e-6)
+                    // Neighbours without data count as level with this block (no slope towards a hole).
+                    func h(_ index: Int) -> Float { valid[index] ? heights[index] : heights[k] }
+                    let ddx = (h(jr * nr + i) - h(jl * nr + i)) / (Float(jr - jl) * dx)
+                    let ddz = (h(jj * nr + iff) - h(jj * nr + ib)) / max(z[iff] - z[ib], 1e-6)
                     let n = simd_normalize(SIMD3<Float>(-ddx, 1, -ddz))
                     normals.append(SCNVector3(n.x, n.y, n.z))
                 }
