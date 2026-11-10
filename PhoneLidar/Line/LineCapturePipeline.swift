@@ -110,16 +110,14 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     // Data-queue state
     private var baseline: Baseline?
     private var calibration: CalibrationCapture?
-    private var tileHistory: [[Double?]] = []
+    private var zoneSmoother = ZoneSpeedSmoother()
     private var lastSpread: Double?
     private var lastCenterHeight: Double?
     private let motion = CMMotionManager()
     private var surfaceTilt: (x: Double, y: Double)?
     private let estimator = SpeedEstimator()
     private var lastTime: CMTime?
-    private var travel: Double = 0
-    private var recentSpeeds: [Double] = []
-    private var lastValidSpeed: Double?
+    private var speedTracker = LineSpeedTracker()
     private var frameCounter = 0
     private var direction: TravelDirection = .rightToLeft
     private var recorder: LineRecorder?
@@ -351,10 +349,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             self.direction = direction
             estimator.travelSign = direction.bufferSign
             estimator.reset()
-            tileHistory.removeAll()
+            zoneSmoother.reset()
             // Readings taken with the old sign must not carry into the new direction.
-            lastValidSpeed = nil
-            recentSpeeds.removeAll()
+            speedTracker.clearHeldSpeed()
             lastTime = nil
         }
     }
@@ -514,76 +511,38 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         let videoHeight = CVPixelBufferGetHeight(pixelBuffer)
         let videoWidth = CVPixelBufferGetWidth(pixelBuffer)
         let k = intrinsics(for: depth, depthWidth: dw, depthHeight: dh)
-        let median = Self.centerMedian(millimetres, width: dw, height: dh)
-        // Focal length in full-resolution video pixels (depth intrinsics scaled up to the video buffer).
-        let fyVideo = Double(k.fy) * Double(videoHeight) / Double(max(dh, 1))
+        let median = LineMotionMath.centerMedian(millimetres, width: dw, height: dh)
+        let fyVideo = LineMotionMath.videoFocalLength(depthFy: Double(k.fy), videoHeight: videoHeight, depthHeight: dh)
 
-        // Speed from texture motion: pixels moved × (distance / focal length) / time.
+        // Speed from texture motion (LineMotionMath: pixels moved × (distance / focal length) / time, with gates).
         var shift: TextureShift?
         var rawSpeed: Double?
         let measured = estimator.process(pixelBuffer)
         var dt = 0.0
         if let last = lastTime { dt = (time - last).seconds }
         lastTime = time
-        if let m = measured, dt > 0.001, dt < 1 {
+        if let m = measured, LineMotionMath.isSpeedInterval(dt) {
             shift = m
             // Distance of the tracked area itself sets the mm-per-pixel scale.
-            let trackedDistance = Self.regionMedian(millimetres, width: dw, height: dh,
-                                                    regionX: m.regionX, regionY: m.regionY)
-            let distance = trackedDistance > 0 ? trackedDistance : median
-            if m.quality >= 0.1, fyVideo > 0, distance > 0 {
-                let v = m.along * (distance / fyVideo) / dt
-                if v.isFinite { rawSpeed = v }
-            }
+            let trackedDistance = LineMotionMath.regionMedian(millimetres, width: dw, height: dh,
+                                                              regionX: m.regionX, regionY: m.regionY)
+            rawSpeed = LineMotionMath.trackedSpeed(shiftPixels: m.along, quality: m.quality,
+                                                   trackedDistance: trackedDistance, centerDistance: median,
+                                                   focalPixels: fyVideo, dt: dt)
         }
         // Local speeds per zone: zone movement × (zone distance / focal length) / time.
-        let tileColumns = SpeedEstimator.tileColumns
-        let tileRows = SpeedEstimator.tileRows
-        let tiles = estimator.lastTiles
-        var rawTiles = [Double?](repeating: nil, count: tileColumns * tileRows)
-        if dt > 0.001, dt < 1, fyVideo > 0, tiles.count == rawTiles.count {
-            for (i, tile) in tiles.enumerated() {
-                guard let tile, tile.quality >= 0.12 else { continue }
-                let c = i % tileColumns
-                let r = i / tileColumns
-                let zoneDistance = Self.regionMedian(
-                    millimetres, width: dw, height: dh,
-                    regionX: Double(c) / Double(tileColumns)...Double(c + 1) / Double(tileColumns),
-                    regionY: Double(r) / Double(tileRows)...Double(r + 1) / Double(tileRows))
-                let distance = zoneDistance > 0 ? zoneDistance : median
-                guard distance > 0 else { continue }
-                let v = tile.along * (distance / fyVideo) / dt
-                if v.isFinite { rawTiles[i] = v }
-            }
-        }
-        tileHistory.append(rawTiles)
-        if tileHistory.count > 15 { tileHistory.removeFirst(tileHistory.count - 15) }
-        var smoothTiles = [Double?](repeating: nil, count: rawTiles.count)
-        for i in 0..<rawTiles.count {
-            var sum = 0.0
-            var n = 0
-            for frameTiles in tileHistory where i < frameTiles.count {
-                if let v = frameTiles[i] {
-                    sum += v
-                    n += 1
-                }
-            }
-            if n >= 4 { smoothTiles[i] = sum / Double(n) }
-        }
-        let fastest = Self.fastest(smoothTiles)
-        let rawFastest = Self.fastest(rawTiles)
+        let rawTiles = LineMotionMath.zoneSpeeds(
+            tiles: estimator.lastTiles.map { tile in tile.map { (along: $0.along, quality: $0.quality) } },
+            millimetres: millimetres, width: dw, height: dh, centerDistance: median, focalPixels: fyVideo, dt: dt,
+            columns: SpeedEstimator.tileColumns, rows: SpeedEstimator.tileRows)
+        let smoothTiles = zoneSmoother.add(rawTiles)
+        let fastest = LineMotionMath.fastest(smoothTiles)
+        let rawFastest = LineMotionMath.fastest(rawTiles)
 
-        if let v = rawSpeed { lastValidSpeed = v }
-        if dt > 0, dt < 1 { travel += (rawSpeed ?? lastValidSpeed ?? 0) * dt }
-        // Half-second rolling average of the valid readings (missing readings age out).
-        recentSpeeds.append(rawSpeed ?? .nan)
-        if recentSpeeds.count > 15 { recentSpeeds.removeFirst(recentSpeeds.count - 15) }
-        let valid = recentSpeeds.filter { !$0.isNaN }
-        let smoothed: Double? = valid.count >= 3 ? valid.reduce(0, +) / Double(valid.count) : rawSpeed
-        var angle: Double?
-        if let s = shift, abs(s.along) > 2 {
-            angle = atan2(s.across, abs(s.along)) * 180 / .pi
-        }
+        // Travel (held speed through frames without lock) and the half-second rolling average.
+        let smoothed = speedTracker.add(rawSpeed: rawSpeed, dt: dt)
+        let travel = speedTracker.travel
+        let angle = shift.flatMap { LineMotionMath.motionAngle(along: $0.along, across: $0.across) }
 
         // Live colour image (every second frame, less often under system pressure):
         // heights above the baseline when one is set, else distance.
@@ -599,9 +558,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                         image = DepthColors.heightImage(buffer, width: dw, height: dh,
                                                         low: r.lowerBound, high: r.upperBound)
                     }
-                    lastSpread = Self.spread(buffer, width: dw, height: dh)
+                    lastSpread = LineMotionMath.spread(buffer, width: dw, height: dh)
                 }
-                lastCenterHeight = Self.centerMedian(heights, width: dw, height: dh, allowNegative: true)
+                lastCenterHeight = LineMotionMath.centerMedian(heights, width: dw, height: dh, allowNegative: true)
             } else {
                 millimetres.withUnsafeBufferPointer { buffer in
                     if let r = DepthColors.percentileRange(buffer, step: 3) {
@@ -609,7 +568,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                         image = DepthColors.image(millimetres: buffer, width: dw, height: dh,
                                                   near: r.lowerBound, far: r.upperBound)
                     }
-                    lastSpread = Self.spread(buffer, width: dw, height: dh)
+                    lastSpread = LineMotionMath.spread(buffer, width: dw, height: dh)
                 }
                 lastCenterHeight = nil
             }
@@ -627,8 +586,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             if capture.width == dw && capture.height == dh && depthData.isDepthDataFiltered == capture.filtered {
                 capture.frames.append(millimetres)
                 if let g = motion.deviceMotion?.gravity {
-                    capture.tiltX.append(asin(max(-1, min(1, -g.x))) * 180 / .pi)
-                    capture.tiltY.append(asin(max(-1, min(1, -g.y))) * 180 / .pi)
+                    capture.tiltX.append(LineMotionMath.gravityTilt(g.x))
+                    capture.tiltY.append(LineMotionMath.gravityTilt(g.y))
                 }
             }
             calibrationProgress = Double(capture.frames.count) / Double(max(capture.target, 1))
@@ -679,12 +638,12 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         var tiltX: Double?
         var tiltY: Double?
         if let g = motion.deviceMotion?.gravity {
-            tiltX = asin(max(-1, min(1, -g.x))) * 180 / .pi
-            tiltY = asin(max(-1, min(1, -g.y))) * 180 / .pi
+            tiltX = LineMotionMath.gravityTilt(g.x)
+            tiltY = LineMotionMath.gravityTilt(g.y)
         }
         if frameCounter % overlayStride == 1 {
-            surfaceTilt = Self.surfaceTilt(millimetres, width: dw, height: dh,
-                                           fx: Double(k.fx), fy: Double(k.fy), cx: Double(k.cx), cy: Double(k.cy))
+            surfaceTilt = LineMotionMath.surfaceTilt(millimetres, width: dw, height: dh, fx: Double(k.fx),
+                                                     fy: Double(k.fy), cx: Double(k.cx), cy: Double(k.cy))
         }
 
         if let active = recorder, autoStopReason == nil {
@@ -718,86 +677,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                              recordingWarning: recorder?.videoProblem.map { "Video not recording: \($0)" }))
     }
 
-    /// Zone with the largest speed magnitude (signed speed returned).
+    /// Zone with the largest speed magnitude (signed speed returned). See `LineMotionMath.fastest`.
     static func fastest(_ speeds: [Double?]) -> (speed: Double, index: Int)? {
-        var best: (speed: Double, index: Int)?
-        for (i, v) in speeds.enumerated() {
-            guard let v else { continue }
-            if best == nil || abs(v) > abs(best!.speed) { best = (v, i) }
-        }
-        return best
-    }
-
-    /// Std dev of the finite, positive-distance or any-height values in the central 80 % of the view.
-    static func spread(_ values: UnsafeBufferPointer<Float>, width: Int, height: Int) -> Double? {
-        var s = 0.0, ss = 0.0, n = 0.0
-        var y = height / 10
-        while y < height - height / 10 {
-            var x = width / 10
-            while x < width - width / 10 {
-                let v = values[y * width + x]
-                if v.isFinite && v != 0 {
-                    let d = Double(v)
-                    s += d
-                    ss += d * d
-                    n += 1
-                }
-                x += 3
-            }
-            y += 3
-        }
-        guard n > 20 else { return nil }
-        let m = s / n
-        return max(0, ss / n - m * m).squareRoot()
-    }
-
-    /// Fits a plane Z = a·X + b·Y + c to the depth points (mm, camera coordinates) and converts its slope
-    /// to phone tilt relative to that surface. Depth columns run down the portrait screen, rows run right → left.
-    static func surfaceTilt(_ millimetres: [Float], width: Int, height: Int,
-                            fx: Double, fy: Double, cx: Double, cy: Double) -> (x: Double, y: Double)? {
-        guard fx > 0, fy > 0, width > 16, height > 16 else { return nil }
-        var n = 0.0, sx = 0.0, sy = 0.0, sz = 0.0
-        var sxx = 0.0, syy = 0.0, sxy = 0.0, sxz = 0.0, syz = 0.0
-        let border = max(2, min(width, height) / 16)
-        var v = border
-        while v < height - border {
-            var u = border
-            while u < width - border {
-                let z = Double(millimetres[v * width + u])
-                if z > 0 {
-                    let x = (Double(u) - cx) * z / fx      // toward the bottom of the screen
-                    let y = (Double(v) - cy) * z / fy      // toward the left of the screen
-                    n += 1; sx += x; sy += y; sz += z
-                    sxx += x * x; syy += y * y; sxy += x * y; sxz += x * z; syz += y * z
-                }
-                u += 4
-            }
-            v += 4
-        }
-        guard n >= 50 else { return nil }
-        // Solve the 3×3 normal equations for (a, b, c) with Cramer's rule.
-        let m = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, n]]
-        let r = [sxz, syz, sz]
-        func det(_ a: [[Double]]) -> Double {
-            a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
-                - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
-                + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
-        }
-        let d = det(m)
-        guard abs(d) > 1e-9 else { return nil }
-        var ma = m
-        var mb = m
-        for i in 0..<3 {
-            ma[i][0] = r[i]
-            mb[i][1] = r[i]
-        }
-        let a = det(ma) / d      // dZ per mm toward the screen bottom
-        let b = det(mb) / d      // dZ per mm toward the screen left
-        // Farther at the bottom = bottom edge high = top edge low; farther at the left = left edge high.
-        let tiltY = -atan(a) * 180 / .pi
-        let tiltX = -atan(b) * 180 / .pi
-        guard tiltX.isFinite, tiltY.isFinite else { return nil }
-        return (tiltX, tiltY)
+        LineMotionMath.fastest(speeds)
     }
 
     /// Depth-map intrinsics in depth pixels.
@@ -815,48 +697,5 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         let fieldOfView = (device?.activeFormat.videoFieldOfView ?? 64) * .pi / 180
         let fx = Float(depthWidth) / 2 / tan(fieldOfView / 2)
         return (fx, fx, Float(depthWidth) / 2, Float(depthHeight) / 2)
-    }
-
-    /// Median distance (mm) inside a normalized region of the depth map.
-    static func regionMedian(_ millimetres: [Float], width: Int, height: Int,
-                             regionX: ClosedRange<Double>, regionY: ClosedRange<Double>) -> Double {
-        let x0 = max(0, min(width - 1, Int(regionX.lowerBound * Double(width))))
-        let x1 = max(x0 + 1, min(width, Int(regionX.upperBound * Double(width))))
-        let y0 = max(0, min(height - 1, Int(regionY.lowerBound * Double(height))))
-        let y1 = max(y0 + 1, min(height, Int(regionY.upperBound * Double(height))))
-        var samples: [Float] = []
-        samples.reserveCapacity((x1 - x0) * (y1 - y0) / 4 + 1)
-        var y = y0
-        while y < y1 {
-            var x = x0
-            while x < x1 {
-                let z = millimetres[y * width + x]
-                if z > 0 { samples.append(z) }
-                x += 2
-            }
-            y += 2
-        }
-        guard samples.count >= 8 else { return 0 }
-        samples.sort()
-        return Double(samples[samples.count / 2])
-    }
-
-    /// Median of the central half of the map: distances (> 0), or heights (any finite value) with allowNegative.
-    static func centerMedian(_ millimetres: [Float], width: Int, height: Int, allowNegative: Bool = false) -> Double {
-        var samples: [Float] = []
-        samples.reserveCapacity(width * height / 16)
-        var y = height / 4
-        while y < height * 3 / 4 {
-            var x = width / 4
-            while x < width * 3 / 4 {
-                let z = millimetres[y * width + x]
-                if allowNegative ? z.isFinite : z > 0 { samples.append(z) }
-                x += 2
-            }
-            y += 2
-        }
-        guard !samples.isEmpty else { return 0 }
-        samples.sort()
-        return Double(samples[samples.count / 2])
     }
 }
