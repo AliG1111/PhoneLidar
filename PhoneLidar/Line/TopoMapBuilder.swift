@@ -575,8 +575,14 @@ enum TopoMapBuilder {
     private static let mapSummaryPrefixes = [
         "Scanned ", "Height above baseline mean", "Distance mean", "Range ", "Across-width profile",
         "Along-travel profile", "Local residual", "Speed mean", "Speed: no texture lock", "Colours:",
-        "Map not built"
+        "Map not built",
+        // Written by Line scan when Recording.json could not be read; obsolete once a map builds from it.
+        "Recording.json could not be read back"
     ]
+
+    /// Summary line added when a viewer had to repair a cut-off Recording.json before building the map
+    /// (same text as Line scan uses after recording). Not a map line: it stays through later rebuilds.
+    static let recordingRepairedNote = "Recording.json was repaired after a write problem; the last frames may be missing."
 
     static func isMapSummaryLine(_ line: String) -> Bool {
         mapSummaryPrefixes.contains { line.hasPrefix($0) }

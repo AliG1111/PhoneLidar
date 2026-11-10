@@ -481,8 +481,8 @@ final class PlaybackModel {
 
     /// Reads Recording.json, Depth.bin, the baseline and the map colour range and smooths the speeds.
     nonisolated static func prepare(folder: URL) throws -> PlaybackSetup {
-        let data = try Data(contentsOf: folder.appendingPathComponent("Recording.json"))
-        let info = try JSONDecoder.iso.decode(LineRecordingInfo.self, from: data)
+        // Repairs a Recording.json that was cut short, as Line scan does after recording.
+        let info = try LineRecordingRepair.loadInfo(folder: folder).info
         let reader = try? DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
         let savedBaseline = Baseline.load(from: folder)
         let baseline = savedBaseline?.matches(width: info.depthWidth, height: info.depthHeight) == true
