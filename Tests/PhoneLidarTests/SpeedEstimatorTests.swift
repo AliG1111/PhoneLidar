@@ -69,41 +69,68 @@ final class SpeedEstimatorTests: XCTestCase {
         XCTAssertGreaterThan(shift.quality, 0.5)
     }
 
+    /// Whole-pixel shifts land on the half-scale grid, so the estimate is essentially exact.
+    private let wholePixelTolerance = 0.15
+    /// Fractional shifts go through parabolic refinement of a SAD cost at half scale (2 px per step). A port of the
+    /// estimator run on this texture showed a worst case of about 0.20 px; 0.3 px keeps margin for rounding
+    /// differences while still failing an estimator without sub-pixel refinement (error up to 1 px) or with a flipped sign.
+    private let fractionalTolerance = 0.3
+
     func testKnownShiftAlongTheTravelIsRecovered() throws {
         for pixels in [8.0, 24.0, 40.0, 100.0] {
             let shift = try estimate(SpeedEstimator(), along: pixels)
-            XCTAssertEqual(shift.along, pixels, accuracy: 1.0, "shift \(pixels)")
-            XCTAssertEqual(shift.across, 0, accuracy: 1.0, "shift \(pixels)")
+            XCTAssertEqual(shift.along, pixels, accuracy: wholePixelTolerance, "shift \(pixels)")
+            XCTAssertEqual(shift.across, 0, accuracy: wholePixelTolerance, "shift \(pixels)")
             XCTAssertGreaterThan(shift.quality, 0.5, "shift \(pixels)")
         }
     }
 
     func testSubPixelShiftIsRecovered() throws {
-        let shift = try estimate(SpeedEstimator(), along: 23.5)
-        XCTAssertEqual(shift.along, 23.5, accuracy: 1.25)
+        for pixels in [23.25, 23.5, 23.75, 24.25, 24.5, 24.75, 40.3, 100.5] {
+            let shift = try estimate(SpeedEstimator(), along: pixels)
+            XCTAssertEqual(shift.along, pixels, accuracy: fractionalTolerance, "shift \(pixels)")
+            XCTAssertEqual(shift.across, 0, accuracy: fractionalTolerance, "shift \(pixels)")
+        }
+    }
+
+    func testSubPixelShiftIsRecoveredInTheOtherTravelDirection() throws {
+        for pixels in [23.5, 24.25, 40.5] {
+            let estimator = SpeedEstimator()
+            estimator.travelSign = -1
+            let shift = try estimate(estimator, along: pixels)
+            XCTAssertEqual(shift.along, pixels, accuracy: fractionalTolerance, "shift \(pixels)")
+        }
+    }
+
+    func testFractionalShiftAcrossAndAlongIsRecovered() throws {
+        for (along, across) in [(12.5, 3.25), (30.75, -5.5), (24.5, 8.5)] {
+            let shift = try estimate(SpeedEstimator(), along: along, across: across)
+            XCTAssertEqual(shift.along, along, accuracy: fractionalTolerance, "along \(along)")
+            XCTAssertEqual(shift.across, across, accuracy: fractionalTolerance, "across \(across)")
+        }
     }
 
     func testShiftAcrossTheTravelIsRecovered() throws {
         let shift = try estimate(SpeedEstimator(), along: 24, across: 8)
-        XCTAssertEqual(shift.along, 24, accuracy: 1.0)
-        XCTAssertEqual(shift.across, 8, accuracy: 1.0)
+        XCTAssertEqual(shift.along, 24, accuracy: wholePixelTolerance)
+        XCTAssertEqual(shift.across, 8, accuracy: wholePixelTolerance)
     }
 
     func testOppositeTravelDirectionGivesTheSameSignedShift() throws {
         let estimator = SpeedEstimator()
         estimator.travelSign = -1
         let shift = try estimate(estimator, along: 24)
-        XCTAssertEqual(shift.along, 24, accuracy: 1.0)
+        XCTAssertEqual(shift.along, 24, accuracy: wholePixelTolerance)
     }
 
     func testMotionInTheOtherDirectionIsNegative() throws {
         let shift = try estimate(SpeedEstimator(), along: -16)
-        XCTAssertEqual(shift.along, -16, accuracy: 1.0)
+        XCTAssertEqual(shift.along, -16, accuracy: wholePixelTolerance)
     }
 
     func testTenBitBuffersGiveTheSameShift() throws {
         let shift = try estimate(SpeedEstimator(), along: 24, format: kCVPixelFormatType_420YpCbCr10BiPlanarFullRange)
-        XCTAssertEqual(shift.along, 24, accuracy: 1.0)
+        XCTAssertEqual(shift.along, 24, accuracy: wholePixelTolerance)
     }
 
     func testTrackedRegionStaysInsideTheNormalizedPicture() throws {
