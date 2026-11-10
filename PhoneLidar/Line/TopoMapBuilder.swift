@@ -87,7 +87,11 @@ enum TopoMapBuilder {
         max(2, min(width, height) / 32)
     }
 
-    static func build(folder: URL, info: LineRecordingInfo) throws -> Output {
+    /// Builds the map and writes its files. `composite` encodes TopoMap.png (title, legend, statistics) from the
+    /// map image; when given, TopoMap.png is staged with the other files, so it never pairs an old picture with
+    /// new statistics.
+    static func build(folder: URL, info: LineRecordingInfo,
+                      composite: ((CGImage, TopoStats) throws -> Data)? = nil) throws -> Output {
         let reader = try DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
         let frames = Array(info.frames.prefix(reader.frameCount))
         // A baseline saved with the recording turns distances into heights above the flat surface.
@@ -132,8 +136,12 @@ enum TopoMapBuilder {
         qMin -= pad
         qMax += pad
 
-        let middle = frames[frames.count / 2]
-        var cell = max(2.0, (zTypical / Double(max(middle.fx, 1))).rounded())   // ≈ one depth pixel on the surface
+        // At least one depth-pixel footprint everywhere in the frame (rounded up to whole mm), so neighbouring
+        // pixels of one frame never skip a cell: no empty stripes and full coverage of stationary material.
+        let footprint = Self.pixelFootprint(reader: reader, frames: frames, border: border, sign: sign,
+                                            qRange: qMin...qMax, xRange: xMin...xMax, typicalDepth: zTypical)
+        // The 1 µm tolerance keeps an exact footprint (e.g. 10.000000000000002 from rounding) at 10 mm.
+        var cell = max(2.0, (footprint - 1e-6).rounded(.up))
         var cols = Int(((qMax - qMin) / cell).rounded(.up)) + 1
         var rows = Int(((xMax - xMin) / cell).rounded(.up)) + 1
         while cols * rows > TopoGridFile.maxCells {
@@ -173,8 +181,9 @@ enum TopoMapBuilder {
                                         let zd = Double(z)
                                         let q = offset - yFactor * zd
                                         let x = (Double(u) - cx) / fx * zd
-                                        let col = Int((q - qMin) / cell)
-                                        let row = Int((x - xMin) / cell)
+                                        // floor, not truncation: readings just below qMin/xMin are outside.
+                                        let col = Int(((q - qMin) / cell).rounded(.down))
+                                        let row = Int(((x - xMin) / cell).rounded(.down))
                                         if col < 0 || col >= cols || row < 0 || row >= rows { continue }
                                         let idx = row * cols + col
                                         let n = hitBuf[idx]
@@ -412,7 +421,7 @@ enum TopoMapBuilder {
         // Files: every output is written under a temporary name first and only renamed once all of them
         // succeeded, so a failure never leaves a mix of new and old files.
         let valueName = heightMode ? "mean_height_mm" : "mean_distance_mm"
-        try Self.writeAll(in: folder, [
+        var files: [(name: String, write: (URL) throws -> Void)] = [
             ("TopoMapGrid.png", { url in
                 guard Self.writePNG(image, to: url) else { throw LineError.badFile }
             }),
@@ -429,9 +438,88 @@ enum TopoMapBuilder {
             }),
             ("TopoStats.json", { url in try JSONEncoder.pretty.encode(stats).write(to: url) }),
             ("TopoProfiles.json", { url in try JSONEncoder().encode(profiles).write(to: url) })
-        ])
+        ]
+        if let composite {
+            let png = try composite(image, stats)
+            files.append(("TopoMap.png", { url in try png.write(to: url) }))
+        }
+        try Self.writeAll(in: folder, files)
 
         return Output(stats: stats, profiles: profiles, summary: summaryLines(stats), mapImage: image, grid: gridFile)
+    }
+
+    /// Largest distance (mm) on the surface between neighbouring depth pixels anywhere in the frame: the smallest
+    /// map cell that every frame fills without gaps between its own readings.
+    ///
+    /// A pixel at depth z (planar distance from the camera, as stored in Depth.bin) spans z/f on a surface parallel
+    /// to the sensor. On a surface tilted by θ relative to the sensor, the pixel at normalised off-axis position
+    /// a = (u − c)/f spans (z/f)/(1 − a·tan θ) (from x = a·z on the plane z = z₀ + x·tan θ), so the footprint grows
+    /// towards the frame edge that is farther away. The bound combines
+    /// - z: the farthest depth that lands on the map — the 99.5th percentile of the readings in up to 48 frames
+    ///   (ignoring stray single readings), never less than the typical distance;
+    /// - a: the outermost pixel edge used (inside the border), per axis and frame, taken as |a|;
+    /// - θ: the 95th percentile of the per-frame phone-to-surface tilt from the LiDAR plane fit, capped at 20°;
+    ///   frames without a tilt (older recordings) count as level.
+    static func pixelFootprint(reader: DepthFileReader, frames: [LineFrameInfo], border: Int, sign: Double,
+                               qRange: ClosedRange<Double>, xRange: ClosedRange<Double>,
+                               typicalDepth: Double) -> Double {
+        let w = reader.width
+        let h = reader.height
+        guard w > 2 * border, h > 2 * border else { return 0 }
+
+        // Depth.bin stores 0.1 mm steps (UInt16), so a 0.1 mm histogram gives exact percentiles.
+        let maxBin = Int(UInt16.max)
+        var histogram = [Int](repeating: 0, count: maxBin + 1)
+        var total = 0
+        let step = max(1, frames.count / 48)
+        for i in stride(from: 0, to: frames.count, by: step) {
+            let f = frames[i]
+            let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
+            guard fx > 0, fy > 0, let depth = reader.frame(i) else { continue }
+            let offset = sign * f.travel
+            depth.withUnsafeBufferPointer { zBuf in
+                for v in border..<(h - border) {
+                    let yFactor = (Double(v) - cy) / fy
+                    let rowBase = v * w
+                    for u in border..<(w - border) {
+                        let z = zBuf[rowBase + u]
+                        if z <= 0 { continue }
+                        let zd = Double(z)
+                        guard qRange.contains(offset - yFactor * zd),
+                              xRange.contains((Double(u) - cx) / fx * zd) else { continue }
+                        histogram[min(maxBin, Int((zd * 10).rounded()))] += 1
+                        total += 1
+                    }
+                }
+            }
+        }
+        var farDepth = typicalDepth
+        if total > 0 {
+            let target = Int((Double(total - 1) * 0.995).rounded())
+            var cumulative = 0
+            for (bin, n) in histogram.enumerated() where n > 0 {
+                cumulative += n
+                if cumulative > target {
+                    farDepth = max(farDepth, Double(bin) / 10)
+                    break
+                }
+            }
+        }
+
+        let tilts = frames.map { max(abs($0.surfaceTiltX ?? 0), abs($0.surfaceTiltY ?? 0)) }.sorted()
+        let tiltIndex = min(tilts.count - 1, max(0, Int((Double(tilts.count - 1) * 0.95).rounded())))
+        let tilt = tilts.isEmpty ? 0 : min(20, tilts[tiltIndex])
+        let tanTilt = tan(tilt * .pi / 180)
+
+        var perDepth = 0.0     // footprint per mm of depth
+        for f in frames {
+            let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
+            guard fx > 0, fy > 0 else { continue }
+            let a = max(abs(Double(border) - cx), abs(Double(w - border) - cx)) / fx
+            let b = max(abs(Double(border) - cy), abs(Double(h - border) - cy)) / fy
+            perDepth = max(perDepth, 1 / fx / max(0.5, 1 - a * tanTilt), 1 / fy / max(0.5, 1 - b * tanTilt))
+        }
+        return farDepth * perDepth
     }
 
     /// Writes each file to a hidden temporary name, then renames them all into place.
@@ -496,8 +584,14 @@ enum TopoMapBuilder {
     private static let mapSummaryPrefixes = [
         "Scanned ", "Height above baseline mean", "Distance mean", "Range ", "Across-width profile",
         "Along-travel profile", "Local residual", "Speed mean", "Speed: no texture lock", "Colours:",
-        "Map not built"
+        "Map not built",
+        // Written by Line scan when Recording.json could not be read; obsolete once a map builds from it.
+        "Recording.json could not be read back"
     ]
+
+    /// Summary line added when a viewer had to repair a cut-off Recording.json before building the map
+    /// (same text as Line scan uses after recording). Not a map line: it stays through later rebuilds.
+    static let recordingRepairedNote = "Recording.json was repaired after a write problem; the last frames may be missing."
 
     static func isMapSummaryLine(_ line: String) -> Bool {
         mapSummaryPrefixes.contains { line.hasPrefix($0) }

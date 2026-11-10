@@ -19,6 +19,11 @@ on:
 permissions:
   contents: read
 
+# XcodeGen is pinned: a fixed release zip whose SHA-256 is checked before use (update both together).
+env:
+  XCODEGEN_VERSION: "2.46.0"
+  XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
+
 jobs:
   # Always runs. Produces an unsigned .ipa you can install with Sideloadly on Windows (free Apple ID).
   unsigned-ipa:
@@ -35,8 +40,15 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen (pinned)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
 
       - name: Generate Xcode project
         run: |
@@ -139,8 +151,15 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen (pinned)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
 
       - name: Generate Xcode project
         run: |
@@ -243,6 +262,8 @@ jobs:
   # Optional. Runs only when started by hand with "testflight" ticked.
   # Needs a paid Apple Developer Program membership and the secrets listed in the README.
   testflight:
+    # Only after the unsigned build and the unit tests passed.
+    needs: [unsigned-ipa, unit-tests]
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.testflight }}
     runs-on: macos-26
     timeout-minutes: 60
@@ -262,10 +283,18 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install tools
+      - name: Install XcodeGen (pinned)
         run: |
-          brew install xcodegen
-          pip install codemagic-cli-tools==0.70.2
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/xcodegen.zip" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
+
+      - name: Install tools
+        run: pip install codemagic-cli-tools==0.70.2
 
       - name: Set build number and generate project
         run: |

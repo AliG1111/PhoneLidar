@@ -1,9 +1,18 @@
 import UIKit
 
 /// Shareable TopoMap.png: the colour map plus a title, legend and key statistics.
-@MainActor
+/// Not tied to the main actor: UIGraphicsImageRenderer and UIKit string/image drawing into its context are
+/// thread-safe, so the map builders render it on their background task.
 enum TopoMapRenderer {
-    static func writeComposite(map: CGImage, stats: TopoStats, direction: TravelDirection, to url: URL) {
+    /// Writes TopoMap.png on its own. Returns false if it could not be encoded or written.
+    @discardableResult
+    static func writeComposite(map: CGImage, stats: TopoStats, direction: TravelDirection, to url: URL) -> Bool {
+        guard let data = try? compositePNG(map: map, stats: stats, direction: direction) else { return false }
+        return (try? data.write(to: url, options: .atomic)) != nil
+    }
+
+    /// PNG data of the composite (staged by `TopoMapBuilder.build` together with the other map files).
+    static func compositePNG(map: CGImage, stats: TopoStats, direction: TravelDirection) throws -> Data {
         let scale = max(1, min(8, 1600 / max(map.width, 1)))
         let mapWidth = CGFloat(map.width * scale)
         let mapHeight = CGFloat(map.height * scale)
@@ -63,8 +72,7 @@ enum TopoMapRenderer {
             (line1 as NSString).draw(at: CGPoint(x: 20, y: barY + 62), withAttributes: body)
             (line2 as NSString).draw(at: CGPoint(x: 20, y: barY + 90), withAttributes: body)
         }
-        if let data = image.pngData() {
-            try? data.write(to: url, options: .atomic)
-        }
+        guard let data = image.pngData() else { throw LineError.badFile }
+        return data
     }
 }

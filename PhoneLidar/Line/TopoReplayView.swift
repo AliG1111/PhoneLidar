@@ -64,6 +64,8 @@ struct TopoReplayView: View {
     private struct Opened {
         var info: LineRecordingInfo
         var grid: TopoGridFile?
+        /// Recording.json had to be repaired before it could be read.
+        var repaired: Bool
     }
 
     private struct Prepared {
@@ -89,9 +91,9 @@ struct TopoReplayView: View {
         guard model == nil, failure == nil else { return }
         let folder = self.folder
         let opened = await Task.detached(priority: .userInitiated) { () -> Opened? in
-            guard let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
-                  let info = try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data) else { return nil }
-            return Opened(info: info, grid: TopoGridFile.load(from: folder))
+            // Repairs a Recording.json that was cut short, as Line scan does after recording.
+            guard let loaded = try? LineRecordingRepair.loadInfo(folder: folder) else { return nil }
+            return Opened(info: loaded.info, grid: TopoGridFile.load(from: folder), repaired: loaded.repaired)
         }.value
         guard !Task.isCancelled else { return }
         guard let opened else {
@@ -105,17 +107,20 @@ struct TopoReplayView: View {
             status = "Building the topographic grid…"
             let built = await Task.detached(priority: .userInitiated) { () -> Result<TopoMapBuilder.Output, Error> in
                 do {
-                    return .success(try TopoMapBuilder.build(folder: folder, info: info))
+                    // TopoMap.png is rendered here, off the main thread, and staged with the other files.
+                    return .success(try TopoMapBuilder.build(folder: folder, info: info) { image, stats in
+                        try TopoMapRenderer.compositePNG(map: image, stats: stats, direction: info.direction)
+                    })
                 } catch {
                     return .failure(error)
                 }
             }.value
             switch built {
             case .success(let output):
-                // The files are written whether or not the screen is still open; keep the set complete.
-                TopoMapRenderer.writeComposite(map: output.mapImage, stats: output.stats, direction: info.direction,
-                                               to: folder.appendingPathComponent("TopoMap.png"))
-                updateScanRecord(summary: (info: info, map: output.summary))
+                // The files were written whether or not the screen is still open; keep the record current.
+                let mapSummary = opened.repaired ? [TopoMapBuilder.recordingRepairedNote] + output.summary
+                    : output.summary
+                updateScanRecord(summary: (info: info, map: mapSummary))
                 gridFile = output.grid
             case .failure(let error):
                 failure = LoadError.build(error.localizedDescription).localizedDescription

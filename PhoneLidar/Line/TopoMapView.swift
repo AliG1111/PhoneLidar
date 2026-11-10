@@ -161,8 +161,13 @@ struct TopoMapView: View {
         let folder = self.folder
         let result = await Task.detached(priority: .userInitiated) { () -> Loaded in
             var out = Loaded()
+            // Only the direction is needed here: a cut-off file is repaired in memory (Rebuild map repairs it on
+            // disk and notes that in the summary).
             if let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
-               let info = try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data) {
+               let info = (try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data))
+                ?? LineRecordingRepair.repairedData(data).flatMap({
+                    try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: $0)
+                }) {
                 out.direction = info.direction
             }
             if let data = try? Data(contentsOf: folder.appendingPathComponent("TopoStats.json")) {
@@ -190,11 +195,16 @@ struct TopoMapView: View {
             let result = await Task.detached(priority: .userInitiated) {
                 () -> Result<(info: LineRecordingInfo, output: TopoMapBuilder.Output), Error> in
                 do {
-                    guard let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
-                          let info = try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data) else {
+                    // Repairs a Recording.json that was cut short, as Line scan does after recording.
+                    guard let loaded = try? LineRecordingRepair.loadInfo(folder: folder) else {
                         throw RebuildError.recordingMissing
                     }
-                    let output = try TopoMapBuilder.build(folder: folder, info: info)
+                    let info = loaded.info
+                    // TopoMap.png is rendered here, off the main thread, and staged with the other files.
+                    var output = try TopoMapBuilder.build(folder: folder, info: info) { image, stats in
+                        try TopoMapRenderer.compositePNG(map: image, stats: stats, direction: info.direction)
+                    }
+                    if loaded.repaired { output.summary.insert(TopoMapBuilder.recordingRepairedNote, at: 0) }
                     return .success((info: info, output: output))
                 } catch {
                     return .failure(error)
@@ -202,9 +212,6 @@ struct TopoMapView: View {
             }.value
             switch result {
             case .success(let built):
-                TopoMapRenderer.writeComposite(map: built.output.mapImage, stats: built.output.stats,
-                                               direction: built.info.direction,
-                                               to: folder.appendingPathComponent("TopoMap.png"))
                 updateScanRecord(info: built.info, mapSummary: built.output.summary)
                 message = nil
             case .failure(let error):
