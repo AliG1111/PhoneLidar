@@ -9,22 +9,27 @@ final class TopoGridFileTests: XCTestCase {
 
     private var fileURL: URL { folder.appendingPathComponent(TopoGridFile.fileName) }
 
-    /// Writes a 4 × 3 grid whose cell (row r, column c) has mean 10·r + c and one reading,
-    /// except the cells listed in `empty`, which have no readings.
-    @discardableResult
-    private func writeSample(columns: Int = 4, rows: Int = 3, heightMode: Bool = true, zRef: Float = 0,
-                             empty: Set<Int> = []) throws -> [Float] {
-        var means = [Float](repeating: 0, count: columns * rows)
-        var hits = [UInt16](repeating: 1, count: columns * rows)
+    /// A grid whose cell (row r, column c) holds 10·r + c − 5 + `offset`, except the cells listed in `empty`,
+    /// which hold NaN (no data).
+    private func makeGrid(columns: Int = 4, rows: Int = 3, heightMode: Bool = true, offset: Float = 0,
+                          empty: Set<Int> = []) -> TopoGridFile {
+        var values = [Float](repeating: 0, count: columns * rows)
         for r in 0..<rows {
             for c in 0..<columns {
-                means[r * columns + c] = Float(10 * r + c) - 5
-                if empty.contains(r * columns + c) { hits[r * columns + c] = 0 }
+                values[r * columns + c] = empty.contains(r * columns + c) ? .nan : Float(10 * r + c) - 5 + offset
             }
         }
-        try TopoGridFile.write(to: fileURL, columns: columns, rows: rows, cell: 4.5, qMin: -123.25, xMin: -60.5,
-                               heightMode: heightMode, zRef: zRef, means: means, hits: hits)
-        return means
+        return TopoGridFile(columns: columns, rows: rows, cell: 4.5, qMin: -123.25, xMin: -60.5,
+                            heightMode: heightMode, values: values)
+    }
+
+    /// Writes `makeGrid(...)` to TopoGrid.bin and returns the values written.
+    @discardableResult
+    private func writeSample(columns: Int = 4, rows: Int = 3, heightMode: Bool = true, offset: Float = 0,
+                             empty: Set<Int> = []) throws -> [Float] {
+        let grid = makeGrid(columns: columns, rows: rows, heightMode: heightMode, offset: offset, empty: empty)
+        try grid.write(to: fileURL)
+        return grid.values
     }
 
     private func patch(at offset: Int, with bytes: Data) throws {
@@ -59,11 +64,12 @@ final class TopoGridFileTests: XCTestCase {
         XCTAssertEqual(grid.values, means)
     }
 
-    func testValuesAreOffsetByTheReferenceDistance() throws {
-        let means = try writeSample(heightMode: false, zRef: 1000)
+    func testDistanceModeGridKeepsItsAbsoluteValues() throws {
+        let values = try writeSample(heightMode: false, offset: 1000)
         let grid = try XCTUnwrap(TopoGridFile.load(from: folder))
         XCTAssertFalse(grid.heightMode)
-        XCTAssertEqual(grid.values, means.map { 1000 + $0 })
+        XCTAssertEqual(grid.values, values)
+        XCTAssertEqual(grid.values[0], 995)
     }
 
     func testCellsWithoutReadingsComeBackAsNaN() throws {
@@ -115,7 +121,7 @@ final class TopoGridFileTests: XCTestCase {
     }
 
     func testHeightModeFlagIsZeroForDistances() throws {
-        try writeSample(heightMode: false, zRef: 900)
+        try writeSample(heightMode: false, offset: 900)
         let data = try Data(contentsOf: fileURL)
         XCTAssertEqual(data.readUInt32(at: 40), 0)
     }
@@ -129,18 +135,74 @@ final class TopoGridFileTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fileURL).count, 48 + 4 * 4)
     }
 
-    func testWriteSkipsEmptyOrInconsistentInput() throws {
+    func testWriteRefusesEmptyOrInconsistentGrids() {
         let url = fileURL
-        try TopoGridFile.write(to: url, columns: 0, rows: 3, cell: 4, qMin: 0, xMin: 0, heightMode: true,
-                               zRef: 0, means: [], hits: [])
+        let empty = TopoGridFile(columns: 0, rows: 3, cell: 4, qMin: 0, xMin: 0, heightMode: true, values: [])
+        XCTAssertThrowsError(try empty.write(to: url)) { assertLineError($0, .badFile) }
+        // Fewer values than columns × rows.
+        let short = TopoGridFile(columns: 2, rows: 2, cell: 4, qMin: 0, xMin: 0, heightMode: true, values: [1, 2, 3])
+        XCTAssertThrowsError(try short.write(to: url)) { assertLineError($0, .badFile) }
+        let long = TopoGridFile(columns: 2, rows: 2, cell: 4, qMin: 0, xMin: 0, heightMode: true,
+                                values: [1, 2, 3, 4, 5])
+        XCTAssertThrowsError(try long.write(to: url)) { assertLineError($0, .badFile) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
-        // Fewer means / hit counts than columns × rows.
-        try TopoGridFile.write(to: url, columns: 2, rows: 2, cell: 4, qMin: 0, xMin: 0, heightMode: true,
-                               zRef: 0, means: [1, 2, 3], hits: [1, 1, 1, 1])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
-        try TopoGridFile.write(to: url, columns: 2, rows: 2, cell: 4, qMin: 0, xMin: 0, heightMode: true,
-                               zRef: 0, means: [1, 2, 3, 4], hits: [1, 1])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    // MARK: - Version and size limits (B-9)
+
+    func testFileIsWrittenAsVersionOne() throws {
+        try writeSample()
+        XCTAssertEqual(TopoGridFile.version, 1)
+        XCTAssertEqual(try Data(contentsOf: fileURL).readUInt32(at: 4), 1)
+    }
+
+    func testLoadRejectsUnknownVersions() throws {
+        for version: UInt32 in [0, 2, 0xFFFF_FFFF] {
+            try writeSample()
+            try patchUInt32(at: 4, version)
+            XCTAssertNil(TopoGridFile.load(from: folder), "version \(version)")
+        }
+        try writeSample()
+        XCTAssertNotNil(TopoGridFile.load(from: folder))
+    }
+
+    func testLoadRejectsAColumnTimesRowCountThatOverflows() throws {
+        try writeSample()
+        // 4294967295 × 4294967295 does not fit in Int: rejected instead of trapping.
+        try patchUInt32(at: 8, 0xFFFF_FFFF)
+        try patchUInt32(at: 12, 0xFFFF_FFFF)
+        XCTAssertNil(TopoGridFile.load(from: folder))
+    }
+
+    func testLoadRejectsMoreThanTheMaximumCellCount() throws {
+        XCTAssertEqual(TopoGridFile.maxCells, 3_000_000)
+        try writeSample()
+        // 3001 × 1000 = 3,001,000 cells is over the limit, whatever the file size says.
+        try patchUInt32(at: 8, 3001)
+        try patchUInt32(at: 12, 1000)
+        XCTAssertNil(TopoGridFile.load(from: folder))
+        // A header claiming a huge grid with no data behind it is rejected too.
+        try patchUInt32(at: 8, 1_000_000)
+        try patchUInt32(at: 12, 1_000_000)
+        XCTAssertNil(TopoGridFile.load(from: folder))
+    }
+
+    func testGridOfExactlyTheMaximumCellCountRoundTrips() throws {
+        let grid = TopoGridFile(columns: 3000, rows: 1000, cell: 10, qMin: 0, xMin: 0, heightMode: true,
+                                values: [Float](repeating: 1.5, count: TopoGridFile.maxCells))
+        try grid.write(to: fileURL)
+        let loaded = try XCTUnwrap(TopoGridFile.load(from: folder))
+        XCTAssertEqual(loaded.columns, 3000)
+        XCTAssertEqual(loaded.rows, 1000)
+        XCTAssertEqual(loaded.values.count, TopoGridFile.maxCells)
+        XCTAssertEqual(loaded.values.last, 1.5)
+    }
+
+    func testWriteRefusesMoreThanTheMaximumCellCount() {
+        let grid = TopoGridFile(columns: 3001, rows: 1000, cell: 10, qMin: 0, xMin: 0, heightMode: true,
+                                values: [Float](repeating: 0, count: 3_001_000))
+        XCTAssertThrowsError(try grid.write(to: fileURL)) { assertLineError($0, .badFile) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
     }
 
     // MARK: - Rejection of bad files
