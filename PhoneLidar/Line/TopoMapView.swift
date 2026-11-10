@@ -212,8 +212,7 @@ struct TopoMapView: View {
             }.value
             switch result {
             case .success(let built):
-                updateScanRecord(info: built.info, mapSummary: built.output.summary)
-                message = nil
+                message = updateScanRecord(info: built.info, mapSummary: built.output.summary)
             case .failure(let error):
                 message = "Map not rebuilt: \(error.localizedDescription)"
             }
@@ -223,12 +222,18 @@ struct TopoMapView: View {
     }
 
     /// New and replaced files appear in the scan's file list and the summary shows the new statistics.
-    private func updateScanRecord(info: LineRecordingInfo, mapSummary: [String]) {
+    /// Returns a message when the scan record could not be saved, nil otherwise.
+    private func updateScanRecord(info: LineRecordingInfo, mapSummary: [String]) -> String? {
         let target = folder.standardizedFileURL.path
         guard var record = store.scans.first(where: { store.folderURL(for: $0).standardizedFileURL.path == target })
-        else { return }
+        else { return nil }
         record.summary = TopoMapBuilder.recordSummary(existing: record.summary, info: info, map: mapSummary)
-        try? store.save(record)
+        do {
+            try store.save(record)
+            return nil
+        } catch {
+            return "Map rebuilt, but the scan summary was not updated: \(error.localizedDescription)"
+        }
     }
 
     private enum RebuildError: LocalizedError {

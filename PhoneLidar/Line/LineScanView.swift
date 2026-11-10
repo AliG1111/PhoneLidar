@@ -865,7 +865,14 @@ final class LineScanModel {
             var recordingLines = summary
             if let line = built.recordingLine { recordingLines[0] = line }
             updated.summary = recordingLines + built.summary
-            try? store.save(updated)          // if this fails the scan keeps its first summary
+            do {
+                try store.save(updated)
+            } catch {
+                // The scan stays in the library with its first summary; say so on the Home screen.
+                let text = "\(record.name): the map was built, but the scan summary was not updated "
+                    + "(\(error.localizedDescription)). Open the scan and tap Rebuild map."
+                store.recoveryNotice = store.recoveryNotice.map { $0 + "\n\n" + text } ?? text
+            }
             releaseRecordingFolder()
             endBackgroundTask()
             onSaved?(record.id)

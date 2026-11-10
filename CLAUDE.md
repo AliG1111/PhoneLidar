@@ -26,10 +26,11 @@ PhoneLidar/Storage/          ScanStore (scan folders, scan.json), Units, CSV
 PhoneLidar/Library/          ScanDetailView (sections, share, rename, delete), IncompleteScanView
 PhoneLidar/Room/ Mesh/ Object/  Capture screens + exporters for the three framework modes
 PhoneLidar/Viewer/           SceneKit 3D viewer with ruler
-PhoneLidar/Line/             Line scan: LineCapturePipeline, SpeedEstimator, Baseline, LineRecording (formats,
-                             streaming recorder, repair), LineRecordingRecovery (background recovery of killed
-                             recordings), LineScanView, LinePlaybackView, TopoMapBuilder/Renderer/View,
-                             TopoGridFile, TopoReplayData/Model/Scene/View, DepthColors, DisplayLinkProxy
+PhoneLidar/Line/             Line scan: LineCapturePipeline, LineMotionMath (pure speed/travel/tilt maths),
+                             SpeedEstimator, Baseline, LineRecording (formats, streaming recorder, repair),
+                             LineRecordingRecovery (background recovery of killed recordings), LineScanView,
+                             LinePlaybackView, TopoMapBuilder/Renderer/View, TopoGridFile,
+                             TopoReplayData/Model/Scene/View, DepthColors, DisplayLinkProxy
 Tests/PhoneLidarTests/       Host-less XCTest bundle (pure-logic tests, run in CI)
 README.md                    User guide (the build guide); kept in sync with the claude.ai project copy
 docs/                        requirements.md, design.md, implementation-plan.md, reviews/

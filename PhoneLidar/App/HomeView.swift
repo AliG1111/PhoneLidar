@@ -45,7 +45,7 @@ struct HomeView: View {
                             .font(.callout)
                         Button("OK") { store.recoveryNotice = nil }
                     } header: {
-                        Text("Recordings recovered")
+                        Text("Line recordings")
                     }
                 }
 

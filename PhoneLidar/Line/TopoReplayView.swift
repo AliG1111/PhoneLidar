@@ -15,6 +15,8 @@ struct TopoReplayView: View {
     @State private var failure: String?
     /// False once the screen has gone away: a replay that finishes loading afterwards is not started.
     @State private var visible = false
+    /// Set when the scan record (file list, summary) could not be saved; shown as an alert.
+    @State private var recordError: String?
 
     var body: some View {
         Group {
@@ -29,6 +31,12 @@ struct TopoReplayView: View {
         }
         .navigationTitle("Topographic replay")
         .navigationBarTitleDisplayMode(.inline)
+        .alert("Could not update the scan", isPresented: Binding(get: { recordError != nil },
+                                                                 set: { if !$0 { recordError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(recordError ?? "")
+        }
         .task {
             await load()
         }
@@ -58,7 +66,11 @@ struct TopoReplayView: View {
             record.summary = TopoMapBuilder.recordSummary(existing: record.summary, info: summary.info,
                                                           map: summary.map)
         }
-        try? store.save(record)
+        do {
+            try store.save(record)
+        } catch {
+            recordError = "The scan's file list and summary were not updated: \(error.localizedDescription)"
+        }
     }
 
     private struct Opened {

@@ -154,7 +154,7 @@ Source paths in this section are relative to `PhoneLidar/`.
 |---|---|---|
 | FR-SPD-01 | Main speed: block matching between consecutive video frames on a luma pyramid (1/8-scale coarse search, 1/2-scale refinement, parabolic sub-pixel), with a 0–1 match quality. Speed (mm/s) = along-travel shift (full-resolution px) × median LiDAR distance of the tracked area ÷ focal length (video px) ÷ frame interval. A reading exists only when quality ≥ 0.1 and 0.001 s < Δt < 1 s. Search range: just under 480 px per frame. Algorithm: [design §6.2](design.md#62-main-speed-template-matching). | Mean speed of a run at constant speed meets NFR-ACC-02 (P9 V2, V3). |
 | FR-SPD-02 | Displayed speed = mean of the valid readings among the last 15 frames (needs ≥ 3; otherwise the current reading), in mm/s, m/min and ft/min; "no texture lock" when there is no reading; sparkline of the last 300 displayed values. | A blank surface shows "no texture lock". |
-| FR-SPD-03 | Travel is integrated every frame from the current reading, else the last valid reading (0 if none since the session started or the last direction change); recorded travel is relative to the recording start. | `travel_mm` in `Frames.csv` starts at 0 and increases with the material. |
+| FR-SPD-03 | Travel is integrated every frame from the current reading, else the last valid reading (0 if none since the session started, the last direction change or the start of the recording — the held speed is cleared at Record, Z-1); recorded travel is relative to the recording start. | `travel_mm` in `Frames.csv` starts at 0 and increases with the material. |
 | FR-SPD-04 | Zone speeds: a 6 × 4 grid (6 across, 4 along the travel), 128 × 128 px templates, up to 320 px per frame, zones near the downstream edge matched backwards; zone quality ≥ 0.12; each zone scaled by its own median LiDAR distance. Live values are the mean of the last 15 frames (needs ≥ 4 readings). | On a uniform conveyor the 24 zone means agree with the main speed (P9 V10). |
 | FR-SPD-05 | Fastest zone (largest absolute speed; the signed value is shown) is marked with an orange box; tapping the picture selects a point and shows "At point" speed for the zone under it; ✕ clears the point. | The marker follows the fastest object. |
 | FR-SPD-06 | Changing the direction flips the tracking sign and resets the tracker, the zone history, the last valid speed, the smoothing buffer and the sparkline (travel keeps its value). | After switching to left → right, material moving right reads positive. |
@@ -183,7 +183,7 @@ Source paths in this section are relative to `PhoneLidar/`.
 | FR-TOPO-04 | Outputs in the recording folder: `TopoMapGrid.png`, `TopoMap.csv`, `TopoGrid.bin`, `TopoStats.csv`, `TopoStats.json`, `TopoProfiles.json`, `AcrossProfile.csv`, `AlongProfile.csv`; and `TopoMap.png` (composite rendered off the main thread and staged with the others on Rebuild map and on replay open; written right after the build by the Line scan screen). All outputs except the Line scan screen's `TopoMap.png` are written under temporary names and renamed together once all succeeded. | All nine files exist after a successful build; a failed rebuild leaves the previous set intact. |
 | FR-TOPO-05 | Map screen (loads off the main thread; a rebuild error is shown even when an older map is on screen; the old map stays visible while rebuilding): zoomable map (fit to height, pinch up to 20×, nearest-neighbour), legend, travel and leading-edge caption, statistics, variation components, profile charts (along profile thinned to ≤ 800 points; distance axis reversed so up = closer), speed and scan sections. | Screen matches `TopoStats.json`. |
 | FR-TOPO-06 | Rebuild map re-runs the build from `Recording.json` (repaired first when cut off, noted in the summary) and rewrites all outputs. | Rebuild after deleting `TopoGrid.bin` recreates it. |
-| FR-TOPO-07 | Map summary lines (size, cell, coverage; mean/σ/variance; range; profiles; residual, noise, readings per cell; speed or "no texture lock"; colours) are stored in the scan summary at save. | Summary shown on the scan screen. |
+| FR-TOPO-07 | Map summary lines (size, cell, coverage; mean/σ/variance; range; profiles; residual, noise, readings per cell; speed, or "no texture lock" worded by the recorded travel — "map uses zero travel" or "map travel N mm comes from the speed held from before Record"; frames and duration as read back from `Recording.json`; colours) are stored in the scan summary at save; a failed summary update is reported (Home notice after Stop, message on Rebuild map, alert in the replay). | Summary shown on the scan screen. |
 | FR-TOPO-08 | After Rebuild map, the scan's summary and file list are refreshed. | New or changed files appear in the scan's Files list immediately. |
 
 ### 5.10 Topographic replay (FR-RPL)
@@ -395,7 +395,7 @@ Paths are relative to `PhoneLidar/`. Status legend in §4. Review IDs name the M
 | FR-LINE-14 | Line/LineRecordingRecovery.swift (`LineRecordingRepair`, `LineRecordingRecovery`, `ScanStore.recoverLineRecordings`); Library/IncompleteScanView.swift; App/HomeView.swift; Line/LineScanView.swift (sidecar) (F-6, D-6, D-7, G-1, G-2, G-5; unit tests for repair and recovery) | Implemented – not verified on device |
 | FR-CAL-01 | Line/LineScanView.swift (`BubbleLevel`); Line/LineCapturePipeline.swift | Implemented – not verified on device |
 | FR-CAL-02 | Line/LineScanView.swift | Implemented – not verified on device |
-| FR-CAL-03 | Line/LineCapturePipeline.swift (`surfaceTilt`); Line/LineScanView.swift | Implemented – not verified on device |
+| FR-CAL-03 | Line/LineMotionMath.swift (`surfaceTilt`, unit-tested); Line/LineCapturePipeline.swift; Line/LineScanView.swift | Implemented – not verified on device |
 | FR-CAL-04 | Line/Baseline.swift (`build`); Line/LineCapturePipeline.swift; Line/LineScanView.swift | Implemented – not verified on device |
 | FR-CAL-05 | Line/Baseline.swift; Line/LineScanView.swift | Implemented – not verified on device |
 | FR-CAL-06 | Line/LineCapturePipeline.swift; Line/Baseline.swift; Line/DepthColors.swift | Implemented – not verified on device |
@@ -403,12 +403,12 @@ Paths are relative to `PhoneLidar/`. Status legend in §4. Review IDs name the M
 | FR-CAL-08 | Line/LineCapturePipeline.swift; Line/LineRecording.swift; Line/LinePlaybackView.swift | Implemented – not verified on device |
 | FR-CAL-09 | Line/LineScanView.swift (A-6) | Implemented – not verified on device |
 | FR-CAL-10 | Line/Baseline.swift (`minimumCoveragePercent` 50, `goodCoveragePercent` 80; unit tests); Line/LineScanView.swift (A-8) | Implemented – not verified on device |
-| FR-SPD-01 | Line/SpeedEstimator.swift; Line/LineCapturePipeline.swift | Implemented – not verified on device |
-| FR-SPD-02 | Line/LineCapturePipeline.swift; Line/LineScanView.swift; Line/LineRecording.swift (`SpeedText`) | Implemented – not verified on device |
-| FR-SPD-03 | Line/LineCapturePipeline.swift; Line/LineRecording.swift | Implemented – not verified on device |
-| FR-SPD-04 | Line/SpeedEstimator.swift (`matchTiles`); Line/LineCapturePipeline.swift | Implemented – not verified on device |
+| FR-SPD-01 | Line/SpeedEstimator.swift; Line/LineCapturePipeline.swift; Line/LineMotionMath.swift (Z-7, unit-tested) | Implemented – not verified on device |
+| FR-SPD-02 | Line/LineCapturePipeline.swift; Line/LineMotionMath.swift; Line/LineScanView.swift; Line/LineRecording.swift (`SpeedText`) | Implemented – not verified on device |
+| FR-SPD-03 | Line/LineCapturePipeline.swift; Line/LineMotionMath.swift; Line/LineRecording.swift (Z-1, Z-9 tests) | Implemented – not verified on device |
+| FR-SPD-04 | Line/SpeedEstimator.swift (`matchTiles`); Line/LineCapturePipeline.swift; Line/LineMotionMath.swift | Implemented – not verified on device |
 | FR-SPD-05 | Line/LineScanView.swift; Line/LineRecording.swift (`ZoneGrid`) | Implemented – not verified on device |
-| FR-SPD-06 | Line/LineCapturePipeline.swift; Line/LineScanView.swift | Implemented – not verified on device |
+| FR-SPD-06 | Line/LineCapturePipeline.swift; Line/LineMotionMath.swift; Line/LineScanView.swift | Implemented – not verified on device |
 | FR-SPD-07 | Line/LineCapturePipeline.swift; Line/LineRecording.swift | Implemented – not verified on device |
 | FR-SPD-08 | — (GC-10; backlog P10) | Not implemented |
 | FR-PLAY-01 | Line/LinePlaybackView.swift; Line/Baseline.swift; Line/LineRecording.swift | Implemented – not verified on device |
