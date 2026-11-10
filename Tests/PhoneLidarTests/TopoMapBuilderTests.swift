@@ -219,6 +219,18 @@ final class TopoMapBuilderTests: XCTestCase {
         XCTAssertEqual(s.speedTrackedPercent, 0)
     }
 
+    func testWithoutSpeedsTheSummarySaysWhereTheTravelCameFrom() throws {
+        // Z-1: a recording made before the fix could integrate a speed held from before Record.
+        let held = try writeRecording(frameCount: 40, travelStep: 7.3, speed: { _ in nil })
+        let heldLines = try TopoMapBuilder.build(folder: folder, info: held).summary
+        XCTAssertTrue(heldLines.contains("Speed: no texture lock; map travel 285 mm comes from the speed held from "
+                                         + "before Record"), heldLines.joined(separator: "\n"))
+        // Since Z-1 a recording without texture lock has zero travel.
+        let still = try writeRecording(frameCount: 40, travelStep: 0, speed: { _ in nil })
+        let stillLines = try TopoMapBuilder.build(folder: folder, info: still).summary
+        XCTAssertTrue(stillLines.contains("Speed: no texture lock (map uses zero travel)"))
+    }
+
     func testRecordingSizeAndCoverageStatistics() throws {
         let info = try writeRecording()
         let output = try TopoMapBuilder.build(folder: folder, info: info)
@@ -725,6 +737,25 @@ final class TopoMapBuilderTests: XCTestCase {
             XCTAssertEqual(lines[6], "Speed: no texture lock (map uses zero travel)")
             XCTAssertEqual(lines[7], "Colours: dark red 990 mm (near) → dark blue 1000 mm (far); no baseline")
         }
+    }
+
+    func testSummaryLineWithoutSpeedFollowsTheRecordedTravel() {
+        let stats = makeStats(heightMode: false, speed: false)
+        XCTAssertEqual(TopoMapBuilder.summaryLines(stats, travel: 0.4)[6], "Speed: no texture lock (map uses zero travel)")
+        XCTAssertEqual(TopoMapBuilder.summaryLines(stats, travel: 1234.4)[6],
+                       "Speed: no texture lock; map travel 1234 mm comes from the speed held from before Record")
+        // With speed readings the travel does not change the speed line.
+        XCTAssertTrue(TopoMapBuilder.summaryLines(makeStats(heightMode: false, speed: true), travel: 500)[6]
+            .hasPrefix("Speed mean"))
+        // Both wordings are map lines, replaced by a rebuild.
+        XCTAssertTrue(TopoMapBuilder.isMapSummaryLine(TopoMapBuilder.summaryLines(stats, travel: 10)[6]))
+    }
+
+    func testTravelRangeIsTheSpanOfTheRecordedTravel() {
+        XCTAssertEqual(TopoMapBuilder.travelRange([]), 0)
+        XCTAssertEqual(TopoMapBuilder.travelRange([makeFrame(travel: 5)]), 0)
+        XCTAssertEqual(TopoMapBuilder.travelRange([makeFrame(travel: 0), makeFrame(travel: -30), makeFrame(travel: 12)]),
+                       42, accuracy: 1e-12)
     }
 
     func testStatsCSVNamesFollowTheMode() {

@@ -392,6 +392,26 @@ final class LineRecordingRecoveryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
     }
 
+    func testAMarkedFolderWithoutRecordingJSONLosesItsMarkerAndIsNotReported() throws {
+        // Z-2: the recorder stopped after creating the marker and Depth.bin but before Recording.json.
+        let folder = try makeUnsavedRecording(frames: nil, recent: true)
+        try Data([1, 2, 3, 4]).write(to: folder.appendingPathComponent("Depth.bin"))
+        try ageFolder(folder)
+        XCTAssertFalse(ScanStore.isInterruptedRecording(folder))     // the library lists it as a plain incomplete scan
+        let outcome = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        XCTAssertTrue(outcome.recovered.isEmpty)
+        XCTAssertTrue(outcome.failed.isEmpty)
+        XCTAssertFalse(outcome.deferred)
+        XCTAssertFalse(LineRecordingRepair.hasMarker(folder))
+        // Captured data is kept.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("Depth.bin").path))
+        XCTAssertFalse(ScanStore.isInterruptedRecording(folder))
+        // A second pass has nothing to say about it.
+        let again = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        XCTAssertTrue(again.failed.isEmpty)
+        XCTAssertTrue(again.recovered.isEmpty)
+    }
+
     func testARecordingWithAScanRecordIsRepairedButNotReportedAgain() throws {
         let folder = try makeUnsavedRecording(frames: 5, withScanJSON: true)
         XCTAssertTrue(LineRecordingRecovery.scan(root: root, active: ActiveFolderSet()).recovered.isEmpty)
@@ -466,6 +486,18 @@ final class LineRecordingRecoveryTests: XCTestCase {
         // The library removes the pending save with the marker, after it has saved scan.json.
         XCTAssertNotNil(LinePendingSave.load(from: folder))
         XCTAssertTrue(LineRecordingRepair.hasMarker(folder))
+    }
+
+    func testAPendingSummaryGetsTheFrameCountOfTheFile() throws {
+        // Z-3: Line scan counted frames still in Recording.json's write buffer when a write failed; the recovered
+        // summary shows what the file holds.
+        let folder = try makeUnsavedRecording(frames: 5)
+        let lines = ["90 frames, 3.0 s, material travel Left → Right", "Recording stopped early: storage is full."]
+        try LinePendingSave(name: "Line", created: nil, summary: lines).write(to: folder)
+        try ageFolder(folder)
+        let recovered = try XCTUnwrap(LineRecordingRecovery.scan(root: root, active: ActiveFolderSet()).recovered.first)
+        XCTAssertEqual(recovered.summary.first, "4 frames, 0.3 s, material travel Left → Right")
+        XCTAssertTrue(recovered.summary.contains("Recording stopped early: storage is full."))
     }
 
     func testAnUnreadableOrEmptyPendingSaveFallsBackToTheGenericSummary() throws {
@@ -576,6 +608,27 @@ final class RepairedNoteSummaryTests: XCTestCase {
         let existing = ["2 frames", note, "Scanned 0.5 m"]
         XCTAssertEqual(TopoMapBuilder.recordSummary(existing: existing, info: info, map: ["Scanned 1.0 m"]),
                        ["2 frames", "Scanned 1.0 m", note])
+    }
+
+    func testARebuildRefreshesTheFramesLineFromTheFile() {
+        // Z-3: a frames line counting frames that never reached Recording.json is corrected by the next build.
+        let existing = ["150 frames, 5.0 s, material travel Left → Right", "Recording stopped early: storage is full.",
+                        "Scanned 0.5 m"]
+        XCTAssertEqual(TopoMapBuilder.recordSummary(existing: existing, info: info, map: ["Scanned 1.0 m"]),
+                       ["2 frames, 0.5 s, material travel Left → Right", "Scanned 1.0 m",
+                        "Recording stopped early: storage is full."])
+    }
+
+    func testSummaryLineFormatAndRecognition() {
+        XCTAssertEqual(info.summaryLine, "2 frames, 0.5 s, material travel Left → Right")
+        XCTAssertEqual(LineRecordingInfo.summaryLine(frames: 1234, duration: 41.16, direction: .rightToLeft),
+                       "1234 frames, 41.2 s, material travel Right → Left")
+        XCTAssertTrue(LineRecordingInfo.isSummaryLine("0 frames, 0.0 s, material travel Right → Left"))
+        XCTAssertTrue(LineRecordingInfo.isSummaryLine("12 frames, 1234.5 s, material travel Left → Right"))
+        XCTAssertFalse(LineRecordingInfo.isSummaryLine("2 frames"))
+        XCTAssertFalse(LineRecordingInfo.isSummaryLine("2 frames, 0.5 s, material travel Up → Down"))
+        XCTAssertFalse(LineRecordingInfo.isSummaryLine("Recording stopped early: 2 frames, 0.5 s, material travel Left → Right"))
+        XCTAssertFalse(LineRecordingInfo.isSummaryLine("2 frames, 0.5 s, material travel Left → Right (recovered)"))
     }
 
     func testANoteOnlySummaryGetsTheFramesLineBack() {
