@@ -290,22 +290,30 @@ final class LineRecordingRecoveryTests: XCTestCase {
             try Data("{}".utf8).write(to: folder.appendingPathComponent("scan.json"))
         }
         if !recent {
-            let old = Date(timeIntervalSinceNow: -3600)
-            for name in ["Recording.json", "Depth.bin", "Video.mov"] {
-                let path = folder.appendingPathComponent(name).path
-                if FileManager.default.fileExists(atPath: path) {
-                    try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: path)
-                }
-            }
+            try ageFolder(folder)
         }
         return folder
     }
 
+    /// Gives the folder, the marker and every file in it an old modification date. The scan skips a folder
+    /// whose directory, marker or data files changed in the last `quietSeconds` (F-6), so the directory is aged
+    /// last: creating or removing an entry changes its date.
+    private func ageFolder(_ folder: URL) throws {
+        let old = Date(timeIntervalSinceNow: -3600)
+        let manager = FileManager.default
+        for name in try manager.contentsOfDirectory(atPath: folder.path) {
+            try manager.setAttributes([.modificationDate: old], ofItemAtPath: folder.appendingPathComponent(name).path)
+        }
+        try manager.setAttributes([.modificationDate: old], ofItemAtPath: folder.path)
+    }
+
     func testAnUnsavedRecordingIsRepairedAndReported() throws {
         let folder = try makeUnsavedRecording(frames: 5)
-        let found = LineRecordingRecovery.scan(root: root, skipping: nil)
-        XCTAssertEqual(found.count, 1)
-        let recovered = try XCTUnwrap(found.first)
+        let outcome = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        XCTAssertEqual(outcome.recovered.count, 1)
+        XCTAssertTrue(outcome.failed.isEmpty)
+        XCTAssertFalse(outcome.deferred)
+        let recovered = try XCTUnwrap(outcome.recovered.first)
         XCTAssertEqual(recovered.folderName, "line_2026-11-10_101500")
         XCTAssertTrue(recovered.summary[0].hasPrefix("4 frames, 0.3 s"), recovered.summary[0])
         XCTAssertTrue(recovered.summary[0].hasSuffix("Left → Right"), recovered.summary[0])
@@ -316,8 +324,9 @@ final class LineRecordingRecoveryTests: XCTestCase {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd_HHmmss"
         XCTAssertEqual(recovered.created, formatter.date(from: "2026-11-10_101500"))
-        // Recording.json now reads back and the in-progress marker is gone.
-        XCTAssertFalse(LineRecordingRepair.hasMarker(folder))
+        // F-6: the scan repairs Recording.json but leaves the marker; the library clears it only after it has
+        // saved the scan record (ScanStore.addRecovered), so a failed save is retried on the next pass.
+        XCTAssertTrue(LineRecordingRepair.hasMarker(folder))
         let loaded = try LineRecordingRepair.loadInfo(folder: folder)
         XCTAssertFalse(loaded.repaired)
         XCTAssertEqual(loaded.info.frames.count, 4)
@@ -325,25 +334,38 @@ final class LineRecordingRecoveryTests: XCTestCase {
 
     func testRecentlyModifiedFoldersAreLeftAlone() throws {
         let folder = try makeUnsavedRecording(frames: 5, recent: true)
-        XCTAssertTrue(LineRecordingRecovery.scan(root: root, skipping: nil).isEmpty)
+        // F-6: a folder touched within quietSeconds is skipped and the pass reports "run again later".
+        let outcome = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        XCTAssertTrue(outcome.recovered.isEmpty)
+        XCTAssertTrue(outcome.failed.isEmpty)
+        XCTAssertTrue(outcome.deferred)
         XCTAssertTrue(LineRecordingRepair.hasMarker(folder))
     }
 
-    func testTheActiveRecordingIsSkipped() throws {
+    func testNothingIsTouchedWhileARecordingIsActive() throws {
         let folder = try makeUnsavedRecording(frames: 5)
-        XCTAssertTrue(LineRecordingRecovery.scan(root: root, skipping: "line_2026-11-10_101500").isEmpty)
+        // F-6: with an active recording the pass stops before the first folder (it used to skip only that one).
+        let active = ActiveFolderSet()
+        active.insert("line_2026-11-10_101500")
+        let outcome = LineRecordingRecovery.scan(root: root, active: active)
+        XCTAssertTrue(outcome.recovered.isEmpty)
+        XCTAssertTrue(outcome.deferred)
         XCTAssertTrue(LineRecordingRepair.hasMarker(folder))
+        // The cut-off Recording.json was not repaired either.
+        XCTAssertTrue(try LineRecordingRepair.loadInfo(folder: folder).repaired)
     }
 
     func testAFolderThatNeverReceivedAFrameIsRemoved() throws {
         let folder = try makeUnsavedRecording(frames: nil)
-        XCTAssertTrue(LineRecordingRecovery.scan(root: root, skipping: nil).isEmpty)
+        let outcome = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        XCTAssertTrue(outcome.recovered.isEmpty)
+        XCTAssertTrue(outcome.failed.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
     }
 
     func testARecordingWithAScanRecordIsRepairedButNotReportedAgain() throws {
         let folder = try makeUnsavedRecording(frames: 5, withScanJSON: true)
-        XCTAssertTrue(LineRecordingRecovery.scan(root: root, skipping: nil).isEmpty)
+        XCTAssertTrue(LineRecordingRecovery.scan(root: root, active: ActiveFolderSet()).recovered.isEmpty)
         XCTAssertFalse(LineRecordingRepair.hasMarker(folder))
         XCTAssertEqual(try LineRecordingRepair.loadInfo(folder: folder).info.frames.count, 4)
     }
@@ -352,9 +374,11 @@ final class LineRecordingRecoveryTests: XCTestCase {
         let folder = try makeUnsavedRecording(frames: nil)
         let url = folder.appendingPathComponent("Recording.json")
         try Data("{\"depthW".utf8).write(to: url)
-        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -3600)],
-                                              ofItemAtPath: url.path)
-        XCTAssertTrue(LineRecordingRecovery.scan(root: root, skipping: nil).isEmpty)
+        try ageFolder(folder)
+        // F-6: an unreadable recording is reported in `failed` (shown as a library notice) and kept marked.
+        let outcome = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        XCTAssertTrue(outcome.recovered.isEmpty)
+        XCTAssertEqual(Array(outcome.failed.keys), ["line_2026-11-10_101500"])
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
         XCTAssertTrue(LineRecordingRepair.hasMarker(folder))
     }
@@ -366,7 +390,10 @@ final class LineRecordingRecoveryTests: XCTestCase {
         try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: other.appendingPathComponent(LineRecorder.inProgressMarker).path,
                                        contents: nil)
-        XCTAssertTrue(LineRecordingRecovery.scan(root: root, skipping: nil).isEmpty)
+        let outcome = LineRecordingRecovery.scan(root: root, active: ActiveFolderSet())
+        XCTAssertTrue(outcome.recovered.isEmpty)
+        XCTAssertTrue(outcome.failed.isEmpty)
+        XCTAssertFalse(outcome.deferred)
         XCTAssertTrue(FileManager.default.fileExists(atPath: other.path))
         XCTAssertTrue(LineRecordingRepair.hasMarker(other))
     }
