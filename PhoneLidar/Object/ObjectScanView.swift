@@ -97,7 +97,7 @@ struct ObjectScanView: View {
                     .multilineTextAlignment(.center)
                 Button("Try saving again") { controller.retrySave() }
                     .buttonStyle(.borderedProminent)
-                Button("Close") { close() }
+                Button("Close") { closeAfterModelBuilt() }
                     .buttonStyle(.bordered)
             case .kept(let message, let photos, let canRetry):
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -144,6 +144,13 @@ struct ObjectScanView: View {
     private func close() {
         controller.discardCapture()
         onFinish(nil)
+    }
+
+    /// Close on "model built but not saved": one last attempt to write the scan record, so the library entry
+    /// is not left pointing at "Model not built yet" next to a finished Model.usdz (G-3).
+    private func closeAfterModelBuilt() {
+        controller.recordFinishedModel()
+        close()
     }
 }
 
@@ -230,6 +237,15 @@ private struct CaptureOverlay: View {
 
 /// Counts the photos (not the depth / gravity side files) in an Images folder.
 enum ObjectPhotos {
+    /// True when the folder holds a finished model: a non-empty Model.usdz and no Checkpoint folder.
+    /// A reconstruction creates Checkpoint before it starts and removes it only after the model is complete,
+    /// so a Model.usdz next to a Checkpoint may be half-written (G-3).
+    static func hasCompleteModel(in folder: URL) -> Bool {
+        let fileManager = FileManager.default
+        let size = (try? folder.appendingPathComponent("Model.usdz").resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        return size > 0 && !fileManager.fileExists(atPath: folder.appendingPathComponent("Checkpoint", isDirectory: true).path)
+    }
+
     static func count(in images: URL) -> Int {
         let photoExtensions: Set<String> = ["heic", "heif", "jpg", "jpeg", "png", "dng"]
         let names = (try? FileManager.default.contentsOfDirectory(atPath: images.path)) ?? []
@@ -353,7 +369,15 @@ final class ObjectCaptureController {
     /// Writes the scan record again after the model was built but scan.json could not be saved (E-2).
     /// Never touches Model.usdz or the photos.
     func retrySave() {
-        guard case .modelNotRecorded = phase, let folder else { return }
+        guard case .modelNotRecorded = phase else { return }
+        recordFinishedModel()
+    }
+
+    /// Writes the complete scan record for a finished Model.usdz: `.done` on success, `.modelNotRecorded` if
+    /// scan.json still cannot be written. Never touches Model.usdz or the photos.
+    func recordFinishedModel() {
+        guard let folder else { return }
+        modelComplete = true
         do {
             let images = folder.url.appendingPathComponent("Images", isDirectory: true)
             try writeRecord(model: "Model.usdz", summary: Self.completeSummary(photos: ObjectPhotos.count(in: images)))
@@ -370,6 +394,13 @@ final class ObjectCaptureController {
 
     private func retryNow() async {
         guard let folder else { return }
+        // A complete model is already in the folder (the app was closed or the record could not be written
+        // after the build): record it. Rebuilding would delete a good Model.usdz (G-3).
+        if ObjectPhotos.hasCompleteModel(in: folder.url) {
+            phase = .reconstructing
+            recordFinishedModel()
+            return
+        }
         // A half-written cache from the failed run can make the next run fail too.
         let checkpoint = folder.url.appendingPathComponent("Checkpoint", isDirectory: true)
         try? FileManager.default.removeItem(at: checkpoint)

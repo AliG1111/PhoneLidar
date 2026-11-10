@@ -62,17 +62,33 @@ struct ScanDetailView: View {
                 }
             }
 
-            if scan.kind == .object, scan.primaryModel == nil, let photos, PhotogrammetrySession.isSupported {
-                Section {
-                    Button {
-                        showRetry = true
-                    } label: {
-                        Label("Retry reconstruction", systemImage: "arrow.clockwise")
+            if scan.kind == .object, scan.primaryModel == nil {
+                // A finished Model.usdz that the scan record does not list: add it, never rebuild it (G-3).
+                let finished = ObjectPhotos.hasCompleteModel(in: store.folderURL(for: scan))
+                if finished {
+                    Section {
+                        Button {
+                            showRetry = true
+                        } label: {
+                            Label("Add the finished model", systemImage: "plus.circle")
+                        }
+                    } header: {
+                        Text("3D model")
+                    } footer: {
+                        Text("The model was built but not added to this scan. Nothing is rebuilt.")
                     }
-                } header: {
-                    Text("3D model")
-                } footer: {
-                    Text("The model was not built. The \(photos.urls.count) saved files can be used to try again.")
+                } else if let photos, PhotogrammetrySession.isSupported {
+                    Section {
+                        Button {
+                            showRetry = true
+                        } label: {
+                            Label("Retry reconstruction", systemImage: "arrow.clockwise")
+                        }
+                    } header: {
+                        Text("3D model")
+                    } footer: {
+                        Text("The model was not built. The \(photos.urls.count) saved files can be used to try again.")
+                    }
                 }
             }
 
