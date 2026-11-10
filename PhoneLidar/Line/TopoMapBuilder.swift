@@ -589,8 +589,9 @@ enum TopoMapBuilder {
         "Recording.json could not be read back"
     ]
 
-    /// Summary line added when a viewer had to repair a cut-off Recording.json before building the map
-    /// (same text as Line scan uses after recording). Not a map line: it stays through later rebuilds.
+    /// Summary line added when Recording.json was repaired after being cut off (`LineRecordingInfo.repaired`,
+    /// kept in the file, so every later rebuild adds it again). Same text as Line scan uses after recording.
+    /// Not a map line: it stays through later rebuilds, once (`recordSummary`).
     static let recordingRepairedNote = "Recording.json was repaired after a write problem; the last frames may be missing."
 
     static func isMapSummaryLine(_ line: String) -> Bool {
@@ -598,8 +599,12 @@ enum TopoMapBuilder {
     }
 
     /// The scan record's summary after a rebuild: the recording line(s) kept, the map lines replaced.
+    /// `recordingRepairedNote` appears once: a rebuild of a repaired recording brings it again in `map`.
     static func recordSummary(existing: [String], info: LineRecordingInfo, map: [String]) -> [String] {
         var lines = existing.filter { !isMapSummaryLine($0) }
+        if map.contains(recordingRepairedNote) {
+            lines.removeAll { $0 == recordingRepairedNote }
+        }
         if lines.isEmpty {
             lines = [String(format: "%ld frames, %.1f s, material travel %@",
                             info.frames.count, info.frames.last?.time ?? 0, info.direction.label)]

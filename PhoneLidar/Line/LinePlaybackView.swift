@@ -488,7 +488,8 @@ final class PlaybackModel {
 
     /// Reads Recording.json, Depth.bin, the baseline and the map colour range and smooths the speeds.
     nonisolated static func prepare(folder: URL) throws -> PlaybackSetup {
-        // Repairs a Recording.json that was cut short, as Line scan does after recording.
+        // Repairs a Recording.json that was cut short, as Line scan does after recording. The repair is noted
+        // in the file itself, so a later Rebuild map still adds the "last frames may be missing" note (G-5).
         let info = try LineRecordingRepair.loadInfo(folder: folder).info
         let reader = try? DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
         let savedBaseline = Baseline.load(from: folder)
