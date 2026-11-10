@@ -860,10 +860,6 @@ final class LineScanModel {
         let url = folder.url
         Task { @MainActor in
             let built = await Task.detached(priority: .userInitiated) { LineScanModel.buildMap(folder: url) }.value
-            if let map = built.map, let direction = built.direction {
-                TopoMapRenderer.writeComposite(map: map.mapImage, stats: map.stats, direction: direction,
-                                               to: url.appendingPathComponent("TopoMap.png"))
-            }
             var updated = record
             // Z-3: frames and duration as Recording.json holds them (a failed write can drop buffered frames).
             var recordingLines = summary
@@ -876,10 +872,10 @@ final class LineScanModel {
         }
     }
 
-    /// Reads Recording.json back (repairing it if it was cut short) and builds the topographic map.
-    /// `recordingLine` is the summary's frames-and-duration line from the file read back (nil if unreadable).
-    nonisolated private static func buildMap(folder: URL)
-        -> (map: TopoMapBuilder.Output?, direction: TravelDirection?, recordingLine: String?, summary: [String]) {
+    /// Reads Recording.json back (repairing it if it was cut short) and builds the topographic map, TopoMap.png
+    /// included: it is rendered here, off the main thread, and staged with the other map files (Z-5), as Rebuild map
+    /// does. `recordingLine` is the summary's frames-and-duration line from the file read back (nil if unreadable).
+    nonisolated private static func buildMap(folder: URL) -> (recordingLine: String?, summary: [String]) {
         let info: LineRecordingInfo
         var summary: [String] = []
         do {
@@ -889,16 +885,18 @@ final class LineScanModel {
                 summary.append(TopoMapBuilder.recordingRepairedNote)
             }
         } catch {
-            return (nil, nil, nil,
+            return (nil,
                     ["Recording.json could not be read back (\(error.localizedDescription)): playback and map are "
                      + "not available. Free up storage; the app repairs it the next time the library opens."])
         }
         LineRecordingRepair.clearMarker(in: folder)
         do {
-            let map = try TopoMapBuilder.build(folder: folder, info: info)
-            return (map, info.direction, info.summaryLine, summary + map.summary)
+            let map = try TopoMapBuilder.build(folder: folder, info: info) { image, stats in
+                try TopoMapRenderer.compositePNG(map: image, stats: stats, direction: info.direction)
+            }
+            return (info.summaryLine, summary + map.summary)
         } catch {
-            return (nil, info.direction, info.summaryLine, summary + ["Map not built: \(error.localizedDescription)"])
+            return (info.summaryLine, summary + ["Map not built: \(error.localizedDescription)"])
         }
     }
 
