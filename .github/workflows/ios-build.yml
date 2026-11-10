@@ -262,6 +262,8 @@ jobs:
   # Optional. Runs only when started by hand with "testflight" ticked.
   # Needs a paid Apple Developer Program membership and the secrets listed in the README.
   testflight:
+    # Only after the unsigned build and the unit tests passed.
+    needs: [unsigned-ipa, unit-tests]
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.testflight }}
     runs-on: macos-26
     timeout-minutes: 60
