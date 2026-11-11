@@ -36,34 +36,59 @@ struct LiveUpdate {
     var fastestTile: Int?
     /// Width ÷ height of the portrait picture.
     var pictureAspect: Double = 0.75
+    /// Problem with the recording that does not stop it (e.g. the video encoder stopped).
+    var recordingWarning: String?
+}
+
+/// Camera system load, from the capture device's system pressure state.
+enum LinePressure: Sendable {
+    case normal
+    /// Serious: the live overlay is updated less often to reduce load.
+    case serious
+    /// Critical or shutdown: recording is stopped and saved.
+    case critical
+}
+
+/// Things the capture pipeline reports to the screen (delivered on any queue).
+enum LineCaptureEvent: Sendable {
+    case recordingStarted
+    /// The recording could not start; the text completes "Recording not started: …".
+    case recordingStartFailed(String)
+    /// The recording must be stopped and saved; the text completes "Recording stopped early: …".
+    case stopRecording(String)
+    case cameraInterrupted(String)
+    case cameraResumed
+    /// The camera stopped with an error; `restarting` is false once automatic restarts are used up.
+    case cameraError(String, restarting: Bool)
+    case pressure(LinePressure)
 }
 
 /// Frames collected for a baseline calibration (handed to a background queue when complete).
 private struct CalibrationCapture: @unchecked Sendable {
     var target: Int
+    /// Frames delivered since the calibration started, used or not.
+    var seen = 0
     var frames: [[Float]] = []
     var tiltX: [Double] = []
     var tiltY: [Double] = []
     var width = 0
     var height = 0
     var filtered: Bool
-    var completion: @Sendable (Baseline?) -> Void
+    var completion: @Sendable (Result<Baseline, Error>) -> Void
 }
 
 /// LiDAR depth camera + synchronized video. Measures surface speed from the video texture,
 /// shows live depth, and records Video.mov + Depth.bin while recording is on.
 final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelegate, @unchecked Sendable {
-    struct Finished {
-        var folder: URL
-        var info: LineRecordingInfo
-    }
-
     static var isSupported: Bool {
         AVCaptureDevice.default(.builtInLiDARDepthCamera, for: .video, position: .back) != nil
     }
 
     let session = AVCaptureSession()
+    /// Set once before `configure`; called on the data queue.
     var onUpdate: (@Sendable (LiveUpdate) -> Void)?
+    /// Set once before `configure`; called on various queues.
+    var onEvent: (@Sendable (LineCaptureEvent) -> Void)?
 
     private let sessionQueue = DispatchQueue(label: "phonelidar.line.session")
     private let dataQueue = DispatchQueue(label: "phonelidar.line.data", qos: .userInitiated)
@@ -72,24 +97,51 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     private var synchronizer: AVCaptureDataOutputSynchronizer?
     private var device: AVCaptureDevice?
     private var configured = false
+    private var observers: [NSObjectProtocol] = []
+    private var pressureObservation: NSKeyValueObservation?
+    /// Session-queue state: short shutter wanted (read when the session starts and when toggled).
+    private var shortShutterSetting = true
+    /// Session-queue state: the screen wants the camera running (restart after a runtime error).
+    private var wantsRunning = false
+    /// Session-queue state: automatic restarts after runtime errors since frames last arrived (max 3).
+    private var errorRestarts = 0
+    static let maxErrorRestarts = 3
 
     // Data-queue state
     private var baseline: Baseline?
     private var calibration: CalibrationCapture?
-    private var tileHistory: [[Double?]] = []
+    private var zoneSmoother = ZoneSpeedSmoother()
     private var lastSpread: Double?
     private var lastCenterHeight: Double?
     private let motion = CMMotionManager()
     private var surfaceTilt: (x: Double, y: Double)?
     private let estimator = SpeedEstimator()
     private var lastTime: CMTime?
-    private var travel: Double = 0
-    private var recentSpeeds: [Double] = []
-    private var lastValidSpeed: Double?
+    private var speedTracker = LineSpeedTracker()
     private var frameCounter = 0
     private var direction: TravelDirection = .rightToLeft
     private var recorder: LineRecorder?
-    private var pendingRecording: (folder: URL, filtered: Bool, shortShutter: Bool, direction: TravelDirection)?
+    private var pendingRecording: PendingRecording?
+    private var pendingToken = 0
+    /// Set when the recording has been asked to stop; no more frames go into it.
+    private var autoStopReason: String?
+    /// Live overlay and LiDAR tilt are computed every `overlayStride` frames (raised under system pressure).
+    private var overlayStride = 2
+    /// The camera was interrupted or failed; the next frame reports that it is running again.
+    private var awaitingResume = false
+
+    private struct PendingRecording {
+        var token: Int
+        var folder: URL
+        var filtered: Bool
+        var shortShutter: Bool
+        var direction: TravelDirection
+    }
+
+    deinit {
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        pressureObservation?.invalidate()
+    }
 
     // MARK: - Session setup
 
@@ -163,26 +215,118 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         let sync = AVCaptureDataOutputSynchronizer(dataOutputs: [videoOutput, depthOutput])
         sync.setDelegate(self, queue: dataQueue)
         synchronizer = sync
+        observe(device: device)
         configured = true
     }
 
+    // MARK: - Interruptions, errors, system pressure
+
+    private func observe(device: AVCaptureDevice) {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: AVCaptureSession.wasInterruptedNotification,
+                                            object: session, queue: nil) { [weak self] note in
+            let raw = note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int
+            let reason = raw.flatMap { AVCaptureSession.InterruptionReason(rawValue: $0) }
+            self?.sessionInterrupted(LineCapturePipeline.describe(reason))
+        })
+        observers.append(center.addObserver(forName: AVCaptureSession.interruptionEndedNotification,
+                                            object: session, queue: nil) { [weak self] _ in
+            self?.onEvent?(.cameraResumed)
+        })
+        observers.append(center.addObserver(forName: AVCaptureSession.runtimeErrorNotification,
+                                            object: session, queue: nil) { [weak self] note in
+            let error = note.userInfo?[AVCaptureSessionErrorKey] as? AVError
+            self?.sessionFailed(error)
+        })
+        pressureObservation = device.observe(\.systemPressureState, options: [.initial, .new]) { [weak self] device, _ in
+            self?.pressureChanged(device.systemPressureState.level)
+        }
+    }
+
+    static func describe(_ reason: AVCaptureSession.InterruptionReason?) -> String {
+        guard let reason else { return "the camera was interrupted" }
+        switch reason {
+        case .videoDeviceNotAvailableInBackground: return "the app is in the background"
+        case .videoDeviceInUseByAnotherClient: return "another app is using the camera"
+        case .videoDeviceNotAvailableWithMultipleForegroundApps: return "the camera is not available with several apps on screen"
+        case .videoDeviceNotAvailableDueToSystemPressure: return "the phone is too hot"
+        case .audioDeviceInUseByAnotherClient: return "another app is using the microphone"
+        default: return "the camera was interrupted"
+        }
+    }
+
+    private func sessionInterrupted(_ text: String) {
+        dataQueue.async { [self] in
+            awaitingResume = true
+            cancelCalibrationOnDataQueue(reason: "the camera was interrupted (\(text))")
+            requestAutoStop("the camera was interrupted (\(text))")
+            onEvent?(.cameraInterrupted(text))
+        }
+    }
+
+    private func sessionFailed(_ error: AVError?) {
+        let message = error?.localizedDescription ?? "unknown camera error"
+        let reset = error?.code == .mediaServicesWereReset
+        // Stop the recording first, so no frame from a restarted session goes into it.
+        dataQueue.async { [self] in
+            awaitingResume = true
+            cancelCalibrationOnDataQueue(reason: "the camera stopped with an error")
+            requestAutoStop("the camera stopped with an error (\(message))")
+        }
+        // Restart the camera: always after a media services reset, else up to `maxErrorRestarts` times in a row
+        // (the count is reset by the first frame after a restart). The event goes out before the restart, so the
+        // "running again" report of the first new frame always follows it.
+        sessionQueue.async { [self] in
+            let needed = wantsRunning && !session.isRunning
+            let restart = needed && (reset || errorRestarts < Self.maxErrorRestarts)
+            onEvent?(.cameraError(message, restarting: restart || !needed))
+            guard restart else { return }
+            if !reset { errorRestarts += 1 }
+            session.startRunning()
+            applyShutter()
+        }
+    }
+
+    private func pressureChanged(_ level: AVCaptureDevice.SystemPressureState.Level) {
+        let pressure: LinePressure
+        if level == .critical || level == .shutdown {
+            pressure = .critical
+        } else if level == .serious {
+            pressure = .serious
+        } else {
+            pressure = .normal
+        }
+        dataQueue.async { [self] in
+            overlayStride = pressure == .normal ? 2 : 6
+            if pressure == .critical {
+                requestAutoStop("the phone is too hot (camera system pressure critical)")
+            }
+            onEvent?(.pressure(pressure))
+        }
+    }
+
     func start(shortShutter: Bool) {
-        if motion.isDeviceMotionAvailable && !motion.isDeviceMotionActive {
-            motion.deviceMotionUpdateInterval = 1.0 / 30
-            motion.startDeviceMotionUpdates()
+        // The motion manager is only used on the data queue (started, read per frame and stopped there).
+        dataQueue.async { [self] in
+            if motion.isDeviceMotionAvailable && !motion.isDeviceMotionActive {
+                motion.deviceMotionUpdateInterval = 1.0 / 30
+                motion.startDeviceMotionUpdates()
+            }
         }
         sessionQueue.async { [self] in
+            shortShutterSetting = shortShutter
+            wantsRunning = true
             if !session.isRunning { session.startRunning() }
-            // Let auto exposure settle before switching to a short shutter.
-            sessionQueue.asyncAfter(deadline: .now() + 1.0) { [self] in
-                applyShutter(short: shortShutter)
-            }
+            applyShutter()
         }
     }
 
     func stop() {
-        if motion.isDeviceMotionActive { motion.stopDeviceMotionUpdates() }
+        dataQueue.async { [self] in
+            if motion.isDeviceMotionActive { motion.stopDeviceMotionUpdates() }
+        }
         sessionQueue.async { [self] in
+            wantsRunning = false
             if session.isRunning { session.stopRunning() }
         }
     }
@@ -195,7 +339,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
 
     func setShortShutter(_ enabled: Bool) {
         sessionQueue.async { [self] in
-            applyShutter(short: enabled)
+            shortShutterSetting = enabled
+            applyShutter()
         }
     }
 
@@ -204,26 +349,33 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             self.direction = direction
             estimator.travelSign = direction.bufferSign
             estimator.reset()
-            tileHistory.removeAll()
+            zoneSmoother.reset()
+            // Readings taken with the old sign must not carry into the new direction.
+            speedTracker.clearHeldSpeed()
+            lastTime = nil
         }
     }
 
-    private func applyShutter(short: Bool) {
+    /// Continuous auto exposure throughout; with the short shutter on, auto exposure may not use
+    /// exposures longer than 1/1000 s and raises ISO instead, so it keeps adapting to the light.
+    /// Session queue only.
+    private func applyShutter() {
         guard let device else { return }
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
-            if short, device.isExposureModeSupported(.custom) {
-                let format = device.activeFormat
-                var target = CMTime(value: 1, timescale: 1000)
-                if CMTimeCompare(target, format.minExposureDuration) < 0 { target = format.minExposureDuration }
-                if CMTimeCompare(target, format.maxExposureDuration) > 0 { target = format.maxExposureDuration }
-                let current = device.exposureDuration.seconds > 0 ? device.exposureDuration.seconds : 1.0 / 60
-                let gain = Float(current / max(target.seconds, 0.00001))
-                let iso = min(format.maxISO, max(format.minISO, device.iso * gain))
-                device.setExposureModeCustom(duration: target, iso: iso, completionHandler: nil)
-            } else if device.isExposureModeSupported(.continuousAutoExposure) {
+            if device.isExposureModeSupported(.continuousAutoExposure) {
                 device.exposureMode = .continuousAutoExposure
+            }
+            guard device.exposureMode == .continuousAutoExposure || device.exposureMode == .autoExpose else { return }
+            if shortShutterSetting {
+                let format = device.activeFormat
+                var limit = CMTime(value: 1, timescale: 1000)
+                if CMTimeCompare(limit, format.minExposureDuration) < 0 { limit = format.minExposureDuration }
+                if CMTimeCompare(limit, format.maxExposureDuration) > 0 { limit = format.maxExposureDuration }
+                device.activeMaxExposureDuration = limit
+            } else {
+                device.activeMaxExposureDuration = .invalid      // back to the format's default limit
             }
         } catch {
             // Keep whatever exposure mode is active.
@@ -239,33 +391,74 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     }
 
     /// Captures `frames` frames of the empty flat surface and builds a per-pixel baseline from them.
-    func captureBaseline(frames: Int, filtered: Bool, completion: @escaping @Sendable (Baseline?) -> Void) {
+    /// Only frames whose depth filtering matches `filtered` are used.
+    func captureBaseline(frames: Int, filtered: Bool,
+                         completion: @escaping @Sendable (Result<Baseline, Error>) -> Void) {
         dataQueue.async { [self] in
+            calibration?.completion(.failure(BaselineError.cancelled("a new calibration was started")))
             calibration = CalibrationCapture(target: frames, filtered: filtered, completion: completion)
         }
     }
 
-    // MARK: - Recording
-
-    func startRecording(folder: URL, filtered: Bool, shortShutter: Bool, direction: TravelDirection) {
+    /// Abandons a calibration in progress (camera interrupted, app in the background).
+    func cancelCalibration(reason: String) {
         dataQueue.async { [self] in
-            pendingRecording = (folder, filtered, shortShutter, direction)
+            cancelCalibrationOnDataQueue(reason: reason)
         }
     }
 
-    func stopRecording(completion: @escaping @Sendable (Result<Finished, Error>) -> Void) {
+    private func cancelCalibrationOnDataQueue(reason: String) {
+        guard let capture = calibration else { return }
+        calibration = nil
+        capture.completion(.failure(BaselineError.cancelled(reason)))
+    }
+
+    // MARK: - Recording
+
+    /// Starts recording into `folder` with the next frame. Reports `.recordingStarted` or
+    /// `.recordingStartFailed` (also when no frame arrives within 3 s).
+    func startRecording(folder: URL, filtered: Bool, shortShutter: Bool, direction: TravelDirection) {
+        dataQueue.async { [self] in
+            guard recorder == nil else {
+                onEvent?(.recordingStartFailed("a recording is already running"))
+                return
+            }
+            pendingToken += 1
+            let token = pendingToken
+            pendingRecording = PendingRecording(token: token, folder: folder, filtered: filtered,
+                                                shortShutter: shortShutter, direction: direction)
+            dataQueue.asyncAfter(deadline: .now() + 3) { [self] in
+                guard pendingRecording?.token == token else { return }
+                pendingRecording = nil
+                onEvent?(.recordingStartFailed("no camera frames arrived. Check that no other app is using the camera"))
+            }
+        }
+    }
+
+    /// Stops the recording (or a start still waiting for a frame) and finishes its files off the capture queue.
+    /// `completion` gets nil when no recording had started.
+    func stopRecording(completion: @escaping @Sendable (LineRecordingResult?) -> Void) {
         dataQueue.async { [self] in
             pendingRecording = nil
+            autoStopReason = nil
             guard let active = recorder else {
-                completion(.failure(LineError.notEnoughData))
+                completion(nil)
                 return
             }
             recorder = nil
-            let folder = active.folder
-            active.finish { result in
-                completion(result.map { Finished(folder: folder, info: $0) })
-            }
+            active.finish(completion: completion)
         }
+    }
+
+    /// Data queue. Takes no more frames into the recording and asks the screen to stop and save it.
+    private func requestAutoStop(_ reason: String) {
+        if pendingRecording != nil {
+            pendingRecording = nil
+            onEvent?(.recordingStartFailed(reason))
+        }
+        guard recorder != nil, autoStopReason == nil else { return }
+        autoStopReason = reason
+        onEvent?(.stopRecording(reason))
     }
 
     // MARK: - Frames
@@ -284,6 +477,11 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
 
     private func handle(sampleBuffer: CMSampleBuffer, pixelBuffer: CVPixelBuffer, depthData: AVDepthData) {
         frameCounter += 1
+        if awaitingResume {
+            awaitingResume = false
+            onEvent?(.cameraResumed)
+            sessionQueue.async { [self] in errorRestarts = 0 }      // frames again: the restart worked
+        }
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         // Depth map → millimetres.
@@ -313,80 +511,45 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         let videoHeight = CVPixelBufferGetHeight(pixelBuffer)
         let videoWidth = CVPixelBufferGetWidth(pixelBuffer)
         let k = intrinsics(for: depth, depthWidth: dw, depthHeight: dh)
-        let median = Self.centerMedian(millimetres, width: dw, height: dh)
+        let median = LineMotionMath.centerMedian(millimetres, width: dw, height: dh)
+        let fyVideo = LineMotionMath.videoFocalLength(depthFy: Double(k.fy), videoHeight: videoHeight, depthHeight: dh)
 
-        // Speed from texture motion: pixels moved × (distance / focal length) / time.
+        // Speed from texture motion (LineMotionMath: pixels moved × (distance / focal length) / time, with gates).
         var shift: TextureShift?
         var rawSpeed: Double?
         let measured = estimator.process(pixelBuffer)
         var dt = 0.0
         if let last = lastTime { dt = (time - last).seconds }
         lastTime = time
-        if let m = measured, dt > 0.001, dt < 1 {
+        if let m = measured, LineMotionMath.isSpeedInterval(dt) {
             shift = m
             // Distance of the tracked area itself sets the mm-per-pixel scale.
-            let trackedDistance = Self.regionMedian(millimetres, width: dw, height: dh,
-                                                    regionX: m.regionX, regionY: m.regionY)
-            let distance = trackedDistance > 0 ? trackedDistance : median
-            let fyVideo = Double(k.fy) * Double(videoHeight) / Double(dh)
-            if m.quality >= 0.1, fyVideo > 0, distance > 0 {
-                rawSpeed = m.along * (distance / fyVideo) / dt
-            }
+            let trackedDistance = LineMotionMath.regionMedian(millimetres, width: dw, height: dh,
+                                                              regionX: m.regionX, regionY: m.regionY)
+            rawSpeed = LineMotionMath.trackedSpeed(shiftPixels: m.along, quality: m.quality,
+                                                   trackedDistance: trackedDistance, centerDistance: median,
+                                                   focalPixels: fyVideo, dt: dt)
         }
         // Local speeds per zone: zone movement × (zone distance / focal length) / time.
-        let tileColumns = SpeedEstimator.tileColumns
-        let tileRows = SpeedEstimator.tileRows
-        let tiles = estimator.lastTiles
-        var rawTiles = [Double?](repeating: nil, count: tileColumns * tileRows)
-        let fyFull = Double(k.fy) * Double(videoHeight) / Double(max(dh, 1))
-        if dt > 0.001, dt < 1, fyFull > 0, tiles.count == rawTiles.count {
-            for (i, tile) in tiles.enumerated() {
-                guard let tile, tile.quality >= 0.12 else { continue }
-                let c = i % tileColumns
-                let r = i / tileColumns
-                let zoneDistance = Self.regionMedian(
-                    millimetres, width: dw, height: dh,
-                    regionX: Double(c) / Double(tileColumns)...Double(c + 1) / Double(tileColumns),
-                    regionY: Double(r) / Double(tileRows)...Double(r + 1) / Double(tileRows))
-                let distance = zoneDistance > 0 ? zoneDistance : median
-                guard distance > 0 else { continue }
-                rawTiles[i] = tile.along * (distance / fyFull) / dt
-            }
-        }
-        tileHistory.append(rawTiles)
-        if tileHistory.count > 15 { tileHistory.removeFirst(tileHistory.count - 15) }
-        var smoothTiles = [Double?](repeating: nil, count: rawTiles.count)
-        for i in 0..<rawTiles.count {
-            var sum = 0.0
-            var n = 0
-            for frameTiles in tileHistory where i < frameTiles.count {
-                if let v = frameTiles[i] {
-                    sum += v
-                    n += 1
-                }
-            }
-            if n >= 4 { smoothTiles[i] = sum / Double(n) }
-        }
-        let fastest = Self.fastest(smoothTiles)
-        let rawFastest = Self.fastest(rawTiles)
+        let rawTiles = LineMotionMath.zoneSpeeds(
+            tiles: estimator.lastTiles.map { tile in tile.map { (along: $0.along, quality: $0.quality) } },
+            millimetres: millimetres, width: dw, height: dh, centerDistance: median, focalPixels: fyVideo, dt: dt,
+            columns: SpeedEstimator.tileColumns, rows: SpeedEstimator.tileRows)
+        let smoothTiles = zoneSmoother.add(rawTiles)
+        let fastest = LineMotionMath.fastest(smoothTiles)
+        let rawFastest = LineMotionMath.fastest(rawTiles)
 
-        if let v = rawSpeed { lastValidSpeed = v }
-        if dt > 0, dt < 1 { travel += (rawSpeed ?? lastValidSpeed ?? 0) * dt }
-        // Half-second rolling average of the valid readings (missing readings age out).
-        recentSpeeds.append(rawSpeed ?? .nan)
-        if recentSpeeds.count > 15 { recentSpeeds.removeFirst(recentSpeeds.count - 15) }
-        let valid = recentSpeeds.filter { !$0.isNaN }
-        let smoothed: Double? = valid.count >= 3 ? valid.reduce(0, +) / Double(valid.count) : rawSpeed
-        var angle: Double?
-        if let s = shift, abs(s.along) > 2 {
-            angle = atan2(s.across, abs(s.along)) * 180 / .pi
-        }
+        // Travel (held speed through frames without lock) and the half-second rolling average.
+        let smoothed = speedTracker.add(rawSpeed: rawSpeed, dt: dt)
+        let travel = speedTracker.travel
+        let angle = shift.flatMap { LineMotionMath.motionAngle(along: $0.along, across: $0.across) }
 
-        // Live colour image (every second frame): heights above the baseline when one is set, else distance.
+        // Live colour image (every second frame, less often under system pressure):
+        // heights above the baseline when one is set, else distance.
         var image: CGImage?
         var range: ClosedRange<Float>?
         let activeBaseline = baseline?.matches(width: dw, height: dh) == true ? baseline : nil
-        if frameCounter % 2 == 0 {
+        if frameCounter % overlayStride == 0 {
             if let activeBaseline {
                 let heights = activeBaseline.heights(millimetres)
                 heights.withUnsafeBufferPointer { buffer in
@@ -395,9 +558,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                         image = DepthColors.heightImage(buffer, width: dw, height: dh,
                                                         low: r.lowerBound, high: r.upperBound)
                     }
-                    lastSpread = Self.spread(buffer, width: dw, height: dh)
+                    lastSpread = LineMotionMath.spread(buffer, width: dw, height: dh)
                 }
-                lastCenterHeight = Self.centerMedian(heights, width: dw, height: dh, allowNegative: true)
+                lastCenterHeight = LineMotionMath.centerMedian(heights, width: dw, height: dh, allowNegative: true)
             } else {
                 millimetres.withUnsafeBufferPointer { buffer in
                     if let r = DepthColors.percentileRange(buffer, step: 3) {
@@ -405,7 +568,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                         image = DepthColors.image(millimetres: buffer, width: dw, height: dh,
                                                   near: r.lowerBound, far: r.upperBound)
                     }
-                    lastSpread = Self.spread(buffer, width: dw, height: dh)
+                    lastSpread = LineMotionMath.spread(buffer, width: dw, height: dh)
                 }
                 lastCenterHeight = nil
             }
@@ -414,27 +577,32 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         // Baseline calibration capture.
         var calibrationProgress: Double?
         if var capture = calibration {
+            capture.seen += 1
             if capture.frames.isEmpty {
                 capture.width = dw
                 capture.height = dh
             }
-            if capture.width == dw && capture.height == dh {
+            // Frames with the other depth filter setting (toggle still taking effect) are skipped.
+            if capture.width == dw && capture.height == dh && depthData.isDepthDataFiltered == capture.filtered {
                 capture.frames.append(millimetres)
                 if let g = motion.deviceMotion?.gravity {
-                    capture.tiltX.append(asin(max(-1, min(1, -g.x))) * 180 / .pi)
-                    capture.tiltY.append(asin(max(-1, min(1, -g.y))) * 180 / .pi)
+                    capture.tiltX.append(LineMotionMath.gravityTilt(g.x))
+                    capture.tiltY.append(LineMotionMath.gravityTilt(g.y))
                 }
             }
             calibrationProgress = Double(capture.frames.count) / Double(max(capture.target, 1))
-            if capture.frames.count >= capture.target {
+            // Give up waiting after 3× the frames needed (Baseline.build refuses too few frames).
+            if capture.frames.count >= capture.target || capture.seen >= capture.target * 3 {
                 calibration = nil
                 let done = capture
                 DispatchQueue.global(qos: .userInitiated).async {
                     let meanX = done.tiltX.isEmpty ? nil : done.tiltX.reduce(0, +) / Double(done.tiltX.count)
                     let meanY = done.tiltY.isEmpty ? nil : done.tiltY.reduce(0, +) / Double(done.tiltY.count)
-                    let result = Baseline.build(frames: done.frames, width: done.width, height: done.height,
-                                                verify: done.target / 3, tiltX: meanX, tiltY: meanY,
-                                                filtered: done.filtered)
+                    let result = Result<Baseline, Error> {
+                        try Baseline.build(frames: done.frames, width: done.width, height: done.height,
+                                           verify: done.target / 3, tiltX: meanX, tiltY: meanY,
+                                           filtered: done.filtered)
+                    }
                     done.completion(result)
                 }
             } else {
@@ -445,28 +613,43 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         // Recording.
         if let pending = pendingRecording, recorder == nil {
             pendingRecording = nil
-            recorder = try? LineRecorder(folder: pending.folder, videoWidth: videoWidth, videoHeight: videoHeight,
-                                         depthWidth: dw, depthHeight: dh, filteredDepth: pending.filtered,
-                                         shortShutter: pending.shortShutter, direction: pending.direction,
-                                         travelOffset: travel)
-            // Keep the baseline with the recording so its map and playback use the same reference.
-            if recorder != nil, let activeBaseline {
-                try? activeBaseline.save(to: pending.folder)
+            do {
+                let created = try LineRecorder(folder: pending.folder, videoWidth: videoWidth, videoHeight: videoHeight,
+                                               depthWidth: dw, depthHeight: dh, filteredDepth: pending.filtered,
+                                               shortShutter: pending.shortShutter, direction: pending.direction,
+                                               travelOffset: travel)
+                // Keep the baseline with the recording so its map and playback use the same reference.
+                if let activeBaseline {
+                    do {
+                        try activeBaseline.save(to: pending.folder)
+                    } catch {
+                        created.addNote("Baseline not copied into the recording (\(error.localizedDescription)): "
+                                        + "map and playback show distances from the camera.")
+                    }
+                }
+                recorder = created
+                autoStopReason = nil
+                // This frame is the recording's first (travel 0 via travelOffset). Y-1: a held speed read at most
+                // 2 s ago carries into it; older readings are cleared so they cannot drive the recording's travel.
+                speedTracker.beginRecording()
+                onEvent?(.recordingStarted)
+            } catch {
+                onEvent?(.recordingStartFailed("the recording files could not be created (\(error.localizedDescription))"))
             }
         }
         // Level: gravity tilt every frame, LiDAR surface tilt every second frame.
         var tiltX: Double?
         var tiltY: Double?
         if let g = motion.deviceMotion?.gravity {
-            tiltX = asin(max(-1, min(1, -g.x))) * 180 / .pi
-            tiltY = asin(max(-1, min(1, -g.y))) * 180 / .pi
+            tiltX = LineMotionMath.gravityTilt(g.x)
+            tiltY = LineMotionMath.gravityTilt(g.y)
         }
-        if frameCounter % 2 == 1 {
-            surfaceTilt = Self.surfaceTilt(millimetres, width: dw, height: dh,
-                                           fx: Double(k.fx), fy: Double(k.fy), cx: Double(k.cx), cy: Double(k.cy))
+        if frameCounter % overlayStride == 1 {
+            surfaceTilt = LineMotionMath.surfaceTilt(millimetres, width: dw, height: dh, fx: Double(k.fx),
+                                                     fy: Double(k.fy), cx: Double(k.cx), cy: Double(k.cy))
         }
 
-        if let active = recorder {
+        if let active = recorder, autoStopReason == nil {
             let info = LineFrameInfo(index: 0, time: 0, speed: rawSpeed, travel: travel,
                                      shiftPixels: shift?.along, crossShiftPixels: shift?.across,
                                      quality: shift?.quality ?? 0, medianDepth: median,
@@ -476,12 +659,13 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                                      tileSpeeds: rawTiles,
                                      fastestSpeed: rawFastest?.speed, fastestTile: rawFastest?.index)
             active.append(sampleBuffer: sampleBuffer, depthMillimetres: millimetres, info: info)
+            if let reason = active.stopReason { requestAutoStop(reason) }
         }
 
         onUpdate?(LiveUpdate(speed: smoothed, rawSpeed: rawSpeed, quality: shift?.quality ?? 0,
                              medianDepth: median, travel: travel, angle: angle,
                              depthImage: image, depthRange: range,
-                             recordedFrames: recorder?.frames.count ?? 0,
+                             recordedFrames: recorder?.frameCount ?? 0,
                              elapsed: recorder?.elapsed ?? 0,
                              tiltX: tiltX, tiltY: tiltY,
                              surfaceTiltX: surfaceTilt?.x, surfaceTiltY: surfaceTilt?.y,
@@ -492,89 +676,13 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                              tileSpeeds: smoothTiles,
                              fastestSpeed: fastest?.speed,
                              fastestTile: fastest?.index,
-                             pictureAspect: Double(dh) / Double(max(dw, 1))))
+                             pictureAspect: Double(dh) / Double(max(dw, 1)),
+                             recordingWarning: recorder?.videoProblem.map { "Video not recording: \($0)" }))
     }
 
-    /// Zone with the largest speed magnitude (signed speed returned).
+    /// Zone with the largest speed magnitude (signed speed returned). See `LineMotionMath.fastest`.
     static func fastest(_ speeds: [Double?]) -> (speed: Double, index: Int)? {
-        var best: (speed: Double, index: Int)?
-        for (i, v) in speeds.enumerated() {
-            guard let v else { continue }
-            if best == nil || abs(v) > abs(best!.speed) { best = (v, i) }
-        }
-        return best
-    }
-
-    /// Std dev of the finite, positive-distance or any-height values in the central 80 % of the view.
-    static func spread(_ values: UnsafeBufferPointer<Float>, width: Int, height: Int) -> Double? {
-        var s = 0.0, ss = 0.0, n = 0.0
-        var y = height / 10
-        while y < height - height / 10 {
-            var x = width / 10
-            while x < width - width / 10 {
-                let v = values[y * width + x]
-                if v.isFinite && v != 0 {
-                    let d = Double(v)
-                    s += d
-                    ss += d * d
-                    n += 1
-                }
-                x += 3
-            }
-            y += 3
-        }
-        guard n > 20 else { return nil }
-        let m = s / n
-        return max(0, ss / n - m * m).squareRoot()
-    }
-
-    /// Fits a plane Z = a·X + b·Y + c to the depth points (mm, camera coordinates) and converts its slope
-    /// to phone tilt relative to that surface. Depth columns run down the portrait screen, rows run right → left.
-    static func surfaceTilt(_ millimetres: [Float], width: Int, height: Int,
-                            fx: Double, fy: Double, cx: Double, cy: Double) -> (x: Double, y: Double)? {
-        guard fx > 0, fy > 0, width > 16, height > 16 else { return nil }
-        var n = 0.0, sx = 0.0, sy = 0.0, sz = 0.0
-        var sxx = 0.0, syy = 0.0, sxy = 0.0, sxz = 0.0, syz = 0.0
-        let border = max(2, min(width, height) / 16)
-        var v = border
-        while v < height - border {
-            var u = border
-            while u < width - border {
-                let z = Double(millimetres[v * width + u])
-                if z > 0 {
-                    let x = (Double(u) - cx) * z / fx      // toward the bottom of the screen
-                    let y = (Double(v) - cy) * z / fy      // toward the left of the screen
-                    n += 1; sx += x; sy += y; sz += z
-                    sxx += x * x; syy += y * y; sxy += x * y; sxz += x * z; syz += y * z
-                }
-                u += 4
-            }
-            v += 4
-        }
-        guard n >= 50 else { return nil }
-        // Solve the 3×3 normal equations for (a, b, c) with Cramer's rule.
-        let m = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, n]]
-        let r = [sxz, syz, sz]
-        func det(_ a: [[Double]]) -> Double {
-            a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
-                - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
-                + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
-        }
-        let d = det(m)
-        guard abs(d) > 1e-9 else { return nil }
-        var ma = m
-        var mb = m
-        for i in 0..<3 {
-            ma[i][0] = r[i]
-            mb[i][1] = r[i]
-        }
-        let a = det(ma) / d      // dZ per mm toward the screen bottom
-        let b = det(mb) / d      // dZ per mm toward the screen left
-        // Farther at the bottom = bottom edge high = top edge low; farther at the left = left edge high.
-        let tiltY = -atan(a) * 180 / .pi
-        let tiltX = -atan(b) * 180 / .pi
-        guard tiltX.isFinite, tiltY.isFinite else { return nil }
-        return (tiltX, tiltY)
+        LineMotionMath.fastest(speeds)
     }
 
     /// Depth-map intrinsics in depth pixels.
@@ -592,48 +700,5 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         let fieldOfView = (device?.activeFormat.videoFieldOfView ?? 64) * .pi / 180
         let fx = Float(depthWidth) / 2 / tan(fieldOfView / 2)
         return (fx, fx, Float(depthWidth) / 2, Float(depthHeight) / 2)
-    }
-
-    /// Median distance (mm) inside a normalized region of the depth map.
-    static func regionMedian(_ millimetres: [Float], width: Int, height: Int,
-                             regionX: ClosedRange<Double>, regionY: ClosedRange<Double>) -> Double {
-        let x0 = max(0, min(width - 1, Int(regionX.lowerBound * Double(width))))
-        let x1 = max(x0 + 1, min(width, Int(regionX.upperBound * Double(width))))
-        let y0 = max(0, min(height - 1, Int(regionY.lowerBound * Double(height))))
-        let y1 = max(y0 + 1, min(height, Int(regionY.upperBound * Double(height))))
-        var samples: [Float] = []
-        samples.reserveCapacity((x1 - x0) * (y1 - y0) / 4 + 1)
-        var y = y0
-        while y < y1 {
-            var x = x0
-            while x < x1 {
-                let z = millimetres[y * width + x]
-                if z > 0 { samples.append(z) }
-                x += 2
-            }
-            y += 2
-        }
-        guard samples.count >= 8 else { return 0 }
-        samples.sort()
-        return Double(samples[samples.count / 2])
-    }
-
-    /// Median of the central half of the map: distances (> 0), or heights (any finite value) with allowNegative.
-    static func centerMedian(_ millimetres: [Float], width: Int, height: Int, allowNegative: Bool = false) -> Double {
-        var samples: [Float] = []
-        samples.reserveCapacity(width * height / 16)
-        var y = height / 4
-        while y < height * 3 / 4 {
-            var x = width / 4
-            while x < width * 3 / 4 {
-                let z = millimetres[y * width + x]
-                if allowNegative ? z.isFinite : z > 0 { samples.append(z) }
-                x += 2
-            }
-            y += 2
-        }
-        guard !samples.isEmpty else { return 0 }
-        samples.sort()
-        return Double(samples[samples.count / 2])
     }
 }

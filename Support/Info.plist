@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Phone LiDAR uses the camera and LiDAR scanner to build 3D scans of rooms, equipment and objects.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Phone LiDAR saves a scan image or video to your Photos only when you choose Save Image or Save Video in the share sheet.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

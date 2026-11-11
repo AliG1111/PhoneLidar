@@ -5,3 +5,25 @@ DerivedData/
 Payload/
 *.ipa
 .DS_Store
+
+# Secrets and signing material must never be committed (the repository is public)
+cert_key
+cert_key.pub
+AuthKey_*.p8
+*.p8
+*.p12
+*.mobileprovision
+*.cer
+
+# CI and build output
+logs/
+dist/
+*.xcresult
+simulators.json
+
+# Scan and reference media must never be committed (the repository is public)
+Reference/
+Scans/
+*.mov
+*.MOV
+Depth.bin

@@ -11,18 +11,31 @@ struct MeshScanView: View {
     @State private var controller = MeshScanController()
     @State private var saving = false
     @State private var errorText: String?
+    @State private var access = CameraAccess.State.checking
 
     var body: some View {
         ZStack {
-            ARViewContainer(controller: controller)
-                .ignoresSafeArea()
+            if access == .granted {
+                // The crosshair is a subview of the ARView itself, so it is exactly at the point that is measured.
+                ARViewContainer(controller: controller)
+                    .ignoresSafeArea()
+                controls
+            } else {
+                Color.black.ignoresSafeArea()
+            }
+            if access == .denied {
+                CameraDeniedView { onFinish(nil) }
+            }
+        }
+        .statusBarHidden()
+        .keepScreenOn()
+        .task {
+            access = await CameraAccess.request() ? .granted : .denied
+        }
+    }
 
-            Image(systemName: "plus")
-                .font(.system(size: 30, weight: .thin))
-                .foregroundStyle(.white)
-                .shadow(color: .black, radius: 2)
-                .allowsHitTesting(false)
-
+    private var controls: some View {
+        ZStack {
             VStack(spacing: 10) {
                 HStack {
                     Button("Cancel") {
@@ -30,6 +43,7 @@ struct MeshScanView: View {
                         onFinish(nil)
                     }
                     .buttonStyle(.bordered)
+                    .disabled(saving)
 
                     Spacer()
 
@@ -45,6 +59,17 @@ struct MeshScanView: View {
 
                 if !controller.measurements.isEmpty {
                     measurementList
+                }
+
+                if saving {
+                    VStack(spacing: 4) {
+                        ProgressView(value: controller.saveProgress)
+                        Text(controller.saveStage)
+                            .font(.footnote)
+                    }
+                    .padding(8)
+                    .foregroundStyle(.white)
+                    .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
                 }
 
                 Text(errorText ?? controller.message)
@@ -82,7 +107,6 @@ struct MeshScanView: View {
             }
             .padding()
         }
-        .statusBarHidden()
     }
 
     private var measurementList: some View {
@@ -99,16 +123,15 @@ struct MeshScanView: View {
     }
 
     private func save() {
+        guard !saving else { return }
         saving = true
         errorText = nil
         Task { @MainActor in
-            // Let the "Saving…" label render before the export blocks the main thread.
-            try? await Task.sleep(for: .milliseconds(150))
             do {
-                let id = try controller.save(store: store)
+                let id = try await controller.save(store: store)
                 onFinish(id)
             } catch {
-                errorText = error.localizedDescription
+                errorText = ScanError.message(for: error)
                 saving = false
             }
         }
@@ -121,12 +144,18 @@ final class MeshScanController {
     var measurements: [PointMeasurement] = []
     var hasPendingPoint = false
     var meshVisible = true
+    var saveProgress: Double = 0
+    var saveStage = "Preparing…"
+    /// Set when the AR session fails or is interrupted.
+    var sessionProblem: String?
     var message = "Sweep slowly over the equipment until the mesh covers it. Aim the crosshair and tap Set start point (or tap the screen) to measure."
 
     @ObservationIgnored private(set) var arView: ARView?
     @ObservationIgnored private var pendingPoint: SIMD3<Float>?
     @ObservationIgnored private var pendingMarker: AnchorEntity?
     @ObservationIgnored private var measurementEntities: [[AnchorEntity]] = []
+    @ObservationIgnored private var sessionDelegate: MeshSessionDelegate?
+    @ObservationIgnored private var isSaving = false
 
     func makeView() -> ARView {
         if let arView { return arView }
@@ -146,7 +175,27 @@ final class MeshScanController {
         }
         config.planeDetection = [.horizontal, .vertical]
         config.environmentTexturing = .none
+        let delegate = MeshSessionDelegate()
+        delegate.controller = self
+        sessionDelegate = delegate
+        view.session.delegate = delegate
         view.session.run(config)
+
+        // Crosshair at the exact centre of the ARView (the point used for measuring).
+        let crosshair = UIImageView(image: UIImage(
+            systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 30, weight: .thin)))
+        crosshair.tintColor = .white
+        crosshair.layer.shadowColor = UIColor.black.cgColor
+        crosshair.layer.shadowOpacity = 1
+        crosshair.layer.shadowRadius = 2
+        crosshair.layer.shadowOffset = .zero
+        crosshair.isUserInteractionEnabled = false
+        crosshair.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(crosshair)
+        NSLayoutConstraint.activate([
+            crosshair.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            crosshair.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+        ])
 
         arView = view
         return view
@@ -170,8 +219,21 @@ final class MeshScanController {
         addPoint(at: CGPoint(x: view.bounds.midX, y: view.bounds.midY))
     }
 
+    fileprivate func sessionFailed(_ error: Error) {
+        sessionProblem = "Scanning stopped: \(error.localizedDescription)"
+        message = sessionProblem ?? message
+    }
+
+    fileprivate func sessionInterrupted(_ interrupted: Bool) {
+        if interrupted {
+            message = "Scanning paused (camera in use or app in background)."
+        } else {
+            message = "Scanning again. Move slowly over the equipment."
+        }
+    }
+
     func addPoint(at screenPoint: CGPoint) {
-        guard let view = arView else { return }
+        guard let view = arView, !isSaving else { return }
         guard let point = worldPoint(at: screenPoint, in: view) else {
             message = "No surface found there. Scan that area a bit more and try again."
             return
@@ -216,40 +278,61 @@ final class MeshScanController {
         message = "Last measurement removed."
     }
 
-    func save(store: ScanStore) throws -> UUID {
+    func save(store: ScanStore) async throws -> UUID {
+        guard !isSaving else { throw ScanError.noData }
         guard let view = arView, let frame = view.session.currentFrame else { throw ScanError.noData }
         let anchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }
         guard !anchors.isEmpty else { throw ScanError.noMesh }
-        view.session.pause()
+        isSaving = true
+        defer { isSaving = false }
+        saveProgress = 0
+        saveStage = "Preparing…"
 
+        // Copy the mesh out of ARKit on the main thread; the files are written in the background.
+        // The session keeps running until the export has succeeded, so a failed save can simply be retried.
+        let snapshot = try MeshExporter.snapshot(anchors: anchors)
+        let measurements = self.measurements
         let folder = try store.newFolder(kind: .mesh)
-        let result = try MeshExporter.export(anchors: anchors, to: folder.url, baseName: "Mesh")
+        do {
+            let result = try await Task.detached(priority: .userInitiated) { [weak self] () -> MeshExportResult in
+                try MeshExporter.write(snapshot, to: folder.url, baseName: "Mesh") { stage, fraction in
+                    Task { @MainActor in
+                        self?.saveStage = stage
+                        self?.saveProgress = fraction
+                    }
+                }
+            }.value
 
-        if !measurements.isEmpty {
-            try CSV.measurements(measurements).write(
-                to: folder.url.appendingPathComponent("Measurements.csv"), atomically: true, encoding: .utf8)
+            if !measurements.isEmpty {
+                try CSV.measurements(measurements).write(
+                    to: folder.url.appendingPathComponent("Measurements.csv"), atomically: true, encoding: .utf8)
+            }
+
+            let size = result.boundsMax - result.boundsMin
+            var summary = [
+                "Overall extents: \(Units.short(Double(size.x))) × \(Units.short(Double(size.y))) H × \(Units.short(Double(size.z)))",
+                "Mesh: \(result.vertexCount) vertices, \(result.faceCount) triangles",
+                "Units: metres, Y axis up"
+            ]
+            for m in measurements {
+                summary.append("\(m.label): \(Units.format(meters: m.meters))")
+            }
+
+            let record = ScanRecord(id: UUID(),
+                                    kind: .mesh,
+                                    name: "Equipment " + Date().formatted(date: .abbreviated, time: .shortened),
+                                    created: Date(),
+                                    folderName: folder.name,
+                                    primaryModel: result.usdzWritten ? "Mesh.usdz" : "Mesh.obj",
+                                    summary: summary,
+                                    measurements: measurements)
+            try store.save(record)
+            view.session.pause()
+            return record.id
+        } catch {
+            store.discard(folderName: folder.name)
+            throw error
         }
-
-        let size = result.boundsMax - result.boundsMin
-        var summary = [
-            "Overall extents: \(Units.short(Double(size.x))) × \(Units.short(Double(size.y))) H × \(Units.short(Double(size.z)))",
-            "Mesh: \(result.vertexCount) vertices, \(result.faceCount) triangles",
-            "Units: metres, Y axis up"
-        ]
-        for m in measurements {
-            summary.append("\(m.label): \(Units.format(meters: m.meters))")
-        }
-
-        let record = ScanRecord(id: UUID(),
-                                kind: .mesh,
-                                name: "Equipment " + Date().formatted(date: .abbreviated, time: .shortened),
-                                created: Date(),
-                                folderName: folder.name,
-                                primaryModel: result.usdzWritten ? "Mesh.usdz" : "Mesh.obj",
-                                summary: summary,
-                                measurements: measurements)
-        try store.save(record)
-        return record.id
     }
 
     // MARK: - Helpers
@@ -285,6 +368,29 @@ final class MeshScanController {
         anchor.addChild(bar)
         arView?.scene.addAnchor(anchor)
         return anchor
+    }
+}
+
+/// ARSessionDelegate lives in its own NSObject; callbacks hop to the main actor.
+final class MeshSessionDelegate: NSObject, ARSessionDelegate {
+    weak var controller: MeshScanController?
+
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        Task { @MainActor [weak self] in
+            self?.controller?.sessionFailed(error)
+        }
+    }
+
+    func sessionWasInterrupted(_ session: ARSession) {
+        Task { @MainActor [weak self] in
+            self?.controller?.sessionInterrupted(true)
+        }
+    }
+
+    func sessionInterruptionEnded(_ session: ARSession) {
+        Task { @MainActor [weak self] in
+            self?.controller?.sessionInterrupted(false)
+        }
     }
 }
 

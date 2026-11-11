@@ -9,11 +9,32 @@ struct RoomScanView: View {
     @State private var controller = RoomScanController()
     @State private var saving = false
     @State private var saveError: String?
+    @State private var access = CameraAccess.State.checking
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            RoomCaptureContainer(controller: controller)
-                .ignoresSafeArea()
+            if access == .granted {
+                RoomCaptureContainer(controller: controller)
+                    .ignoresSafeArea()
+            } else {
+                Color.black.ignoresSafeArea()
+            }
+            if access == .denied {
+                CameraDeniedView { onFinish(nil) }
+            }
+            if access == .granted {
+                controls
+            }
+        }
+        .statusBarHidden()
+        .keepScreenOn()
+        .task {
+            access = await CameraAccess.request() ? .granted : .denied
+        }
+    }
+
+    private var controls: some View {
+        ZStack(alignment: .bottom) {
 
             VStack(spacing: 10) {
                 if let message = saveError ?? controller.errorText {
@@ -29,6 +50,7 @@ struct RoomScanView: View {
                         onFinish(nil)
                     }
                     .buttonStyle(.bordered)
+                    .disabled(saving)
 
                     Spacer()
 
@@ -48,18 +70,20 @@ struct RoomScanView: View {
             }
             .padding()
         }
-        .statusBarHidden()
     }
 
     private func save() {
+        guard !saving else { return }
         saving = true
         saveError = nil
-        do {
-            let id = try controller.save(store: store)
-            onFinish(id)
-        } catch {
-            saveError = error.localizedDescription
-            saving = false
+        Task { @MainActor in
+            do {
+                let id = try await controller.save(store: store)
+                onFinish(id)
+            } catch {
+                saveError = ScanError.message(for: error)
+                saving = false
+            }
         }
     }
 }
@@ -87,6 +111,7 @@ final class RoomScanController {
         let delegate = RoomDelegate()
         delegate.controller = self
         view.delegate = delegate
+        view.captureSession.delegate = delegate
         self.delegate = delegate
         captureView = view
         view.captureSession.run(configuration: RoomCaptureSession.Configuration())
@@ -105,6 +130,12 @@ final class RoomScanController {
         }
     }
 
+    /// The AR session stopped on its own (not from Done scanning).
+    fileprivate func sessionEnded(with error: Error) {
+        guard phase == .scanning else { return }
+        errorText = "Scanning stopped: \(ScanError.message(for: error))"
+    }
+
     fileprivate func received(_ room: CapturedRoom, error: Error?) {
         if let error {
             errorText = error.localizedDescription
@@ -113,35 +144,43 @@ final class RoomScanController {
         phase = .review
     }
 
-    func save(store: ScanStore) throws -> UUID {
+    func save(store: ScanStore) async throws -> UUID {
         guard let room = result else { throw ScanError.noData }
         let folder = try store.newFolder(kind: .room)
+        do {
+            // Export off the main thread so the screen keeps showing "Saving…".
+            let summary = try await Task.detached(priority: .userInitiated) { () -> [String] in
+                // USDZ file names must not start with a digit (USD prim naming rule).
+                try room.export(to: folder.url.appendingPathComponent("Room.usdz"), exportOptions: .parametric)
+                try? room.export(to: folder.url.appendingPathComponent("RoomMesh.usdz"), exportOptions: .mesh)
 
-        // USDZ file names must not start with a digit (USD prim naming rule).
-        try room.export(to: folder.url.appendingPathComponent("Room.usdz"), exportOptions: .parametric)
-        try? room.export(to: folder.url.appendingPathComponent("RoomMesh.usdz"), exportOptions: .mesh)
+                let json = try JSONEncoder.pretty.encode(room)
+                try json.write(to: folder.url.appendingPathComponent("CapturedRoom.json"), options: .atomic)
 
-        let json = try JSONEncoder.pretty.encode(room)
-        try json.write(to: folder.url.appendingPathComponent("CapturedRoom.json"), options: .atomic)
+                let report = RoomReport(room: room)
+                try report.csv.write(to: folder.url.appendingPathComponent("RoomReport.csv"),
+                                     atomically: true, encoding: .utf8)
+                return report.summaryLines
+            }.value
 
-        let report = RoomReport(room: room)
-        try report.csv.write(to: folder.url.appendingPathComponent("RoomReport.csv"),
-                             atomically: true, encoding: .utf8)
-
-        let record = ScanRecord(id: UUID(),
-                                kind: .room,
-                                name: "Room " + Date().formatted(date: .abbreviated, time: .shortened),
-                                created: Date(),
-                                folderName: folder.name,
-                                primaryModel: "Room.usdz",
-                                summary: report.summaryLines)
-        try store.save(record)
-        return record.id
+            let record = ScanRecord(id: UUID(),
+                                    kind: .room,
+                                    name: "Room " + Date().formatted(date: .abbreviated, time: .shortened),
+                                    created: Date(),
+                                    folderName: folder.name,
+                                    primaryModel: "Room.usdz",
+                                    summary: summary)
+            try store.save(record)
+            return record.id
+        } catch {
+            store.discard(folderName: folder.name)
+            throw error
+        }
     }
 }
 
 /// RoomCaptureViewDelegate inherits NSCoding, so it lives in its own NSObject class.
-final class RoomDelegate: NSObject, RoomCaptureViewDelegate {
+final class RoomDelegate: NSObject, RoomCaptureViewDelegate, RoomCaptureSessionDelegate {
     weak var controller: RoomScanController?
 
     override init() {
@@ -156,6 +195,13 @@ final class RoomDelegate: NSObject, RoomCaptureViewDelegate {
 
     func captureView(shouldPresent roomDataForProcessing: CapturedRoomData, error: Error?) -> Bool {
         true
+    }
+
+    func captureSession(_ session: RoomCaptureSession, didEndWith data: CapturedRoomData, error: Error?) {
+        guard let error else { return }
+        Task { @MainActor [weak self] in
+            self?.controller?.sessionEnded(with: error)
+        }
     }
 
     func captureView(didPresent processedResult: CapturedRoom, error: Error?) {
@@ -173,4 +219,8 @@ struct RoomCaptureContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: RoomCaptureView, context: Context) {}
+
+    static func dismantleUIView(_ uiView: RoomCaptureView, coordinator: ()) {
+        uiView.captureSession.stop()
+    }
 }

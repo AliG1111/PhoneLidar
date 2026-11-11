@@ -195,13 +195,25 @@ final class TopoReplayScene {
 
     // MARK: Strip
 
-    /// Replaces the surface with columns jLo…jHi of the display grid. `offset` is the x position (m) of the
-    /// centre of column jLo in the window.
-    func setStrip(values: [Float], rows: Int, columns: Int, jLo: Int, jHi: Int, offset: Float) {
+    /// Reused between strip rebuilds (the strip is rebuilt at every new display column while playing).
+    private var heights: [Float] = []
+    private var valid: [Bool] = []
+    private var surfaceColors: [SIMD4<Float>] = []
+    private var colors: [SIMD4<Float>] = []
+    private var positions: [SCNVector3] = []
+    private var normals: [SCNVector3] = []
+    private var indices: [UInt32] = []
+
+    /// Replaces the surface. `values` is rows × columns (row-major; row 0 = back edge, column 0 = oldest),
+    /// `rowCenters` the centre of each row in mm from the back edge, `blockLength` the column spacing in m and
+    /// `offset` the x position (m) of the centre of column 0 in the window. Empty `values` removes the surface.
+    func setStrip(values: [Float], rows: Int, columns: Int, rowCenters: [Double], blockLength: Float,
+                  offset: Float) {
         guard let l = layout else { return }
         strip.simdPosition = SIMD3<Float>(offset, 0, 0)
         let geometry = values.withUnsafeBufferPointer { buffer in
-            Self.makeStrip(values: buffer, rows: rows, columns: columns, jLo: jLo, jHi: jHi, layout: l)
+            makeStrip(values: buffer, rows: rows, columns: columns, rowCenters: rowCenters,
+                      blockLength: blockLength, layout: l)
         }
         if let geometry {
             surfaceMaterial.lightingModel = l.flat ? .constant : .lambert
@@ -214,28 +226,32 @@ final class TopoReplayScene {
         strip.simdPosition = SIMD3<Float>(offset, 0, 0)
     }
 
-    private static func makeStrip(values: UnsafeBufferPointer<Float>, rows: Int, columns: Int,
-                                  jLo: Int, jHi: Int, layout l: Layout) -> SCNGeometry? {
-        let nc = jHi - jLo + 1
+    private func makeStrip(values: UnsafeBufferPointer<Float>, rows: Int, columns: Int, rowCenters: [Double],
+                           blockLength: Float, layout l: Layout) -> SCNGeometry? {
+        let nc = columns
         let nr = rows
-        guard nc >= 2, nr >= 2, jLo >= 0, jHi < columns, values.count >= rows * columns else { return nil }
-        let dz = l.width / Float(nr)
-        let dx = dz
+        guard nc >= 2, nr >= 2, values.count >= rows * columns, rowCenters.count >= nr, blockLength > 0 else {
+            return nil
+        }
+        let dx = blockLength
         let span = max(l.top - l.base, 1e-6)
         let colorSpan = max(l.colorHigh - l.colorLow, 1e-6)
         let lut = ReplayPalette.lut
+        let count = nr * nc
+        let wallVertices = l.flat ? 0 : 2 * (2 * nc + 2 * nr)
 
-        var heights = [Float](repeating: 0, count: nr * nc)
-        var colors = [SIMD4<Float>]()
-        let wallVertices = l.flat ? 0 : 2 * (nc + 2 * nr)
-        colors.reserveCapacity(nr * nc + wallVertices)
-        var surfaceColors = [SIMD4<Float>](repeating: ReplayPalette.noData, count: nr * nc)
+        heights.removeAll(keepingCapacity: true)
+        heights.append(contentsOf: repeatElement(0, count: count))
+        valid.removeAll(keepingCapacity: true)
+        valid.append(contentsOf: repeatElement(false, count: count))
+        surfaceColors.removeAll(keepingCapacity: true)
+        surfaceColors.append(contentsOf: repeatElement(ReplayPalette.noData, count: count))
         for jj in 0..<nc {
-            let j = jLo + jj
             for i in 0..<nr {
-                let v = values[i * columns + j]
+                let v = values[i * columns + jj]
                 let k = jj * nr + i
                 if v.isFinite {
+                    valid[k] = true
                     heights[k] = l.flat ? 0 : l.height * min(max((v - l.base) / span, 0), 1.25)
                     let t = min(max((v - l.colorLow) / colorSpan, 0), 1)
                     surfaceColors[k] = lut[Int(t * 255)]
@@ -243,14 +259,16 @@ final class TopoReplayScene {
             }
         }
 
-        var positions = [SCNVector3]()
-        var normals = [SCNVector3]()
-        positions.reserveCapacity(nr * nc + wallVertices)
-        normals.reserveCapacity(nr * nc + wallVertices)
-        var indices = [UInt32]()
-        indices.reserveCapacity((nc - 1) * (nr - 1) * 6 + (l.flat ? 0 : 6 * (nc + 2 * nr)))
+        positions.removeAll(keepingCapacity: true)
+        normals.removeAll(keepingCapacity: true)
+        colors.removeAll(keepingCapacity: true)
+        indices.removeAll(keepingCapacity: true)
+        positions.reserveCapacity(count + wallVertices)
+        normals.reserveCapacity(count + wallVertices)
+        colors.reserveCapacity(count + wallVertices)
+        indices.reserveCapacity((nc - 1) * (nr - 1) * 6 + (l.flat ? 0 : 3 * wallVertices))
 
-        func z(_ i: Int) -> Float { -l.width / 2 + (Float(i) + 0.5) * dz }
+        let z = rowCenters.prefix(nr).map { Float($0 / 1000) - l.width / 2 }
 
         for jj in 0..<nc {
             let x = Float(jj) * dx
@@ -258,32 +276,43 @@ final class TopoReplayScene {
             let jr = min(jj + 1, nc - 1)
             for i in 0..<nr {
                 let k = jj * nr + i
-                positions.append(SCNVector3(x, heights[k], z(i)))
+                positions.append(SCNVector3(x, heights[k], z[i]))
                 if l.flat {
                     normals.append(SCNVector3(0, 1, 0))
                 } else {
                     let ib = max(i - 1, 0)
                     let iff = min(i + 1, nr - 1)
-                    let ddx = (heights[jr * nr + i] - heights[jl * nr + i]) / (Float(jr - jl) * dx)
-                    let ddz = (heights[jj * nr + iff] - heights[jj * nr + ib]) / (Float(iff - ib) * dz)
+                    // Neighbours without data count as level with this block (no slope towards a hole).
+                    func h(_ index: Int) -> Float { valid[index] ? heights[index] : heights[k] }
+                    let ddx = (h(jr * nr + i) - h(jl * nr + i)) / (Float(jr - jl) * dx)
+                    let ddz = (h(jj * nr + iff) - h(jj * nr + ib)) / max(z[iff] - z[ib], 1e-6)
                     let n = simd_normalize(SIMD3<Float>(-ddx, 1, -ddz))
                     normals.append(SCNVector3(n.x, n.y, n.z))
                 }
             }
         }
         colors.append(contentsOf: surfaceColors)
+        // In 3D, triangles touching a block without data are left out, so the tolerance planes show through
+        // there (no data yet); the flat map draws them grey.
+        let skipEmpty = !l.flat
         for jj in 0..<(nc - 1) {
             for i in 0..<(nr - 1) {
-                let a = UInt32(jj * nr + i)
+                let a = jj * nr + i
                 let b = a + 1
-                let c = UInt32((jj + 1) * nr + i)
+                let c = (jj + 1) * nr + i
                 let d = c + 1
-                indices.append(contentsOf: [a, b, c, c, b, d])
+                if !skipEmpty || (valid[a] && valid[b] && valid[c]) {
+                    indices.append(contentsOf: [UInt32(a), UInt32(b), UInt32(c)])
+                }
+                if !skipEmpty || (valid[c] && valid[b] && valid[d]) {
+                    indices.append(contentsOf: [UInt32(c), UInt32(b), UInt32(d)])
+                }
             }
         }
 
         if !l.flat {
-            // Walls from the surface edge down to the base, coloured like the edge (vertical stripes).
+            // Walls from the surface edge down to the base, coloured like the edge (vertical stripes); no wall
+            // under blocks without data.
             func wall(_ count: Int, normal: SIMD3<Float>, vertex: (Int) -> Int) {
                 let start = UInt32(positions.count)
                 let n = SCNVector3(normal.x, normal.y, normal.z)
@@ -297,7 +326,7 @@ final class TopoReplayScene {
                     colors.append(shade)
                     colors.append(shade)
                 }
-                for m in 0..<(count - 1) {
+                for m in 0..<(count - 1) where valid[vertex(m)] && valid[vertex(m + 1)] {
                     let a = start + UInt32(2 * m)
                     indices.append(contentsOf: [a, a + 1, a + 2, a + 2, a + 1, a + 3])
                 }
@@ -307,6 +336,7 @@ final class TopoReplayScene {
             wall(nr, normal: SIMD3<Float>(-1, 0, 0)) { $0 }                        // oldest end
             wall(nc, normal: SIMD3<Float>(0, 0, -1)) { $0 * nr }                   // back
         }
+        guard !indices.isEmpty else { return nil }
 
         let colorData = colors.withUnsafeBufferPointer { Data(buffer: $0) }
         let sources = [

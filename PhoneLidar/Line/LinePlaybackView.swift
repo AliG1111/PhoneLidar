@@ -23,15 +23,27 @@ struct LinePlaybackView: View {
         }
         .navigationTitle("Playback")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            guard model == nil else { return }
-            do {
-                model = try PlaybackModel(folder: folder)
-            } catch {
-                loadError = error.localizedDescription
-            }
+        .task { await load() }
+        .onAppear { model?.activate() }
+        .onDisappear { model?.deactivate() }
+    }
+
+    /// Reads the recording and prepares the speed series off the main thread.
+    private func load() async {
+        guard model == nil, loadError == nil else { return }
+        let folder = self.folder
+        let result = await Task.detached(priority: .userInitiated) {
+            Result { try PlaybackModel.prepare(folder: folder) }
+        }.value
+        guard !Task.isCancelled else { return }
+        switch result {
+        case .success(let setup):
+            let playback = PlaybackModel(setup: setup)
+            model = playback
+            playback.activate()
+        case .failure(let error):
+            loadError = error.localizedDescription
         }
-        .onDisappear { model?.pause() }
     }
 }
 
@@ -41,6 +53,13 @@ private struct PlaybackContent: View {
     var body: some View {
         VStack(spacing: 6) {
             speedStrip
+
+            if let notice = model.videoNotice {
+                Label(notice, systemImage: "video.slash")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             // Playback picture. Nothing is drawn over it except the crosshair, so every part of it can be
             // touched; touches in the black bars around the picture snap to its nearest edge.
@@ -291,7 +310,7 @@ private struct PlaybackContent: View {
             }
             HStack(spacing: 10) {
                 Picker("View", selection: $model.mode) {
-                    ForEach(PlaybackModel.Mode.allCases) { mode in
+                    ForEach(model.availableModes) { mode in
                         Text(mode.rawValue).tag(mode)
                     }
                 }
@@ -377,6 +396,20 @@ struct ProbeStats {
 
 // MARK: - Model
 
+/// Everything playback needs from the recording folder, read off the main thread.
+struct PlaybackSetup {
+    let info: LineRecordingInfo
+    let reader: DepthFileReader?
+    let baseline: Baseline?
+    /// nil when the recording has no Video.mov.
+    let videoURL: URL?
+    let smoothed: [Double?]
+    let graphPoints: [CGPoint]
+    let zoneSmoothed: [[Double?]]
+    let speedMax: Double?
+    let colorRange: ClosedRange<Float>?
+}
+
 @MainActor
 @Observable
 final class PlaybackModel {
@@ -422,8 +455,19 @@ final class PlaybackModel {
     var probeCurrentDistance: Float?
     var probeStats: ProbeStats?
     var probeComputing = false
+    /// Shown when there is no playable video; playback then runs on its own clock over the frame times.
+    var videoNotice: String?
 
     @ObservationIgnored private let reader: DepthFileReader?
+    /// False when there is no Video.mov or it failed: only the Depth view is offered.
+    private(set) var videoAvailable: Bool
+    /// Where Video.mov ends (s), once known. The video can be shorter than the frames (a recovered recording
+    /// keeps only complete 5 s fragments); from here on playback runs on the frame-time clock.
+    @ObservationIgnored private var videoEnd: Double?
+    @ObservationIgnored private var statusObservation: NSKeyValueObservation?
+    @ObservationIgnored private var failObserver: NSObjectProtocol?
+    @ObservationIgnored private var clockLink: CADisplayLink?
+    @ObservationIgnored private var clockTimestamp: CFTimeInterval?
     @ObservationIgnored private let baseline: Baseline?
     @ObservationIgnored private let smoothed: [Double?]
     @ObservationIgnored private var timeObserver: Any?
@@ -434,35 +478,34 @@ final class PlaybackModel {
     /// Per frame: smoothed speed of every zone.
     @ObservationIgnored private let zoneSmoothed: [[Double?]]
 
+    /// View modes that can be shown: Camera and Blend need a playable video.
+    var availableModes: [Mode] { videoAvailable ? Mode.allCases : [.depth] }
+
     /// Width ÷ height of the portrait picture (the depth map is landscape, shown rotated).
     var displayAspect: CGFloat {
         CGFloat(max(info.depthHeight, 1)) / CGFloat(max(info.depthWidth, 1))
     }
 
-    init(folder: URL) throws {
-        let data = try Data(contentsOf: folder.appendingPathComponent("Recording.json"))
-        let info = try JSONDecoder.iso.decode(LineRecordingInfo.self, from: data)
-        self.info = info
-        reader = try? DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
+    /// Reads Recording.json, Depth.bin, the baseline and the map colour range and smooths the speeds.
+    nonisolated static func prepare(folder: URL) throws -> PlaybackSetup {
+        // Repairs a Recording.json that was cut short, as Line scan does after recording. The repair is noted
+        // in the file itself, so a later Rebuild map still adds the "last frames may be missing" note (G-5).
+        let info = try LineRecordingRepair.loadInfo(folder: folder).info
+        let reader = try? DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
         let savedBaseline = Baseline.load(from: folder)
-        baseline = savedBaseline?.matches(width: info.depthWidth, height: info.depthHeight) == true ? savedBaseline : nil
-        heightMode = baseline != nil
-        let item = AVPlayerItem(url: folder.appendingPathComponent("Video.mov"))
-        player = AVPlayer(playerItem: item)
-        duration = max(info.frames.last?.time ?? 0, 0.01)
+        let baseline = savedBaseline?.matches(width: info.depthWidth, height: info.depthHeight) == true
+            ? savedBaseline : nil
+        let heightMode = baseline != nil
+        let videoURL = folder.appendingPathComponent("Video.mov")
 
         let smooth = LineMath.smoothed(info.frames.map(\.speed), radius: 7)
-        smoothed = smooth
         var points: [CGPoint] = []
         for (i, frame) in info.frames.enumerated() {
             if let v = smooth[i] { points.append(CGPoint(x: frame.time, y: v)) }
         }
-        graphPoints = points
 
         let columns = info.tileColumns ?? 0
         let rows = info.tileRows ?? 0
-        zoneColumns = columns
-        zoneRows = rows
         var perFrame = [[Double?]](repeating: [], count: info.frames.count)
         if columns > 0, rows > 0 {
             let zones = columns * rows
@@ -477,12 +520,7 @@ final class PlaybackModel {
                 perFrame[f] = (0..<zones).map { smoothedZones[$0][f] }
             }
         }
-        zoneSmoothed = perFrame
-        if let top = points.map({ Double($0.y) }).max() {
-            speedMax = max(top * 1.1, 1)
-        } else {
-            speedMax = nil
-        }
+        let speedMax = points.map { Double($0.y) }.max().map { max($0 * 1.1, 1) }
 
         var range: ClosedRange<Float>?
         if let statsData = try? Data(contentsOf: folder.appendingPathComponent("TopoStats.json")),
@@ -494,21 +532,191 @@ final class PlaybackModel {
                 range = Float(stats.colorNear)...Float(stats.colorFar)       // near … far
             }
         }
-        colorRange = range
+        return PlaybackSetup(info: info, reader: reader, baseline: baseline,
+                             videoURL: FileManager.default.fileExists(atPath: videoURL.path) ? videoURL : nil,
+                             smoothed: smooth, graphPoints: points, zoneSmoothed: perFrame, speedMax: speedMax,
+                             colorRange: range)
+    }
 
-        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) {
-            [weak self] time in
-            MainActor.assumeIsolated {
-                self?.tick(time.seconds)
-            }
+    init(setup: PlaybackSetup) {
+        let info = setup.info
+        self.info = info
+        reader = setup.reader
+        baseline = setup.baseline
+        heightMode = setup.baseline != nil
+        if let url = setup.videoURL {
+            player = AVPlayer(playerItem: AVPlayerItem(url: url))
+            videoAvailable = true
+        } else {
+            player = AVPlayer()
+            videoAvailable = false
         }
-        endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification,
-                                                             object: item, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.isPlaying = false
-            }
+        duration = max(info.frames.last?.time ?? 0, 0.01)
+        smoothed = setup.smoothed
+        graphPoints = setup.graphPoints
+        zoneColumns = info.tileColumns ?? 0
+        zoneRows = info.tileRows ?? 0
+        zoneSmoothed = setup.zoneSmoothed
+        speedMax = setup.speedMax
+        colorRange = setup.colorRange
+        if !videoAvailable {
+            videoNotice = "No Video.mov in this recording: playing the depth frames only."
+            mode = .depth
         }
         render(at: 0)
+    }
+
+    /// Starts watching the player (call when the screen appears). Safe to call more than once.
+    func activate() {
+        if timeObserver == nil {
+            timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30),
+                                                          queue: .main) { [weak self] time in
+                MainActor.assumeIsolated {
+                    self?.tick(time.seconds)
+                }
+            }
+        }
+        guard let item = player.currentItem else { return }
+        if endObserver == nil {
+            endObserver = NotificationCenter.default.addObserver(
+                forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.videoReachedEnd()
+                }
+            }
+        }
+        if failObserver == nil {
+            failObserver = NotificationCenter.default.addObserver(
+                forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.videoFailed("playback stopped with an error")
+                }
+            }
+        }
+        if statusObservation == nil {
+            statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+                switch item.status {
+                case .readyToPlay:
+                    let seconds = item.duration.seconds
+                    guard seconds.isFinite, seconds > 0 else { return }
+                    Task { @MainActor [weak self] in
+                        self?.setVideoEnd(seconds)
+                    }
+                case .failed:
+                    let reason = item.error?.localizedDescription ?? "unknown error"
+                    Task { @MainActor [weak self] in
+                        self?.videoFailed(reason)
+                    }
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    /// Pauses and removes every observer (call when the screen goes away).
+    func deactivate() {
+        pause()
+        if let timeObserver {
+            player.removeTimeObserver(timeObserver)
+            self.timeObserver = nil
+        }
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+            self.endObserver = nil
+        }
+        if let failObserver {
+            NotificationCenter.default.removeObserver(failObserver)
+            self.failObserver = nil
+        }
+        statusObservation?.invalidate()
+        statusObservation = nil
+    }
+
+    /// The video cannot be played: carry on with the depth frames on the frame-time clock.
+    private func videoFailed(_ reason: String) {
+        guard videoAvailable else { return }
+        videoAvailable = false
+        player.pause()
+        videoNotice = "Video.mov could not be played (\(reason)): playing the depth frames only."
+        mode = .depth
+        if isPlaying { startClock() }
+    }
+
+    private func setVideoEnd(_ seconds: Double) {
+        guard videoAvailable, seconds.isFinite, seconds > 0 else { return }
+        videoEnd = min(videoEnd ?? seconds, seconds)
+    }
+
+    /// Video.mov played to its end. If frames remain (the video is shorter than the recording), the rest plays
+    /// on the frame-time clock, as without a video; otherwise playback stops.
+    private func videoReachedEnd() {
+        guard videoAvailable else { return }
+        let end = player.currentTime().seconds
+        if end.isFinite, end > 0 { setVideoEnd(end) }
+        if let videoEnd, videoEnd < duration - Self.endTolerance {
+            currentTime = min(max(currentTime, videoEnd), duration)
+            render(at: currentTime)
+            if isPlaying { startClock() }
+        } else {
+            isPlaying = false
+        }
+    }
+
+    /// Positions closer than this to the end of the video or recording count as the end (s).
+    private static let endTolerance = 0.05
+
+    /// True when the frame-time clock drives playback at `time`: no playable video, or past its end.
+    private func usesClock(at time: Double) -> Bool {
+        guard videoAvailable else { return true }
+        guard let videoEnd else { return false }
+        return time >= videoEnd - Self.endTolerance && videoEnd < duration - Self.endTolerance
+    }
+
+    /// Runs playback from the video while the position is inside it, otherwise from the frame-time clock.
+    private func startOutput() {
+        if usesClock(at: currentTime) {
+            player.pause()
+            startClock()
+        } else {
+            stopClock()
+            if player.rate == 0 { player.playImmediately(atRate: rate) }
+        }
+    }
+
+    // MARK: Clock (no video)
+
+    private func startClock() {
+        guard clockLink == nil else { return }
+        clockTimestamp = nil
+        clockLink = DisplayLinkProxy.makeLink(preferred: 30) { [weak self] link in
+            guard let self, self.isPlaying, self.usesClock(at: self.currentTime) else {
+                self?.clockLink = nil
+                return false
+            }
+            self.clockTick(link.timestamp)
+            return true
+        }
+    }
+
+    private func stopClock() {
+        clockLink?.invalidate()
+        clockLink = nil
+        clockTimestamp = nil
+    }
+
+    private func clockTick(_ now: CFTimeInterval) {
+        defer { clockTimestamp = now }
+        guard let last = clockTimestamp else { return }
+        let dt = min(max(now - last, 0), 0.1)
+        var t = currentTime + dt * Double(rate)
+        if t >= duration {
+            t = duration
+            isPlaying = false
+            stopClock()
+        }
+        currentTime = t
+        render(at: t)
     }
 
     // MARK: Transport
@@ -517,31 +725,41 @@ final class PlaybackModel {
         if isPlaying {
             pause()
         } else {
-            if currentTime >= duration - 0.05 { seek(to: 0) }
-            player.playImmediately(atRate: rate)
+            if currentTime >= duration - Self.endTolerance { seek(to: 0) }
             isPlaying = true
+            startOutput()
         }
     }
 
     func pause() {
         player.pause()
+        stopClock()
         isPlaying = false
     }
 
     func setRate(_ newRate: Float) {
         rate = newRate
-        if isPlaying { player.rate = newRate }
+        if isPlaying && !usesClock(at: currentTime) { player.rate = newRate }
     }
 
     func seek(to time: Double) {
         let t = min(max(time, 0), duration)
         currentTime = t
-        player.seek(to: CMTime(seconds: t, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        if videoAvailable {
+            // Past the end of a short video the player rests on its last picture.
+            let videoTime = videoEnd.map { min(t, $0) } ?? t
+            player.seek(to: CMTime(seconds: videoTime, preferredTimescale: 600), toleranceBefore: .zero,
+                        toleranceAfter: .zero)
+        }
         render(at: t)
+        if isPlaying { startOutput() }
     }
 
     private func tick(_ seconds: Double) {
-        guard seconds.isFinite else { return }
+        guard videoAvailable, seconds.isFinite else { return }
+        // Past the end of a short video the clock (or a seek) owns the position; the player only reports
+        // its last picture there.
+        if usesClock(at: currentTime) { return }
         currentTime = min(max(seconds, 0), duration)
         render(at: currentTime)
     }

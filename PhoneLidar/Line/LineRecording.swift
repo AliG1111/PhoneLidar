@@ -9,6 +9,7 @@ enum LineError: LocalizedError {
     case configuration(String)
     case badFile
     case notEnoughData
+    case writeFailed
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +17,7 @@ enum LineError: LocalizedError {
         case .configuration(let message): return message
         case .badFile: return "The recording file is damaged or incomplete."
         case .notEnoughData: return "Not enough frames were recorded to build a map."
+        case .writeFailed: return "An earlier write to this file failed."
         }
     }
 }
@@ -75,20 +77,121 @@ struct LineRecordingInfo: Codable {
     /// Zone grid of the per-frame local speeds: columns across the material, rows along the travel.
     var tileColumns: Int? = nil
     var tileRows: Int? = nil
+    /// True when the file was rebuilt from a cut-off Recording.json (`LineRecordingRepair`): the last frames
+    /// may be missing. Absent (nil) in files that never needed a repair; older builds ignore the key.
+    var repaired: Bool? = nil
+}
+
+extension LineRecordingInfo {
+    /// First line of a line scan's summary for this recording: frames and duration as stored in Recording.json.
+    var summaryLine: String {
+        Self.summaryLine(frames: frames.count, duration: frames.last?.time ?? 0, direction: direction)
+    }
+
+    /// "120 frames, 4.0 s, material travel Right → Left".
+    static func summaryLine(frames: Int, duration: Double, direction: TravelDirection) -> String {
+        String(format: "%ld frames, %.1f s, material travel %@", frames, duration, direction.label)
+    }
+
+    /// True for a line made by `summaryLine` (any counts, either direction).
+    static func isSummaryLine(_ line: String) -> Bool {
+        guard let head = line.range(of: "^[0-9]+ frames, -?[0-9]+\\.[0-9] s, material travel ",
+                                    options: .regularExpression) else { return false }
+        let label = line[head.upperBound...]
+        return TravelDirection.allCases.contains { $0.label == label }
+    }
+}
+
+extension LineFrameInfo {
+    /// The same frame with every non-finite number removed: Recording.json and the CSV files never get NaN or inf.
+    func sanitized() -> LineFrameInfo {
+        func finiteOrNil(_ v: Double?) -> Double? { v.flatMap { $0.isFinite ? $0 : nil } }
+        func number(_ v: Double) -> Double { v.isFinite ? v : 0 }
+        func single(_ v: Float) -> Float { v.isFinite ? v : 0 }
+        var f = self
+        f.time = number(time)
+        f.speed = finiteOrNil(speed)
+        f.travel = number(travel)
+        f.shiftPixels = finiteOrNil(shiftPixels)
+        f.crossShiftPixels = finiteOrNil(crossShiftPixels)
+        f.quality = number(quality)
+        f.medianDepth = number(medianDepth)
+        f.fx = single(fx)
+        f.fy = single(fy)
+        f.cx = single(cx)
+        f.cy = single(cy)
+        f.tiltX = finiteOrNil(tiltX)
+        f.tiltY = finiteOrNil(tiltY)
+        f.surfaceTiltX = finiteOrNil(surfaceTiltX)
+        f.surfaceTiltY = finiteOrNil(surfaceTiltY)
+        f.tileSpeeds = tileSpeeds.map { speeds in speeds.map { finiteOrNil($0) } }
+        f.fastestSpeed = finiteOrNil(fastestSpeed)
+        if f.fastestSpeed == nil { f.fastestTile = nil }
+        return f
+    }
+}
+
+/// Recording.json without the frame list: the same keys as LineRecordingInfo, written first.
+struct LineRecordingHeader: Encodable {
+    var depthWidth: Int
+    var depthHeight: Int
+    var videoWidth: Int
+    var videoHeight: Int
+    var filteredDepth: Bool
+    var shortShutter: Bool
+    var direction: TravelDirection
+    var tileColumns: Int
+    var tileRows: Int
+}
+
+/// What a finished recording produced, for the scan summary.
+struct LineRecordingResult: Sendable {
+    var folder: URL
+    /// Frames and duration handed to the files (`LineRecorder.frameCount`/`elapsed`); the summary line is replaced
+    /// by the counts read back from Recording.json once the map step has read it (Z-3).
+    var frameCount: Int
+    var duration: Double
+    var direction: TravelDirection
+    /// Problems that did not stop the recording (video incomplete, a CSV file cut short, …), one line each.
+    var notes: [String]
+}
+
+/// Free storage checks for recordings (~3–4 MB/s: HEVC video ≈ 2 MB/s plus compressed depth).
+enum LineStorage {
+    /// Recording does not start with less free space than this.
+    static let minimumToStart: Int64 = 1_000_000_000
+    /// A recording is stopped and saved when free space drops below this, leaving room to finish the files.
+    static let stopBelow: Int64 = 300_000_000
+
+    /// Free space for important data on the volume holding `url`, bytes (nil if unknown).
+    static func freeBytes(at url: URL) -> Int64? {
+        let fresh = URL(fileURLWithPath: url.path)     // new URL: resource values are cached per URL object
+        guard let values = try? fresh.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]) else {
+            return nil
+        }
+        return values.volumeAvailableCapacityForImportantUsage
+    }
+
+    /// "850 MB" or "1.0 GB".
+    static func text(_ bytes: Int64) -> String {
+        bytes >= 1_000_000_000
+            ? String(format: "%.1f GB", Double(bytes) / 1e9)
+            : String(format: "%.0f MB", Double(max(bytes, 0)) / 1e6)
+    }
 }
 
 // MARK: - Speed text
 
 enum SpeedText {
+    /// "612 mm/s" or "— mm/s".
     static func main(_ mmPerSecond: Double?) -> String {
         guard let v = mmPerSecond else { return "— mm/s" }
         return String(format: "%.0f mm/s", v)
     }
 
-    /// "612 mm/s" or "— mm/s".
+    /// Text for secondary speed labels (fastest zone, probe); currently the same as `main`.
     static func short(_ mmPerSecond: Double?) -> String {
-        guard let v = mmPerSecond else { return "— mm/s" }
-        return String(format: "%.0f mm/s", v)
+        main(mmPerSecond)
     }
 
     static func perMinute(_ mmPerSecond: Double?) -> String {
@@ -184,33 +287,89 @@ extension Data {
 }
 
 /// Buffered line-by-line text file writer (for large CSV files).
+/// After the first failed write nothing more is written, so a file is never left with a repeated fragment.
 final class TextFileWriter {
     private let handle: FileHandle
+    private let flushBytes: Int
     private var buffer = ""
     private var pending = 0
+    private var closed = false
+    private(set) var failed = false
 
-    init(url: URL) throws {
+    init(url: URL, flushBytes: Int = 1_000_000) throws {
         FileManager.default.createFile(atPath: url.path, contents: nil)
         handle = try FileHandle(forWritingTo: url)
+        self.flushBytes = flushBytes
     }
 
     func line(_ text: String) throws {
+        guard !failed, !closed else { throw LineError.writeFailed }
         buffer += text
         buffer += "\n"
         pending += text.utf8.count + 1
-        if pending > 1_000_000 { try flush() }
+        if pending > flushBytes { try flush() }
     }
 
     func flush() throws {
-        guard !buffer.isEmpty else { return }
-        try handle.write(contentsOf: Data(buffer.utf8))
+        guard !failed else { throw LineError.writeFailed }
+        guard !buffer.isEmpty, !closed else { return }
+        let data = Data(buffer.utf8)
         buffer = ""
         pending = 0
+        do {
+            try handle.write(contentsOf: data)
+        } catch {
+            failed = true
+            throw error
+        }
     }
 
     func close() throws {
-        try flush()
+        guard !closed else { return }
+        do {
+            try flush()
+        } catch {
+            closed = true
+            try? handle.close()
+            throw error
+        }
+        closed = true
         try handle.close()
+    }
+}
+
+/// Writes Recording.json while recording: the header and `"frames":[` on the first line, then one frame per
+/// line, and `]}` when closed. Per-frame data is never held in memory, and a file cut off by a crash can be
+/// repaired by dropping its incomplete last line (LineRecordingRepair). Readable by the normal decoder.
+final class RecordingJSONWriter {
+    private let file: TextFileWriter
+    private let encoder = JSONEncoder()
+    private var count = 0
+
+    init(url: URL, header: LineRecordingHeader) throws {
+        file = try TextFileWriter(url: url, flushBytes: 64_000)
+        var text = String(decoding: try encoder.encode(header), as: UTF8.self)
+        guard text.hasSuffix("}") else { throw LineError.badFile }
+        text.removeLast()
+        try file.line(text + ",\"frames\":[")
+        try file.flush()      // header on disk at once, so even a very short cut-off recording can be repaired
+    }
+
+    /// `frame` must already be sanitized (the encoder refuses NaN and inf).
+    func append(_ frame: LineFrameInfo) throws {
+        let json = String(decoding: try encoder.encode(frame), as: UTF8.self)
+        try file.line(count == 0 ? json : "," + json)
+        count += 1
+    }
+
+    func close() throws {
+        do {
+            try file.line("]}")
+        } catch {
+            try? file.close()
+            throw error
+        }
+        try file.close()
     }
 }
 
@@ -237,7 +396,9 @@ final class DepthFileWriter {
         try handle.write(contentsOf: header)
     }
 
-    /// `millimetres` is row-major, width × height, 0 = no data.
+    /// `millimetres` is row-major, width × height, 0 = no data. Missing values at the end (a short array)
+    /// are written as no data. Callers stop appending after an error (a cut-off last record is ignored by
+    /// DepthFileReader).
     func append(millimetres: [Float]) throws {
         let count = min(millimetres.count, scratch.count)
         for i in 0..<count {
@@ -247,6 +408,10 @@ final class DepthFileWriter {
             } else {
                 scratch[i] = 0
             }
+        }
+        // Never repeat the previous frame's values in the part this frame did not supply.
+        for i in count..<scratch.count {
+            scratch[i] = 0
         }
         let raw = scratch.withUnsafeBytes { Data($0) }
         let compressed = try (raw as NSData).compressed(using: .lzfse) as Data
@@ -263,11 +428,17 @@ final class DepthFileWriter {
 
 /// Reads Depth.bin. Immutable after init, so frames can be read from several threads at once.
 final class DepthFileReader: @unchecked Sendable {
+    /// Largest width or height accepted from a header (LiDAR depth maps are a few hundred pixels);
+    /// a damaged header beyond this is refused instead of allocating or overflowing.
+    static let maxDimension = 8192
+
     let width: Int
     let height: Int
     private let data: Data
     private let offsets: [Int]
     private let lengths: [Int]
+    /// Bytes of one decompressed frame (width × height UInt16), checked for overflow at init.
+    private let frameBytes: Int
 
     init(url: URL) throws {
         data = try Data(contentsOf: url, options: .alwaysMapped)
@@ -276,7 +447,13 @@ final class DepthFileReader: @unchecked Sendable {
         }
         width = Int(data.readUInt32(at: 8))
         height = Int(data.readUInt32(at: 12))
-        guard width > 0, height > 0 else { throw LineError.badFile }
+        guard width > 0, height > 0, width <= Self.maxDimension, height <= Self.maxDimension else {
+            throw LineError.badFile
+        }
+        let pixels = width.multipliedReportingOverflow(by: height)
+        let bytes = pixels.partialValue.multipliedReportingOverflow(by: 2)
+        guard !pixels.overflow, !bytes.overflow else { throw LineError.badFile }
+        frameBytes = bytes.partialValue
         var foundOffsets: [Int] = []
         var foundLengths: [Int] = []
         var cursor = 16
@@ -299,7 +476,7 @@ final class DepthFileReader: @unchecked Sendable {
         let start = data.startIndex + offsets[index]
         let slice = data.subdata(in: start..<(start + lengths[index]))
         guard let raw = try? (slice as NSData).decompressed(using: .lzfse) as Data,
-              raw.count >= width * height * 2 else { return nil }
+              raw.count >= frameBytes else { return nil }
         return raw
     }
 
@@ -353,8 +530,17 @@ final class DepthFileReader: @unchecked Sendable {
 
 // MARK: - Recorder
 
-/// Writes Video.mov (HEVC, portrait), Depth.bin, Recording.json and Frames.csv.
-final class LineRecorder {
+/// Writes Video.mov (HEVC, portrait), Depth.bin, Recording.json, Frames.csv and ZoneSpeeds.csv while recording.
+/// Every frame goes straight to disk, so memory use does not grow with the length of the recording.
+/// Used only on the capture data queue until `finish`, which hands it to a background queue (no shared state).
+final class LineRecorder: @unchecked Sendable {
+    /// Hidden file present in the folder until the recording has been saved and Recording.json reads back.
+    static let inProgressMarker = ".recording-in-progress"
+    /// Movie fragment length: after a crash the video still plays up to the last complete fragment.
+    static let videoFragmentSeconds = 5.0
+    /// Free space is checked every this many frames (~5 s).
+    static let storageCheckFrames = 150
+
     let folder: URL
     let videoWidth: Int
     let videoHeight: Int
@@ -367,11 +553,23 @@ final class LineRecorder {
     private let writer: AVAssetWriter
     private let videoInput: AVAssetWriterInput
     private let depthWriter: DepthFileWriter
+    private let jsonWriter: RecordingJSONWriter
+    private let framesWriter: TextFileWriter
+    private let zonesWriter: TextFileWriter
     private let travelOffset: Double
     private var startTime: CMTime?
-    private(set) var frames: [LineFrameInfo] = []
+    private var videoDropped = 0
+    private var notes: [String] = []
 
-    var elapsed: Double { frames.last?.time ?? 0 }
+    /// Frames handed to Depth.bin and Recording.json. Recording.json is written in ~64 kB blocks, so after a failed
+    /// write it can hold fewer frames than this: the scan summary is corrected from the file read back (Z-3).
+    private(set) var frameCount = 0
+    /// Time of the last frame handed to the files since the first, seconds (same caveat as `frameCount`).
+    private(set) var elapsed: Double = 0
+    /// First video problem (the recording continues with depth and speed only).
+    private(set) var videoProblem: String?
+    /// Set when the recording must stop (a failed write or storage almost full); no more frames are taken.
+    private(set) var stopReason: String?
 
     init(folder: URL, videoWidth: Int, videoHeight: Int, depthWidth: Int, depthHeight: Int,
          filteredDepth: Bool, shortShutter: Bool, direction: TravelDirection, travelOffset: Double) throws {
@@ -385,7 +583,10 @@ final class LineRecorder {
         self.direction = direction
         self.travelOffset = travelOffset
 
+        FileManager.default.createFile(atPath: folder.appendingPathComponent(LineRecorder.inProgressMarker).path,
+                                       contents: nil)
         writer = try AVAssetWriter(outputURL: folder.appendingPathComponent("Video.mov"), fileType: .mov)
+        writer.movieFragmentInterval = CMTime(seconds: LineRecorder.videoFragmentSeconds, preferredTimescale: 600)
         let settings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: videoWidth,
@@ -400,109 +601,185 @@ final class LineRecorder {
         writer.add(videoInput)
         depthWriter = try DepthFileWriter(url: folder.appendingPathComponent("Depth.bin"),
                                           width: depthWidth, height: depthHeight)
+        let columns = SpeedEstimator.tileColumns
+        let rows = SpeedEstimator.tileRows
+        jsonWriter = try RecordingJSONWriter(
+            url: folder.appendingPathComponent("Recording.json"),
+            header: LineRecordingHeader(depthWidth: depthWidth, depthHeight: depthHeight,
+                                        videoWidth: videoWidth, videoHeight: videoHeight,
+                                        filteredDepth: filteredDepth, shortShutter: shortShutter,
+                                        direction: direction, tileColumns: columns, tileRows: rows))
+        framesWriter = try TextFileWriter(url: folder.appendingPathComponent("Frames.csv"), flushBytes: 64_000)
+        zonesWriter = try TextFileWriter(url: folder.appendingPathComponent("ZoneSpeeds.csv"), flushBytes: 64_000)
+        try framesWriter.line(LineRecorder.framesHeader.joined(separator: ","))
+        try zonesWriter.line(LineRecorder.zonesHeader(columns: columns, rows: rows).joined(separator: ","))
+    }
+
+    /// Adds a line to the scan summary.
+    func addNote(_ note: String) {
+        notes.append(note)
     }
 
     func append(sampleBuffer: CMSampleBuffer, depthMillimetres: [Float], info: LineFrameInfo) {
+        guard stopReason == nil else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         if startTime == nil {
             startTime = pts
-            _ = writer.startWriting()
-            writer.startSession(atSourceTime: pts)
+            if writer.startWriting() {
+                writer.startSession(atSourceTime: pts)
+            } else {
+                noteVideoProblem("the video encoder did not start")
+            }
         }
         guard let start = startTime else { return }
         // Depth and frame data are kept even if the video encoder fails.
-        if writer.status == .writing, videoInput.isReadyForMoreMediaData {
-            _ = videoInput.append(sampleBuffer)
+        switch writer.status {
+        case .writing:
+            if videoInput.isReadyForMoreMediaData {
+                if !videoInput.append(sampleBuffer) {
+                    if writer.status == .failed { noteVideoProblem("the video encoder stopped") } else { videoDropped += 1 }
+                }
+            } else {
+                videoDropped += 1
+            }
+        case .failed:
+            noteVideoProblem("the video encoder stopped")
+        default:
+            break
         }
-        do {
-            try depthWriter.append(millimetres: depthMillimetres)
-        } catch {
-            return
-        }
+
         var frame = info
-        frame.index = frames.count
+        frame.index = frameCount
         frame.time = (pts - start).seconds
         frame.travel = info.travel - travelOffset
-        frames.append(frame)
+        frame = frame.sanitized()
+        do {
+            try depthWriter.append(millimetres: depthMillimetres)
+            try jsonWriter.append(frame)
+        } catch {
+            stopReason = "the recording could not be written to storage (\(error.localizedDescription))"
+            return
+        }
+        // The frame went to Depth.bin and into Recording.json's buffer: count it (live display and the first summary).
+        frameCount += 1
+        elapsed = frame.time
+        do {
+            try framesWriter.line(Self.framesRow(frame))
+            try zonesWriter.line(Self.zonesRow(frame, count: SpeedEstimator.tileColumns * SpeedEstimator.tileRows))
+        } catch {
+            // closeFiles adds the "… .csv is incomplete" note for the writer that failed.
+            stopReason = "the recording could not be written to storage (\(error.localizedDescription))"
+            return
+        }
+        if frameCount % Self.storageCheckFrames == 0,
+           let free = LineStorage.freeBytes(at: folder), free < LineStorage.stopBelow {
+            stopReason = "iPhone storage is almost full (\(LineStorage.text(free)) left)"
+        }
     }
 
-    func finish(completion: @escaping @Sendable (Result<LineRecordingInfo, Error>) -> Void) {
-        depthWriter.close()
-        let info = LineRecordingInfo(depthWidth: depthWidth, depthHeight: depthHeight,
-                                     videoWidth: videoWidth, videoHeight: videoHeight,
-                                     filteredDepth: filteredDepth, shortShutter: shortShutter,
-                                     direction: direction, frames: frames,
-                                     tileColumns: SpeedEstimator.tileColumns, tileRows: SpeedEstimator.tileRows)
-        do {
-            let json = try JSONEncoder.pretty.encode(info)
-            try json.write(to: folder.appendingPathComponent("Recording.json"), options: .atomic)
-            try framesCSV().write(to: folder.appendingPathComponent("Frames.csv"), atomically: true, encoding: .utf8)
-            try tileSpeedsCSV().write(to: folder.appendingPathComponent("ZoneSpeeds.csv"), atomically: true, encoding: .utf8)
-        } catch {
-            completion(.failure(error))
-            return
-        }
-        guard writer.status == .writing else {
-            writer.cancelWriting()
-            completion(frames.count >= 2 ? .success(info) : .failure(LineError.notEnoughData))
-            return
-        }
-        videoInput.markAsFinished()
-        let count = frames.count
-        writer.finishWriting {
-            completion(count >= 2 ? .success(info) : .failure(LineError.notEnoughData))
+    private func noteVideoProblem(_ what: String) {
+        guard videoProblem == nil else { return }
+        if let error = writer.error {
+            videoProblem = "\(what) (\(error.localizedDescription))"
+        } else {
+            videoProblem = what
         }
     }
+
+    /// Finishes the video first, then closes the data files on a background queue and calls `completion` once.
+    /// Call only after the recorder has been taken off the capture queue.
+    func finish(completion: @escaping @Sendable (LineRecordingResult) -> Void) {
+        let queue = DispatchQueue(label: "phonelidar.line.finish", qos: .userInitiated)
+        if writer.status == .writing {
+            videoInput.markAsFinished()
+            writer.finishWriting { [self] in
+                queue.async { self.closeFiles(completion) }
+            }
+        } else {
+            queue.async { self.closeFiles(completion) }
+        }
+    }
+
+    private func closeFiles(_ completion: @Sendable (LineRecordingResult) -> Void) {
+        if startTime != nil, writer.status != .completed {
+            noteVideoProblem("the video could not be finished")
+        }
+        depthWriter.close()
+        // A Recording.json left without its ending is repaired when it is read back (LineRecordingRepair).
+        try? jsonWriter.close()
+        do {
+            try framesWriter.close()
+        } catch {
+            notes.append("Frames.csv is incomplete (\(error.localizedDescription)).")
+        }
+        do {
+            try zonesWriter.close()
+        } catch {
+            notes.append("ZoneSpeeds.csv is incomplete (\(error.localizedDescription)).")
+        }
+        if let videoProblem {
+            notes.insert("Video incomplete: \(videoProblem). Depth, speed and map data are not affected.", at: 0)
+        } else if videoDropped > 0 {
+            notes.insert(String(format: "Video: %ld of %ld frames skipped by the busy encoder (depth, speed and map data are complete).",
+                                videoDropped, frameCount), at: 0)
+        }
+        completion(LineRecordingResult(folder: folder, frameCount: frameCount, duration: elapsed,
+                                       direction: direction, notes: notes))
+    }
+
+    // MARK: CSV rows
+
+    static let framesHeader = ["frame", "time_s", "speed_mm_s", "speed_m_min", "travel_mm",
+                               "shift_px", "cross_shift_px", "track_quality", "median_distance_mm",
+                               "tilt_x_deg", "tilt_y_deg", "surface_tilt_x_deg", "surface_tilt_y_deg",
+                               "fastest_speed_mm_s", "fastest_zone"]
 
     /// One column per zone. Zone n: column n % 6 across the material (0 = top of the screen),
     /// row n / 6 along the travel (0 = right edge of the screen). Values mm/s, + = travel direction.
-    private func tileSpeedsCSV() -> String {
-        let columns = SpeedEstimator.tileColumns
-        let rows = SpeedEstimator.tileRows
+    static func zonesHeader(columns: Int, rows: Int) -> [String] {
         var header = ["frame", "time_s"]
         for i in 0..<(columns * rows) {
             header.append("zone\(i)_across\(i % columns)_along\(i / columns)_mm_s")
         }
-        var table: [[String]] = [header]
-        for f in frames {
-            var line = ["\(f.index)", String(format: "%.4f", f.time)]
-            let speeds = f.tileSpeeds ?? []
-            for i in 0..<(columns * rows) {
-                if i < speeds.count, let v = speeds[i] {
-                    line.append(String(format: "%.1f", v))
-                } else {
-                    line.append("")
-                }
-            }
-            table.append(line)
-        }
-        return CSV.make(table)
+        return header
     }
 
-    private func framesCSV() -> String {
-        var rows: [[String]] = [["frame", "time_s", "speed_mm_s", "speed_m_min", "travel_mm",
-                                 "shift_px", "cross_shift_px", "track_quality", "median_distance_mm",
-                                 "tilt_x_deg", "tilt_y_deg", "surface_tilt_x_deg", "surface_tilt_y_deg",
-                                 "fastest_speed_mm_s", "fastest_zone"]]
-        for f in frames {
-            rows.append([
-                "\(f.index)",
-                String(format: "%.4f", f.time),
-                f.speed.map { String(format: "%.1f", $0) } ?? "",
-                f.speed.map { String(format: "%.3f", $0 * 0.06) } ?? "",
-                String(format: "%.1f", f.travel),
-                f.shiftPixels.map { String(format: "%.2f", $0) } ?? "",
-                f.crossShiftPixels.map { String(format: "%.2f", $0) } ?? "",
-                String(format: "%.3f", f.quality),
-                String(format: "%.1f", f.medianDepth),
-                f.tiltX.map { String(format: "%.2f", $0) } ?? "",
-                f.tiltY.map { String(format: "%.2f", $0) } ?? "",
-                f.surfaceTiltX.map { String(format: "%.2f", $0) } ?? "",
-                f.surfaceTiltY.map { String(format: "%.2f", $0) } ?? "",
-                f.fastestSpeed.map { String(format: "%.1f", $0) } ?? "",
-                f.fastestTile.map { "\($0)" } ?? ""
-            ])
+    /// `f` must be sanitized (no NaN / inf).
+    static func framesRow(_ f: LineFrameInfo) -> String {
+        func fixed(_ value: Double?, _ format: String) -> String {
+            guard let value else { return "" }
+            return String(format: format, value)
         }
-        return CSV.make(rows)
+        var fields: [String] = []
+        fields.reserveCapacity(framesHeader.count)
+        fields.append(String(f.index))
+        fields.append(fixed(f.time, "%.4f"))
+        fields.append(fixed(f.speed, "%.1f"))
+        fields.append(fixed(f.speed.map { $0 * 0.06 }, "%.3f"))
+        fields.append(fixed(f.travel, "%.1f"))
+        fields.append(fixed(f.shiftPixels, "%.2f"))
+        fields.append(fixed(f.crossShiftPixels, "%.2f"))
+        fields.append(fixed(f.quality, "%.3f"))
+        fields.append(fixed(f.medianDepth, "%.1f"))
+        fields.append(fixed(f.tiltX, "%.2f"))
+        fields.append(fixed(f.tiltY, "%.2f"))
+        fields.append(fixed(f.surfaceTiltX, "%.2f"))
+        fields.append(fixed(f.surfaceTiltY, "%.2f"))
+        fields.append(fixed(f.fastestSpeed, "%.1f"))
+        fields.append(f.fastestTile.map { String($0) } ?? "")
+        return fields.joined(separator: ",")
+    }
+
+    static func zonesRow(_ f: LineFrameInfo, count: Int) -> String {
+        var line = ["\(f.index)", String(format: "%.4f", f.time)]
+        let speeds = f.tileSpeeds ?? []
+        for i in 0..<count {
+            if i < speeds.count, let v = speeds[i] {
+                line.append(String(format: "%.1f", v))
+            } else {
+                line.append("")
+            }
+        }
+        return line.joined(separator: ",")
     }
 }

@@ -1,5 +1,19 @@
 import SwiftUI
 import QuickLook
+import RealityKit
+
+/// Icon for a file in a scan folder, by extension.
+func scanFileIcon(for name: String) -> String {
+    switch (name as NSString).pathExtension.lowercased() {
+    case "usdz", "obj", "ply": return "cube"
+    case "csv": return "tablecells"
+    case "json": return "curlybraces"
+    case "mov": return "film"
+    case "png", "heic", "jpg", "jpeg": return "photo"
+    case "bin": return "externaldrive"
+    default: return "doc"
+    }
+}
 
 struct ScanDetailView: View {
     let scanID: UUID
@@ -10,6 +24,10 @@ struct ScanDetailView: View {
     @State private var showRename = false
     @State private var draftName = ""
     @State private var confirmDelete = false
+    @State private var deleteFailed = false
+    @State private var renameError: String?
+    @State private var photos: FolderEntry?
+    @State private var showRetry = false
 
     var body: some View {
         if let scan = store.record(id: scanID) {
@@ -26,7 +44,8 @@ struct ScanDetailView: View {
                 LabeledContent("Captured", value: scan.created.formatted(date: .abbreviated, time: .shortened))
             }
 
-            if let model = scan.primaryModel {
+            if let model = scan.primaryModel,
+               FileManager.default.fileExists(atPath: store.fileURL(model, in: scan).path) {
                 let modelURL = store.fileURL(model, in: scan)
                 Section("3D model") {
                     NavigationLink {
@@ -40,6 +59,36 @@ struct ScanDetailView: View {
                         } label: {
                             Label("View in AR at real size", systemImage: "arkit")
                         }
+                    }
+                }
+            }
+
+            if scan.kind == .object, scan.primaryModel == nil {
+                // A finished Model.usdz that the scan record does not list: add it, never rebuild it (G-3).
+                let finished = ObjectPhotos.hasCompleteModel(in: store.folderURL(for: scan))
+                if finished {
+                    Section {
+                        Button {
+                            showRetry = true
+                        } label: {
+                            Label("Add the finished model", systemImage: "plus.circle")
+                        }
+                    } header: {
+                        Text("3D model")
+                    } footer: {
+                        Text("The model was built but not added to this scan. Nothing is rebuilt.")
+                    }
+                } else if let photos, PhotogrammetrySession.isSupported {
+                    Section {
+                        Button {
+                            showRetry = true
+                        } label: {
+                            Label("Retry reconstruction", systemImage: "arrow.clockwise")
+                        }
+                    } header: {
+                        Text("3D model")
+                    } footer: {
+                        Text("The model was not built. The \(photos.urls.count) saved files can be used to try again.")
                     }
                 }
             }
@@ -85,7 +134,13 @@ struct ScanDetailView: View {
             Section {
                 ForEach(scan.files, id: \.self) { name in
                     ShareLink(item: store.fileURL(name, in: scan)) {
-                        Label(name, systemImage: icon(for: name))
+                        Label(name, systemImage: scanFileIcon(for: name))
+                    }
+                }
+                if let photos {
+                    ShareLink(items: photos.urls) {
+                        Label("Share photos (\(photos.urls.count) files, \(Units.bytes(photos.bytes)))",
+                              systemImage: "photo.on.rectangle")
                     }
                 }
                 if scan.files.count > 1 {
@@ -117,29 +172,45 @@ struct ScanDetailView: View {
         }
         .alert("Rename scan", isPresented: $showRename) {
             TextField("Name", text: $draftName)
-            Button("Save") { store.rename(scan, to: draftName) }
+            Button("Save") {
+                do {
+                    try store.rename(scan, to: draftName)
+                } catch {
+                    renameError = error.localizedDescription
+                }
+            }
             Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog("Delete this scan and all of its files?",
                             isPresented: $confirmDelete,
                             titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
-                store.delete(scan)
-                dismiss()
+                if store.delete(scan) {
+                    dismiss()
+                } else {
+                    deleteFailed = true
+                }
             }
         }
+        .alert("Could not rename", isPresented: Binding(get: { renameError != nil },
+                                                        set: { if !$0 { renameError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(renameError ?? "The name was not changed.")
+        }
+        .alert("Could not delete", isPresented: $deleteFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Try again. If it keeps failing, delete the folder in the Files app.")
+        }
         .quickLookPreview($arPreviewURL)
-    }
-
-    private func icon(for name: String) -> String {
-        switch (name as NSString).pathExtension.lowercased() {
-        case "usdz", "obj", "ply": return "cube"
-        case "csv": return "tablecells"
-        case "json": return "curlybraces"
-        case "mov": return "film"
-        case "png": return "photo"
-        case "bin": return "externaldrive"
-        default: return "doc"
+        .task(id: scan.files) {
+            // The Images folder (Object capture photos) is not in the file list above.
+            photos = store.entries(inFolderNamed: scan.folderName).first { $0.isDirectory && $0.name == "Images" }
+        }
+        .fullScreenCover(isPresented: $showRetry) {
+            ObjectScanView(resume: scan, onFinish: { _ in showRetry = false })
+                .environment(store)
         }
     }
 }
