@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | v1 feature set on `main` (`1cf693e`, build #23). P8 process alignment on branch `process-alignment`: M1 review cycles 1–3 converged (no new Critical/High/Medium); the final review and its re-reviews (Opus 5.5 / max) run until one yields no new findings; every finding so far is fixed or deferred to P10 with a reason. Findings, counts and CI runs: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md). Not yet merged to `main`. |
+| State | v1 feature set on `main` (`1cf693e`, build #23). P8 process alignment on branch `process-alignment`: M1 review cycles 1–3 converged (no new Critical/High/Medium); the final review and its re-reviews (Opus 5.5 / max) ran until one yielded no new findings; every finding is fixed or deferred to P10 with a reason. Findings, counts and CI runs: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md). Not yet merged to `main`. |
 | Date | 2026-11-10 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
@@ -146,7 +146,7 @@ Reconstructed from git history, CI runs and `REVISIONS.md`. Commits from PR #1 t
 
 ### P8 — Process alignment (in progress)
 
-Branches: all fix branches (`test-infra`, `fix-line`, `fix-topo`, `fix-apps`, `cycle2-capture`, `cycle2-topo`, `cycle2-rest`, `cycle3-recovery`, `cycle3-apps`, `final-line`, `final-misc`, `rereview-fixes`, `rereview2-tests`) are merged into `process-alignment`. Cycles 1–3 converged on Critical/High/Medium. Re-reviews of the final review's fixes continue at Opus 5.5 / max until one yields no new findings; that review decides the merge into `main` (one PR). Record: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md).
+Branches: all fix branches (`test-infra`, `fix-line`, `fix-topo`, `fix-apps`, `cycle2-capture`, `cycle2-topo`, `cycle2-rest`, `cycle3-recovery`, `cycle3-apps`, `final-line`, `final-misc`, `rereview-fixes`, `rereview2-tests`) are merged into `process-alignment`. Cycles 1–3 converged on Critical/High/Medium. Re-reviews of the final review's fixes ran at Opus 5.5 / max until one yielded no new findings; the merge into `main` is one PR. Record: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md).
 
 Documentation and agent rules
 - [x] P8.1 Requirements, design, technology recommendations and this plan in `docs/` (Opus 5.5 / max)
@@ -169,7 +169,7 @@ Milestone M1 reviews and fixes
 - [x] P8.14 Triage the additional findings reported during docs alignment (map cell rounding R-08, grid binning truncation, stale last speed after a direction change, CMMotionManager thread use, silent baseline-copy failure, Line-screen auto-lock, folder-name collisions) into cycle 2 (Opus 5.5 / high)
 - [x] P8.15 M1 review cycles 2 and 3 on the changed code and its neighbours (Opus 5.5 / high)
 - [x] P8.16 Update requirements traceability (statuses of FR-*-Not implemented items closed by the fixes), design (formats/algorithms changed by B-4, A-3, …), `README.md` and `CLAUDE.md` (Sonnet 5.5 / medium; redone after cycle 3 if its fixes change behaviour)
-- [ ] P8.17 Final review of the whole codebase and docs (Opus 5.5 / max)
+- [x] P8.17 Final review of the whole codebase and docs, re-reviewed until a review yielded no new findings (Opus 5.5 / max)
 - [ ] P8.18 Merge order agreed by the orchestrator; every branch green (build + unit tests, 0 warnings) before merge (Sonnet 5.5 / medium)
 
 Owner copy and revision log (orchestrator)
