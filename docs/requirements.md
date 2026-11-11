@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Functional and non-functional requirements, constraints, acceptance criteria, traceability |
-| Describes | `process-alignment` (`main` `1cf693e`, build #23, plus the P8 docs, unit tests, CI hardening and the M1 review fixes of cycles 1–3, the final review and the re-reviews), verified against the source code |
+| Describes | `main` at `4fa93c7` (PR #9, build #61): build #23 plus the P8 docs, unit tests, CI hardening and the M1 review fixes (cycles 1–3, the final review and the re-reviews), verified against the source code |
 | Date | 2026-11-10 |
 | Companion documents | [design.md](design.md) (architecture, algorithms, file formats), [implementation-plan.md](implementation-plan.md) (phases, change log), [../CLAUDE.md](../CLAUDE.md) (agent rules), the user guide [`../README.md`](../README.md) |
 

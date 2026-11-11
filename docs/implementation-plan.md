@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | v1 feature set on `main` (`1cf693e`, build #23). P8 process alignment on branch `process-alignment`: M1 review cycles 1–3 converged (no new Critical/High/Medium); the final review and its re-reviews (Opus 5.5 / max) ran until one yielded no new findings; every finding is fixed or deferred to P10 with a reason. Findings, counts and CI runs: [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md). Not yet merged to `main`. |
+| State | P8 process alignment merged to `main` (PR #9, `4fa93c7`, build #61): docs, CLAUDE.md, unit tests in CI, CI hardening and the M1 review fixes. The M1 reviews ran until a review yielded no new findings ([reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md)). Next: P9 on-device validation. |
 | Date | 2026-11-10 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
@@ -23,7 +23,7 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P5 | Baseline (flat-surface) calibration and height mode | Done (PR #6, build #17) |
 | P6 | Local (zone) speeds | Done (PR #7, build #19) |
 | P7 | Topographic replay | Done (PR #8, build #23) |
-| P8 | Process alignment: docs, CLAUDE.md, unit tests in CI, milestone M1 reviews and fixes, final review | In progress (cycles 1–3, final review and re-reviews; unmerged) |
+| P8 | Process alignment: docs, CLAUDE.md, unit tests in CI, milestone M1 reviews and fixes, final review | Done (PR #9, build #61) |
 | P9 | On-device validation on the iPhone 17 Pro Max | Not started |
 | P10 | Backlog | Open |
 
@@ -170,11 +170,11 @@ Milestone M1 reviews and fixes
 - [x] P8.15 M1 review cycles 2 and 3 on the changed code and its neighbours (Opus 5.5 / high)
 - [x] P8.16 Update requirements traceability (statuses of FR-*-Not implemented items closed by the fixes), design (formats/algorithms changed by B-4, A-3, …), `README.md` and `CLAUDE.md` (Sonnet 5.5 / medium; redone after cycle 3 if its fixes change behaviour)
 - [x] P8.17 Final review of the whole codebase and docs, re-reviewed until a review yielded no new findings (Opus 5.5 / max)
-- [ ] P8.18 Merge order agreed by the orchestrator; every branch green (build + unit tests, 0 warnings) before merge (Sonnet 5.5 / medium)
+- [x] P8.18 Merge order agreed by the orchestrator; every branch green (build + unit tests, 0 warnings) before merge (Sonnet 5.5 / medium)
 
 Owner copy and revision log (orchestrator)
-- [ ] P8.19 Sync a plain copy of `main` (no `.git`) to the owner's local folder (Haiku 5.5 / low)
-- [ ] P8.20 Add the P8 entry (date, build number, commit, change, files) to `REVISIONS.md` in the owner's local folder (Sonnet 5.5 / medium)
+- [x] P8.19 Sync a plain copy of `main` (no `.git`) to the owner's local folder (Haiku 5.5 / low)
+- [x] P8.20 Add the P8 entry (date, build number, commit, change, files) to `REVISIONS.md` in the owner's local folder (Sonnet 5.5 / medium)
 
 ### P9 — On-device validation (iPhone 17 Pro Max)
 
@@ -230,7 +230,7 @@ Newest first. Build = run number of the `Build iOS app` workflow on `main` after
 
 | Date | Build | PR / commit | Summary |
 |---|---|---|---|
-| 2026-11-10 | — | Process alignment (in progress, not merged) | On `process-alignment`: requirements, design and implementation plan, `CLAUDE.md`, README rewritten as the user guide; host-less `PhoneLidarTests` unit tests (392) and a `unit-tests` CI job on pull requests; CI hardening (read-only token, pinned actions and XcodeGen, hash-locked TestFlight tools, warnings as errors with a log gate, TestFlight after build and tests); M1 review cycles 1–3, the final review and its re-reviews: every finding fixed or deferred to P10 with a reason (totals in the review record): recordings stream to disk and survive interruptions, kills and low storage, with recovery from the library; map cell size, trimmed coverage/length/width, tolerant `scan.json`, Incomplete scans, Object photos kept and a finished model never rebuilt, speed/travel maths extracted and tested, held speed at Record limited to 2 s. Build number and merge commit are added at merge. |
+| 2026-11-11 | #61 | PR #9 `process-alignment` (`4fa93c7`; PR run #60, branch run #59) | Process alignment (P8): requirements, design and implementation plan, `CLAUDE.md`, README rewritten as the user guide; host-less `PhoneLidarTests` unit tests (392) and a `unit-tests` CI job on pull requests; CI hardening (read-only token, pinned actions and XcodeGen, hash-locked TestFlight tools, warnings as errors with a log gate, TestFlight after build and tests); M1 review cycles 1–3, the final review and its re-reviews: every finding fixed or deferred to P10 with a reason (totals in the review record): recordings stream to disk and survive interruptions, kills and low storage, with recovery from the library; map cell size, trimmed coverage/length/width, tolerant `scan.json`, Incomplete scans, Object photos kept and a finished model never rebuilt, speed/travel maths extracted and tested, held speed at Record limited to 2 s. Not yet verified on a device (P9). |
 | 2026-11-09 | #23 | PR #8 `topo-replay` (`1cf693e`; branch runs #20–#22) | Real-time topographic replay: scrolling 3D strip (newest line right, walls, tolerance planes, marker), Map view, along/across profiles, colour bar target ± 2 tolerances, transport and 0.1×–20× speed, gestures, settings, Save image; `TopoGrid.bin`; landscape on the replay screen only; auto-play; file-list refresh. Xcode 26.6, 0 warnings. |
 | 2026-11-09 | #19 | PR #7 `local-speeds` (`ecba3d6`; branch run #18) | 6 × 4 zone speeds: Fastest marker and speed at a point while recording; Fastest on screen and Speed here in playback; `ZoneSpeeds.csv`, zone speeds in `Recording.json`, fastest zone in `Frames.csv`. Snapshot copied to the owner's folder. |
 | 2026-11-09 | #17 | PR #6 `baseline-calibration` (`bbeaa30`; branch run #15 failed, #16 green) | Flat-surface baseline calibration and height mode across live view, map, statistics, profiles and probe; tilt/filter warnings; baseline stored and copied into recordings. |

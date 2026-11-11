@@ -2,7 +2,7 @@
 
 You need a Windows PC, a LiDAR iPhone (12 Pro / Pro Max or a newer **Pro** model, iOS 17+), a USB cable and a free GitHub account. The app is compiled on Apple hardware rented by GitHub Actions (`macos-26` runner with Xcode 26).
 
-**Status (Nov 10, 2026):** the code is at github.com/AliG1111/PhoneLidar (public). This version adds the M1 review fixes, unit tests in CI and the developer docs (build #TBD, set at merge). It builds on build #23: the **Line scan** mode with baseline calibration, bubble level, local speeds (fastest on screen, speed at a point), playback touch probe and the **Topographic replay** (real-time scrolling 3D strip, 0.1×–20×). Step 1 is done. Start at Step 2 or Step 3.
+**Status (Nov 11, 2026):** the code is at github.com/AliG1111/PhoneLidar (public). This version adds the M1 review fixes, unit tests in CI and the developer docs (build #61, `PhoneLidar-unsigned-ipa-61`). It builds on build #23: the **Line scan** mode with baseline calibration, bubble level, local speeds (fastest on screen, speed at a point), playback touch probe and the **Topographic replay** (real-time scrolling 3D strip, 0.1×–20×). Step 1 is done. Start at Step 2 or Step 3.
 
 ## What the app does
 
