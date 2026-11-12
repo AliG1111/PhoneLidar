@@ -204,4 +204,34 @@ final class RemoteConnectionLoopbackTests: XCTestCase {
         XCTAssertTrue(harness.remoteEvents.filesFailed.isEmpty)
         XCTAssertTrue(harness.remoteEvents.closes.isEmpty)
     }
+
+    /// 16 MiB (64 chunks, many ack windows) arrive intact and in order, at a rate that rules out a stall in the
+    /// window or acknowledgement logic (localhost; the bound is far below what the loopback carries).
+    func testLargeCopyKeepsMoving() throws {
+        let harness = Harness()
+        defer { harness.stop() }
+        let port = try startScanner(harness)
+        let (remote, _) = try pair(harness, port: port)
+
+        let folder = try makeTempFolder()
+        let source = folder.appendingPathComponent("Video.mov")
+        var bytes = Data(count: 16 << 20)
+        bytes.withUnsafeMutableBytes { buffer in
+            for page in 0..<(buffer.count / 4_096) {
+                buffer[page * 4_096] = UInt8(truncatingIfNeeded: page)
+                buffer[page * 4_096 + 1] = UInt8(truncatingIfNeeded: page >> 8)
+            }
+        }
+        try bytes.write(to: source)
+        let info = try XCTUnwrap(RemoteFiles.info(of: source))
+        harness.serveFile = source
+        let destination = folder.appendingPathComponent("copy.mov")
+        let started = Date()
+        remote.requestFile(RemoteFileRequest(transferID: 9, scanID: UUID(), name: info.name, offset: 0,
+                                             size: info.size, modified: info.modified), into: destination)
+        waitUntil(timeout: 30) { harness.remoteEvents.filesDone.contains(9) }
+        let seconds = Date().timeIntervalSince(started)
+        XCTAssertLessThan(seconds, 8, String(format: "16 MiB took %.1f s", seconds))
+        XCTAssertEqual(try Data(contentsOf: destination), bytes)
+    }
 }
