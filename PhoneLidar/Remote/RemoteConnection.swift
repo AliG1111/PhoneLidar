@@ -53,7 +53,8 @@ enum RemoteCloseReason: Sendable, Equatable {
             case .notPairing: return "the scanner is not pairing: tap Pair a remote on the scanner first"
             case .wrongCode: return "wrong code"
             case .authentication: return "the other phone could not be verified"
-            case .busy: return "the scanner is busy with another pairing attempt: try again in a few seconds"
+            case .busy:
+                return "the scanner is busy (another pairing attempt, or the 2 s pause after a wrong code): try again in a few seconds"
             }
         }
     }

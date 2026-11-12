@@ -692,9 +692,10 @@ final class RemoteLink {
             return
         }
         // A phone pretending to be the scanner could learn the code from a pairing attempt (NFR-SEC-06), so pairing
-        // is refused while two services claim the same scanner ID or name.
+        // is refused while two services claim the same scanner ID or name (ignoring Bonjour's " (n)" rename suffix).
         let clash = foundScanners.contains { other in
-            other.id != scanner.id && other.names.contains(where: { scanner.names.contains($0) || $0 == scanner.name })
+            other.id != scanner.id
+                && RemoteServiceName.clash(scanner.names + [scanner.name], other.names + [other.name])
         }
         guard !scanner.isAmbiguous, !clash else {
             pairError = "More than one phone answers as \(scanner.name), so pairing is refused. Make sure only the scanner has Allow remote control on, move away from other phones, then try again."
@@ -742,8 +743,10 @@ final class RemoteLink {
         guard let current = connection, current.id == cid else { return }
         connectionOpen = true
         failures = 0
-        pairError = nil
+        // Only a new pairing clears the pairing error: a resumed link after a failed attempt to pair a different
+        // scanner must leave "Pairing failed: …" on screen.
         if let key = opened.newPairingKey {
+            pairError = nil
             let pairing = RemotePairing(peerID: opened.peerID, peerName: opened.peerName, key: key, created: Date())
             remotePairing = pairing
             pairingTarget = nil

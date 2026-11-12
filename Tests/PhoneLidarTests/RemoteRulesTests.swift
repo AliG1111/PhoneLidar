@@ -205,6 +205,21 @@ final class RemoteRulesTests: XCTestCase {
         XCTAssertNotNil(lookupSecret(secrets, now: now))
     }
 
+    func testServiceNamesIgnoreTheBonjourRenameSuffix() {
+        XCTAssertEqual(RemoteServiceName.base("iPhone 1A2B (2)"), "iPhone 1A2B")
+        XCTAssertEqual(RemoteServiceName.base("iPhone 1A2B (12)"), "iPhone 1A2B")
+        XCTAssertEqual(RemoteServiceName.base("iPhone 1A2B"), "iPhone 1A2B")
+        XCTAssertEqual(RemoteServiceName.base("iPhone (Al)"), "iPhone (Al)")
+        XCTAssertEqual(RemoteServiceName.base("iPhone ()"), "iPhone ()")
+        XCTAssertEqual(RemoteServiceName.base("iPhone(2)"), "iPhone(2)")
+        // V-1: an impostor under its own ID, renamed by Bonjour either way round, is a clash.
+        XCTAssertTrue(RemoteServiceName.clash(["iPhone 1A2B"], ["iPhone 1A2B (2)"]))
+        XCTAssertTrue(RemoteServiceName.clash(["iPhone 1A2B (2)"], ["iPhone 1A2B"]))
+        XCTAssertTrue(RemoteServiceName.clash(["iPhone 1A2B"], ["iPhone 1A2B"]))
+        XCTAssertFalse(RemoteServiceName.clash(["iPhone 1A2B"], ["iPhone 9C3D", "iPhone 9C3D (2)"]))
+        XCTAssertFalse(RemoteServiceName.clash([], ["iPhone 1A2B"]))
+    }
+
     private func lookupSecret(_ secrets: ScannerSecrets, now: Date) -> Data? {
         if case .secret(let data) = secrets.lookup(mode: .pair, peerID: UUID(), now: now) { return data }
         return nil

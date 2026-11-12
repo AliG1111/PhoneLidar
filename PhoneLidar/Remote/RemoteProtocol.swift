@@ -213,6 +213,25 @@ enum RemoteScanList {
     }
 }
 
+/// Bonjour service names of scanners (NFR-SEC-06). Bonjour renames a service whose name is already taken by adding
+/// " (2)", " (3)", …, so a phone copying the scanner's name under its own ID appears as "iPhone 1A2B (2)", or takes
+/// the name first and pushes the real scanner to "(2)". Names are compared without that suffix.
+enum RemoteServiceName {
+    /// `name` without a trailing Bonjour rename suffix " (n)" (n = digits).
+    static func base(_ name: String) -> String {
+        guard name.hasSuffix(")"), let open = name.range(of: " (", options: .backwards) else { return name }
+        let digits = name[open.upperBound..<name.index(before: name.endIndex)]
+        guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return name }
+        return String(name[..<open.lowerBound])
+    }
+
+    /// True when any of `names` and any of `otherNames` are the same name apart from a rename suffix.
+    static func clash(_ names: [String], _ otherNames: [String]) -> Bool {
+        let bases = Set(names.map(base))
+        return otherNames.contains { bases.contains(base($0)) }
+    }
+}
+
 /// When the scanner refuses a remote command (FR-RMT-07), from its Line scan status.
 enum RemoteCommandRules {
     static let closingText = "Line scan is closing on the scanner."
