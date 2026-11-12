@@ -34,17 +34,20 @@ Build numbers are GitHub Actions run numbers of the `Build iOS app` workflow on 
 | Task type | Model | Reasoning |
 |---|---|---|
 | Requirements, architecture, design, implementation planning, major design changes | Opus 5.5 | max |
-| Final review (implementation complete; also at milestones when the plan calls for it) | Opus 5.5 | max |
-| Milestone review cycles (correctness, defects, security, performance, concurrency) | Opus 5.5 | high |
+| Milestone final review: whole codebase, tests and user guide, once at the end of a milestone | Opus 5.5 | max |
+| Change review: the PR diff plus the code it calls or is called by (correctness, defects, security, performance, concurrency); also re-reviews of fixes | Opus 5.5 | high |
+| Wording-only follow-ups after the milestone final review | Sonnet 5.5 | medium |
 | Implementation in capture / signal-processing / concurrency / file-format code (`PhoneLidar/Line/*` pipeline, `SpeedEstimator`, `Baseline`, `TopoMapBuilder`, `TopoGridFile`, `TopoReplayData/Model`, `LineRecording`) | Opus 5.5 | high |
 | Implementation of UI and routine features (SwiftUI views, settings, sharing, wiring, Room/Mesh/Object screens) | Sonnet 5.5 | high |
 | Unit tests | Sonnet 5.5 | high |
 | CI log triage and compile-error fixes | Sonnet 5.5 | medium |
 | Docs upkeep (build guide, change log, checklists, CLAUDE.md, REVISIONS.md) | Sonnet 5.5 | medium |
-| Mechanical work (renames, formatting, file inventory, searches) | Haiku 5.5 | low |
+| Bookkeeping check (review record, change log, checklist ticks, REVISIONS.md): consistency with git and CI | Orchestrator (no separate agent) | — |
+| Mechanical work (renames, formatting, file inventory, searches, local-folder sync) | Haiku 5.5 | low |
 
 - The agent that did a task self-reviews it at the same model and level before committing.
-- Milestone and final reviews are done by a fresh agent that did not write the code.
+- Change reviews and the milestone final review are done by a fresh agent that did not write the code.
+- Small edits the orchestrator can make in a few lines (bookkeeping, one-line doc fixes) are made directly; starting an agent costs more than the edit.
 - A task touching both capture code and UI takes the higher assignment (Opus 5.5 / high).
 - Every checklist line below ends with its assignment `(Model / level)`.
 
@@ -57,6 +60,14 @@ Build numbers are GitHub Actions run numbers of the `Build iOS app` workflow on 
 5. **CI**: push the branch, run `Build iOS app` (dispatch or PR). Both the app build and the unit tests must be green with 0 warnings. Fix and repeat.
 6. **PR** into `main`: summary, requirement IDs (FR-/NFR-), review finding IDs fixed, test evidence (CI run number), self-review notes. Agents never push to `main`; the merge happens on GitHub.
 7. **After merge**: tick the task here and add a change-log entry (date, build number of the merge build, PR, summary); update [requirements.md](requirements.md) traceability/status and [design.md](design.md) if behaviour or formats changed; note user-visible changes for the build guide; the orchestrator updates `REVISIONS.md` and the owner's local copy; update `CLAUDE.md` when a convention or command changed.
+
+**Token budget** (owner's decision, 2026-11-11):
+- **One session per task.** Start a fresh session for each P9/P10 item or feature, with `CLAUDE.md` and this plan as the starting context; do not continue a long multi-phase session.
+- **At most two agents at a time**, so a run stays inside the 5-hour usage window. One agent does an area's fix and its tests together.
+- **Read only what the task needs**: the diff, the files it touches and their direct callers; grep before opening a large file; read large files in parts.
+- **CI**: dispatch once, then wait with a single `gh run watch <id> --exit-status` call instead of repeated polling; read only `--log-failed` on failure.
+- **Bookkeeping in one place**: finding counts live only in the review record; the change log row is written once, at merge.
+- **Local-folder sync**: the owner's computer downloads the `main` tarball from GitHub and copies it into the folder in one step (no file-by-file staging).
 
 ## 4. Self-review checklist
 
@@ -82,10 +93,13 @@ Severity:
 - **Medium** — wrong behaviour in edge cases, missing user-visible error handling, performance problem that affects use.
 - **Low** — maintainability, naming, duplication, minor UX polish.
 
-Cycle: review → triage → fix → CI green → re-review of the changed code and anything it touches → repeat **until a review yields no new findings** (owner's rule). "New" means any finding, of any severity, that is not already fixed or recorded in the P10 backlog with a reason. Critical/High/Medium are always fixed; a Low is fixed or, when the fix is risky or large, deferred to P10 with a reason, and the next review checks the fixes.
+Cycle: review → triage → fix → CI green → re-review of the fixes and the code they touch → repeat **until a review yields no new findings** (owner's rule). "New" means any finding, of any severity, that is not already fixed or recorded in the P10 backlog with a reason. Critical/High/Medium are always fixed; a Low is fixed or, when the fix is risky or large, deferred to P10 with a reason, and the next review checks the fixes.
 
-- Milestone review cycles: fresh agents, Opus 5.5 / high, split by area when large.
-- Final review: Opus 5.5 / max, after the milestone cycles; if it yields findings, they are fixed and re-reviewed at Opus 5.5 / max until a review yields no new findings.
+**Review scope** (owner's decision, 2026-11-11, to cut token use):
+- The rule applies to **code, tests and the user guide (`README.md`)**. Review bookkeeping — the review record, change log, checklist ticks, `REVISIONS.md` — is written after the review it records and is checked by the orchestrator against git and CI; it is not sent for another review. Process docs (`CLAUDE.md`, this plan, requirements, design) are reviewed only when their content changes, not for bookkeeping edits.
+- **Change review** (every PR that changes code or tests): one fresh Opus 5.5 / high reviewer reads the PR diff plus the code it calls or is called by, not the whole codebase. Re-reviews read only the fix diff.
+- **Milestone final review**: one fresh Opus 5.5 / max review of the whole codebase, tests and user guide, once at the end of a milestone. Code findings are fixed and re-reviewed at Opus 5.5 / high on the fix diff; wording-only findings are fixed by Sonnet 5.5 / medium (or the orchestrator) without another review.
+- Area-split reviews (several reviewers reading whole areas) are used only for a first review of a large new subsystem.
 - Every branch merged into an integration branch or `main` has a green CI run at its head commit first.
 - Each cycle is recorded in `docs/reviews/<YYYY-MM-DD>-<milestone>.md` with finding ID, severity, file:line, summary, fix branch/PR, status.
 
@@ -230,6 +244,7 @@ Newest first. Build = run number of the `Build iOS app` workflow on `main` after
 
 | Date | Build | PR / commit | Summary |
 |---|---|---|---|
+| 2026-11-12 | — (docs only, no build) | PR #11 `token-efficiency` | Review scope and token budget (owner's decision): the "until no new findings" rule covers code, tests and the user guide; bookkeeping is checked by the orchestrator, not re-reviewed; one Opus 5.5 / high change review per PR on the diff and its callers; one Opus 5.5 / max final review per milestone; one session per task, at most two agents at a time, single CI watch, one-step local sync. Updated §2, §3, §5 and `CLAUDE.md`. |
 | 2026-11-11 | #61 | PR #9 `process-alignment` (`4fa93c7`; PR run #60, branch run #59) | Process alignment (P8): requirements, design and implementation plan, `CLAUDE.md`, README rewritten as the user guide; host-less `PhoneLidarTests` unit tests (392) and a `unit-tests` CI job on pull requests; CI hardening (read-only token, pinned actions and XcodeGen, hash-locked TestFlight tools, warnings as errors with a log gate, TestFlight after build and tests); M1 review cycles 1–3, the final review and its re-reviews: every finding fixed or deferred to P10 with a reason (totals in the review record): recordings stream to disk and survive interruptions, kills and low storage, with recovery from the library; map cell size, trimmed coverage/length/width, tolerant `scan.json`, Incomplete scans, Object photos kept and a finished model never rebuilt, speed/travel maths extracted and tested, held speed at Record limited to 2 s. Not yet verified on a device (P9). |
 | 2026-11-09 | #23 | PR #8 `topo-replay` (`1cf693e`; branch runs #20–#22) | Real-time topographic replay: scrolling 3D strip (newest line right, walls, tolerance planes, marker), Map view, along/across profiles, colour bar target ± 2 tolerances, transport and 0.1×–20× speed, gestures, settings, Save image; `TopoGrid.bin`; landscape on the replay screen only; auto-play; file-list refresh. Xcode 26.6, 0 warnings. |
 | 2026-11-09 | #19 | PR #7 `local-speeds` (`ecba3d6`; branch run #18) | 6 × 4 zone speeds: Fastest marker and speed at a point while recording; Fastest on screen and Speed here in playback; `ZoneSpeeds.csv`, zone speeds in `Recording.json`, fastest zone in `Frames.csv`. Snapshot copied to the owner's folder. |

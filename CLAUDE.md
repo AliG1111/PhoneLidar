@@ -70,24 +70,37 @@ Full matrix: docs/implementation-plan.md §2. Every plan task names its assignme
 
 | Work | Model / level |
 |---|---|
-| Requirements, architecture, design, planning; final review | Opus 5.5 / max |
-| Milestone review cycles | Opus 5.5 / high |
+| Requirements, architecture, design, planning; milestone final review (once per milestone) | Opus 5.5 / max |
+| Change review (PR diff + callers) and re-reviews of fixes | Opus 5.5 / high |
 | Capture, signal processing, concurrency, file formats (`Line/` pipeline, `SpeedEstimator`, `Baseline`, `TopoMapBuilder`, `TopoGridFile`, `TopoReplayData/Model`, `LineRecording`) | Opus 5.5 / high |
 | SwiftUI views, settings, sharing, wiring, Room/Mesh/Object screens | Sonnet 5.5 / high |
 | Unit tests | Sonnet 5.5 / high |
 | CI log triage, compile-error fixes | Sonnet 5.5 / medium |
-| Docs upkeep (guide, change log, checklists, CLAUDE.md, REVISIONS.md) | Sonnet 5.5 / medium |
-| Mechanical work (renames, formatting, inventories, searches) | Haiku 5.5 / low |
+| Docs upkeep (guide, change log, checklists, CLAUDE.md, REVISIONS.md); wording follow-ups after a final review | Sonnet 5.5 / medium |
+| Bookkeeping checks (review record, change log, ticks) and few-line edits | Orchestrator, no agent |
+| Mechanical work (renames, formatting, inventories, searches, local-folder sync) | Haiku 5.5 / low |
 
 ## Review protocol
 - Severity: Critical (crash, data loss, privacy exposure, wrong measurement in output files) › High (wrong results in
   common use, thread-safety bug, leak during capture, CI break) › Medium (edge-case errors, missing error handling,
   performance that affects use) › Low (maintainability, polish).
-- Cycle: review → triage → fix → CI green → re-review changed code and neighbours; repeat until a review yields
-  no new findings of any severity (owner's rule). Critical/High/Medium are always fixed; a Low is fixed or, if
-  risky or large, logged in the P10 backlog with a reason. CI green at a branch head before any merge.
-- Reviewers are fresh agents (Opus 5.5 / high); final review Opus 5.5 / max. Record each cycle in
-  `docs/reviews/<YYYY-MM-DD>-<milestone>.md` (ID, severity, file:line, summary, status).
+- Cycle: review → triage → fix → CI green → re-review the fix diff; repeat until a review yields no new findings
+  of any severity (owner's rule). Critical/High/Medium are always fixed; a Low is fixed or, if risky or large,
+  logged in the P10 backlog with a reason. CI green at a branch head before any merge.
+- Scope of the rule: code, tests and README (user guide). Bookkeeping (review record, change log, ticks,
+  REVISIONS.md) is checked by the orchestrator against git/CI and never sent for another review.
+- Change review: one fresh Opus 5.5 / high reviewer per PR, reading the diff plus its callers/callees, not the whole
+  codebase. Milestone final review: one fresh Opus 5.5 / max pass over everything, once per milestone; its code
+  findings are re-reviewed on the fix diff at Opus 5.5 / high, wording findings are fixed without another review.
+- Record each review in `docs/reviews/<YYYY-MM-DD>-<milestone>.md` (ID, severity, file:line, summary, status).
+
+## Token budget (owner's decision)
+- One session per task (each P9/P10 item or feature), starting from this file and docs/implementation-plan.md.
+- At most two agents at a time; one agent does an area's fix and its tests together.
+- Read the diff, the touched files and their direct callers; grep before opening large files; read them in parts.
+- CI: dispatch once, then one `gh run watch <id> --exit-status`; on failure read only `--log-failed`.
+- Finding counts only in the review record; change-log row written once at merge.
+- Owner's local folder: download the `main` tarball on the owner's computer and copy it in one step.
 
 ## Coding conventions
 - Units: line scan works in millimetres, mm/s, seconds and degrees (internally and in files); Room/Mesh/Object use
