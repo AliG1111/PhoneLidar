@@ -81,6 +81,7 @@ struct LineScanView: View {
             // Remote control allowed: stay on this screen after a save (FR-RMT-09).
             let remoteLink = link
             model.keepOpenAfterSave = { [weak remoteLink] in remoteLink?.mode == .scanner }
+            model.onRecordingStart = { [weak remoteLink] in remoteLink?.scannerRecordingStarts() }
             model.start(store: store)
             link.attachScanner(model)
         }
@@ -536,6 +537,8 @@ final class LineScanModel {
     /// True while remote control is allowed: after a save the screen stays open and ready instead of opening the
     /// scan, so the remote phone can start the next recording (FR-RMT-09).
     @ObservationIgnored var keepOpenAfterSave: () -> Bool = { false }
+    /// Called when a recording starts (button or remote), so the remote link stops sending files at once.
+    @ObservationIgnored var onRecordingStart: () -> Void = {}
     @ObservationIgnored private var store: ScanStore?
     @ObservationIgnored private var recordingFolder: (name: String, url: URL)?
     @ObservationIgnored private var stopReason: String?
@@ -823,6 +826,7 @@ final class LineScanModel {
             elapsed = 0
             recordedFrames = 0
             phase = .arming
+            onRecordingStart()
             pipeline.startRecording(folder: folder.url, filtered: filteredDepth,
                                     shortShutter: shortShutter, direction: direction)
         } catch {
@@ -1018,27 +1022,16 @@ extension LineScanModel: RemoteScannerTarget {
         return status
     }
 
-    /// Same path as the record button; refusals reuse the screen's own reasons.
+    /// Same path as the record button; refusals reuse the screen's own reasons. Refused once Close was tapped
+    /// (the screen may still be on its way out).
     func remoteStart() -> String? {
-        switch phase {
-        case .ready:
-            break
-        case .starting:
-            return "The scanner's camera is still starting."
-        case .arming, .recording:
-            return "The scanner is already recording."
-        case .saving, .building:
-            return "The scanner is still saving the last recording."
-        case .failed(let message):
-            return message
-        }
-        guard !calibrating else { return "The scanner is calibrating the baseline." }
+        if let refusal = RemoteCommandRules.startRefusal(remoteLineStatus(), closing: closed) { return refusal }
         startRecording()
         return phase == .arming ? nil : (notice ?? "The recording did not start.")
     }
 
     func remoteStop() -> String? {
-        guard phase == .recording || phase == .arming else { return "The scanner is not recording." }
+        if let refusal = RemoteCommandRules.stopRefusal(remoteLineStatus(), closing: closed) { return refusal }
         stop(reason: nil)
         return nil
     }

@@ -45,50 +45,6 @@ enum RemoteCloseReason: Sendable, Equatable {
     }
 }
 
-/// The scanner's pairing state read during handshakes. Locked: read on the link queue, changed on the main actor.
-final class ScannerSecrets: @unchecked Sendable {
-    enum Lookup: Sendable {
-        case secret(Data)
-        case refused(HandshakeMessage.Refusal)
-    }
-
-    private let lock = NSLock()
-    private var window: PairingWindow?
-    private var pairing: RemotePairing?
-
-    var currentWindow: PairingWindow? { lock.withLock { window } }
-    var currentPairing: RemotePairing? { lock.withLock { pairing } }
-
-    func setWindow(_ newWindow: PairingWindow?) {
-        lock.withLock { window = newWindow }
-    }
-
-    func setPairing(_ newPairing: RemotePairing?) {
-        lock.withLock { pairing = newPairing }
-    }
-
-    /// The secret for a handshake: the code of an open pairing window that is not cooling down after a wrong
-    /// code (`pair`), or the stored key of the paired remote (`resume`).
-    func lookup(mode: HandshakeMessage.Mode, peerID: UUID, now: Date) -> Lookup {
-        lock.withLock {
-            switch mode {
-            case .pair:
-                guard let window, window.isOpen(at: now) else { return .refused(.notPairing) }
-                guard window.acceptsAttempt(at: now) else { return .refused(.busy) }
-                return .secret(RemoteHandshake.pairingSecret(code: window.code))
-            case .resume:
-                guard let pairing, pairing.peerID == peerID else { return .refused(.notPaired) }
-                return .secret(pairing.key)
-            }
-        }
-    }
-
-    /// A pairing failed the code check (new code after too many).
-    func registerWrongCode(now: Date) {
-        lock.withLock { window?.registerWrongCode(now: now) }
-    }
-}
-
 /// Hands an accepted `NWConnection` to the main actor.
 final class AcceptedConnection: @unchecked Sendable {
     // Immutable; the connection is only started later, on the link queue.
@@ -193,6 +149,8 @@ final class RemoteConnection: @unchecked Sendable {
     private var wasOpen = false
     private var sender: FileSender?
     private var receiver: FileReceiver?
+    /// Scanner: this connection holds the one pairing attempt (`ScannerSecrets.lookup`) until its confirm or close.
+    private var holdsPairAttempt = false
 
     /// Remote side: connects to a scanner endpoint.
     init(endpoint: NWEndpoint, side: Side, identity: RemoteIdentity, queue: DispatchQueue) {
@@ -449,6 +407,7 @@ final class RemoteConnection: @unchecked Sendable {
             return
         case .secret(let value):
             secret = value
+            holdsPairAttempt = mode == .pair
         }
         let key = Curve25519.KeyAgreement.PrivateKey()
         let reply = try HandshakeMessage(type: .serverHello, version: RemoteLinkConstants.protocolVersion,
@@ -467,10 +426,15 @@ final class RemoteConnection: @unchecked Sendable {
                                      mode: HandshakeMessage.Mode, peerID: UUID, peerName: String) throws {
         guard case .scanner(let secrets) = side else { throw RemoteLinkError.badHandshake }
         let message = try HandshakeMessage.decode(frame)
-        guard message.type == .confirm, let mac = message.mac,
-              RemoteHandshake.isValid(mac, key: keys.remoteConfirm, transcript: transcript) else {
+        let valid = message.type == .confirm && message.mac.map {
+            RemoteHandshake.isValid($0, key: keys.remoteConfirm, transcript: transcript)
+        } == true
+        if mode == .pair {
+            secrets.endPairAttempt(wrongCode: !valid, now: Date())
+            holdsPairAttempt = false
+        }
+        guard valid else {
             if mode == .pair {
-                secrets.registerWrongCode(now: Date())
                 if let callback = onWrongCode { deliver { callback() } }
                 refuse(.wrongCode)
             } else {
@@ -740,6 +704,9 @@ final class RemoteConnection: @unchecked Sendable {
             }
         case .closed:
             break
+        case .awaitingClientHello:
+            // An accepted connection that stays silent would hold a handshake slot.
+            if time - startedAt > RemoteLinkConstants.helloTimeout { close(.timeout) }
         default:
             if time - startedAt > RemoteLinkConstants.handshakeTimeout { close(.timeout) }
         }
@@ -750,6 +717,11 @@ final class RemoteConnection: @unchecked Sendable {
         state = .closed
         timer?.cancel()
         timer = nil
+        if holdsPairAttempt, case .scanner(let secrets) = side {
+            // Abandoned before its confirm: no code was tested, so it is not counted as wrong.
+            secrets.endPairAttempt(wrongCode: false, now: Date())
+            holdsPairAttempt = false
+        }
         closeSender()
         closeReceiver()
         connection.stateUpdateHandler = nil

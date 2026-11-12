@@ -34,8 +34,12 @@ enum RemoteLinkConstants {
     static let freeSpaceMargin: Int64 = 500_000_000
     /// Most scans in one scan list (newest first).
     static let maxListedScans = 200
-    /// Most handshakes the scanner runs at the same time.
+    /// Most handshakes the scanner runs at the same time (a new one replaces the oldest).
     static let maxPendingConnections = 4
+    /// The scanner closes an accepted connection that has not sent its hello after this long, s.
+    static let helloTimeout: Double = 3
+    /// Largest scan a remote accepts from a scan list, bytes (1 TB).
+    static let maxScanBytes: Int64 = 1_000_000_000_000
 }
 
 /// Errors of the remote link's pure logic.
@@ -172,8 +176,102 @@ struct RemoteScanInfo: Codable, Equatable, Sendable, Identifiable {
     var summary: [String]
     var files: [RemoteFileInfo]
 
+    /// Sum of the file sizes; negative sizes count as 0 and an overflow gives `Int64.max` (sizes come from the
+    /// other phone).
     var totalBytes: Int64 {
-        files.reduce(Int64(0)) { $0 + $1.size }
+        files.reduce(Int64(0)) { total, file in
+            let (sum, overflow) = total.addingReportingOverflow(max(file.size, 0))
+            return overflow ? Int64.max : sum
+        }
+    }
+}
+
+/// The newest scans whose encoded `scans` message fits in one frame.
+enum RemoteScanList {
+    /// Largest record of a scan list, bytes: the frame limit minus room for the tag and headers.
+    static var recordLimit: Int { RemoteLinkConstants.frameLimit - 1_024 }
+
+    /// Keeps the newest scans (the list is newest first, at most `maxListedScans`) so the record fits `limit`.
+    static func fitting(_ scans: [RemoteScanInfo], limit: Int = recordLimit) -> [RemoteScanInfo] {
+        var list = Array(scans.prefix(RemoteLinkConstants.maxListedScans))
+        while !list.isEmpty {
+            guard let size = try? RemoteRecord.message(.scans(list)).count else { return [] }
+            if size <= limit { return list }
+            // Drop the oldest scans in proportion to the excess, at least one per pass.
+            let keep = min(list.count - 1, Int(Double(list.count) * Double(limit) / Double(size)))
+            list = Array(list.prefix(max(keep, 0)))
+        }
+        return list
+    }
+}
+
+/// When the scanner refuses a remote command (FR-RMT-07), from its Line scan status.
+enum RemoteCommandRules {
+    static let closingText = "Line scan is closing on the scanner."
+
+    /// Nil when a Start can begin a recording; otherwise the reason shown on the remote.
+    static func startRefusal(_ status: RemoteStatus, closing: Bool) -> String? {
+        if closing { return closingText }
+        switch status.phase {
+        case .ready: return status.calibrating ? "The scanner is calibrating the baseline." : nil
+        case .closed: return "Line scan is not open on the scanner."
+        case .starting: return "The scanner's camera is still starting."
+        case .arming, .recording: return "The scanner is already recording."
+        case .saving, .building: return "The scanner is still saving the last recording."
+        case .failed: return status.failure ?? "The Line scan screen on the scanner shows an error."
+        }
+    }
+
+    /// Nil when a Stop can stop the recording; otherwise the reason shown on the remote.
+    static func stopRefusal(_ status: RemoteStatus, closing: Bool) -> String? {
+        if closing { return closingText }
+        switch status.phase {
+        case .arming, .recording: return nil
+        case .closed, .starting, .ready, .saving, .building, .failed: return "The scanner is not recording."
+        }
+    }
+}
+
+/// Texts of the scanner status on the remote screen.
+enum RemoteStatusText {
+    static func phase(_ status: RemoteStatus?) -> String {
+        guard let status else { return "Waiting for the scanner's status…" }
+        switch status.phase {
+        case .closed: return "Line scan is not open on the scanner"
+        case .starting: return "Starting…"
+        case .ready: return status.calibrating ? "Calibrating baseline…" : "Ready"
+        case .arming: return "Starting recording…"
+        case .recording:
+            let seconds = Int(max(status.elapsed, 0))
+            return String(format: "● REC %ld:%02ld · %ld frames", seconds / 60, seconds % 60, status.frames)
+        case .saving: return "Saving…"
+        case .building: return "Building map…"
+        case .failed: return "Error on the scanner"
+        }
+    }
+
+    /// Banner first, then the recording warnings, without repeats.
+    static func alerts(_ status: RemoteStatus) -> [String] {
+        var lines: [String] = []
+        for line in [status.banner].compactMap({ $0 }) + status.warnings where !lines.contains(line) {
+            lines.append(line)
+        }
+        return lines
+    }
+
+    static func heat(_ heat: RemoteHeat) -> String {
+        switch heat {
+        case .normal: return "Normal"
+        case .serious: return "Hot: live overlay slowed"
+        case .critical: return "Too hot: recording stopped"
+        }
+    }
+
+    static func battery(_ status: RemoteStatus) -> String {
+        guard let battery = status.battery else { return "—" }
+        var text = String(format: "%.0f %%", battery * 100)
+        if let charging = status.charging { text += charging ? " · charging" : " · on battery" }
+        return text
     }
 }
 

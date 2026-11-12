@@ -1,15 +1,6 @@
 import Foundation
 import Security
 
-/// The phone this phone is paired with, and the shared key (design §7.20).
-struct RemotePairing: Codable, Equatable, Sendable {
-    var peerID: UUID
-    var peerName: String
-    /// 32-byte pairing key.
-    var key: Data
-    var created: Date
-}
-
 /// One Keychain item per role: account `scanner` (the scanner's paired remote) or `remote` (the remote's
 /// paired scanner). This-device-only, readable after the first unlock.
 enum RemoteKeychain {

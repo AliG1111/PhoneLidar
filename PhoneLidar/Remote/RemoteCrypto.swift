@@ -73,6 +73,66 @@ struct PairingWindow: Equatable, Sendable {
     }
 }
 
+/// The phone this phone is paired with, and the shared key (design §7.20, stored by `RemoteKeychain`).
+struct RemotePairing: Codable, Equatable, Sendable {
+    var peerID: UUID
+    var peerName: String
+    /// 32-byte pairing key.
+    var key: Data
+    var created: Date
+}
+
+/// The scanner's pairing state read during handshakes. Locked: read on the link queue, changed on the main actor.
+/// Only one pairing handshake runs at a time, so parallel connections cannot test several codes per 2 s.
+final class ScannerSecrets: @unchecked Sendable {
+    enum Lookup: Equatable, Sendable {
+        case secret(Data)
+        case refused(HandshakeMessage.Refusal)
+    }
+
+    private let lock = NSLock()
+    private var window: PairingWindow?
+    private var pairing: RemotePairing?
+    private var pairAttemptActive = false
+
+    var currentWindow: PairingWindow? { lock.withLock { window } }
+    var currentPairing: RemotePairing? { lock.withLock { pairing } }
+
+    func setWindow(_ newWindow: PairingWindow?) {
+        lock.withLock { window = newWindow }
+    }
+
+    func setPairing(_ newPairing: RemotePairing?) {
+        lock.withLock { pairing = newPairing }
+    }
+
+    /// The secret for a handshake. `pair`: the code of an open window that is not pausing after a wrong code and
+    /// has no other pairing handshake running; a returned secret reserves the attempt until `endPairAttempt`.
+    /// `resume`: the stored key of the paired remote.
+    func lookup(mode: HandshakeMessage.Mode, peerID: UUID, now: Date) -> Lookup {
+        lock.withLock {
+            switch mode {
+            case .pair:
+                guard let window, window.isOpen(at: now) else { return .refused(.notPairing) }
+                guard window.acceptsAttempt(at: now), !pairAttemptActive else { return .refused(.busy) }
+                pairAttemptActive = true
+                return .secret(RemoteHandshake.pairingSecret(code: window.code))
+            case .resume:
+                guard let pairing, pairing.peerID == peerID else { return .refused(.notPaired) }
+                return .secret(pairing.key)
+            }
+        }
+    }
+
+    /// Ends the reserved pairing attempt; a wrong code is counted (new code after too many).
+    func endPairAttempt(wrongCode: Bool, now: Date) {
+        lock.withLock {
+            pairAttemptActive = false
+            if wrongCode { window?.registerWrongCode(now: now) }
+        }
+    }
+}
+
 /// Plain JSON message of the handshake. `Data` fields are base64 in JSON.
 struct HandshakeMessage: Codable, Equatable, Sendable {
     enum Kind: String, Codable, Sendable {

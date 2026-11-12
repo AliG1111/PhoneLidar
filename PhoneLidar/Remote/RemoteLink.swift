@@ -35,22 +35,8 @@ final class RemoteLink {
         case problem(String)
     }
 
-    enum CopyPhase: Equatable {
-        case queued
-        case copying
-        /// Continues by itself (scanner busy, link lost, list refreshing).
-        case waiting(String)
-        /// Stopped, or partly copied earlier: Resume or Discard.
-        case paused
-        case failed(String)
-        case importing
-        case done
-    }
-
-    struct CopyState: Equatable {
-        var phase: CopyPhase
-        var progress: TransferProgress
-    }
+    typealias CopyPhase = RemoteCopyPhase
+    typealias CopyState = RemoteCopyState
 
     private struct ActiveTransfer {
         let id: UInt32
@@ -99,13 +85,15 @@ final class RemoteLink {
     @ObservationIgnored private let secrets = ScannerSecrets()
     @ObservationIgnored private var listener: RemoteListener?
     @ObservationIgnored private var listenerRestart: Task<Void, Never>?
-    @ObservationIgnored private var pending: [UUID: RemoteConnection] = [:]
+    /// Connections still in their handshake, oldest first.
+    @ObservationIgnored private var pending: [RemoteConnection] = []
     @ObservationIgnored private var active: RemoteConnection?
     @ObservationIgnored private weak var target: RemoteScannerTarget?
     @ObservationIgnored private var statusLoop: Task<Void, Never>?
     @ObservationIgnored private var lastStatusBusy = false
     @ObservationIgnored private var freeBytes: Int64?
     @ObservationIgnored private var statusTicks = 0
+    @ObservationIgnored private var scanListGeneration = 0
 
     // Remote
     @ObservationIgnored private var browser: RemoteBrowser?
@@ -121,6 +109,8 @@ final class RemoteLink {
     @ObservationIgnored private var copyQueue: [UUID] = []
     @ObservationIgnored private var activeTransfer: ActiveTransfer?
     @ObservationIgnored private var awaitingScanList = false
+    /// After a `busy` refusal: no new file request until the next status arrives.
+    @ObservationIgnored private var waitingForStatus = false
     @ObservationIgnored private var lastScansVersion: Int?
 
     init(store: ScanStore) {
@@ -193,8 +183,8 @@ final class RemoteLink {
         listenerRestart = nil
         listener?.cancel()
         listener = nil
-        for connection in pending.values { connection.cancel() }
-        pending = [:]
+        for connection in pending { connection.cancel() }
+        pending = []
         active?.cancel()
         active = nil
         statusLoop?.cancel()
@@ -261,6 +251,14 @@ final class RemoteLink {
 
     func detachScanner(_ oldTarget: RemoteScannerTarget) {
         if target === oldTarget { target = nil }
+        sendStatus()
+    }
+
+    /// The Line scan screen starts a recording (record button or remote): stop any file send at once (NFR-REL-07).
+    func scannerRecordingStarts() {
+        guard let connection = active else { return }
+        lastStatusBusy = true
+        connection.stopSending(reason: .busy, message: "The scanner started recording; the copy continues when it is idle.")
         sendStatus()
     }
 
@@ -342,10 +340,13 @@ final class RemoteLink {
     }
 
     private func accept(_ accepted: NWConnection) {
-        guard mode == .scanner, appActive, listener != nil,
-              pending.count < RemoteLinkConstants.maxPendingConnections else {
+        guard mode == .scanner, appActive, listener != nil else {
             accepted.cancel()
             return
+        }
+        // A full set of handshakes (for example silent connections) makes room by dropping the oldest.
+        if pending.count >= RemoteLinkConstants.maxPendingConnections {
+            pending.removeFirst().cancel()
         }
         let connection = RemoteConnection(accepted: accepted, side: .scanner(secrets), identity: identity, queue: queue)
         let cid = connection.id
@@ -353,12 +354,13 @@ final class RemoteLink {
         connection.onMessage = { [weak self] message in self?.scannerReceived(cid, message) }
         connection.onClose = { [weak self] reason, _ in self?.scannerClosed(cid, reason) }
         connection.onWrongCode = { [weak self] in self?.wrongCodeEntered() }
-        pending[cid] = connection
+        pending.append(connection)
         connection.start()
     }
 
     private func scannerOpened(_ cid: UUID, _ opened: RemoteConnection.Opened) {
-        guard let connection = pending.removeValue(forKey: cid) else { return }
+        guard let index = pending.firstIndex(where: { $0.id == cid }) else { return }
+        let connection = pending.remove(at: index)
         guard mode == .scanner, appActive else {
             connection.cancel()
             return
@@ -390,7 +392,10 @@ final class RemoteLink {
     }
 
     private func scannerClosed(_ cid: UUID, _ reason: RemoteCloseReason) {
-        if pending.removeValue(forKey: cid) != nil { return }
+        if let index = pending.firstIndex(where: { $0.id == cid }) {
+            pending.remove(at: index)
+            return
+        }
         guard let current = active, current.id == cid else { return }
         active = nil
         statusLoop?.cancel()
@@ -486,18 +491,27 @@ final class RemoteLink {
         return hasher.finalize()
     }
 
+    /// Lists the folders off the main actor; only the newest request's list is sent, so lists arrive in order,
+    /// and the list is cut to the newest scans that fit one frame.
     private func sendScanList(on connection: RemoteConnection) {
         let items = copyableScans().map { scan in
             (RemoteScanInfo(id: scan.id, name: scan.name, created: scan.created, summary: scan.summary, files: []),
              store.folderURL(for: scan))
         }
-        Task.detached(priority: .utility) {
-            let list = items.map { item -> RemoteScanInfo in
-                var info = item.0
-                info.files = RemoteFiles.list(folder: item.1)
-                return info
-            }
-            connection.send(.scans(list))
+        scanListGeneration += 1
+        let generation = scanListGeneration
+        let cid = connection.id
+        Task { [weak self] in
+            let list = await Task.detached(priority: .utility) {
+                RemoteScanList.fitting(items.map { item -> RemoteScanInfo in
+                    var info = item.0
+                    info.files = RemoteFiles.list(folder: item.1)
+                    return info
+                })
+            }.value
+            guard let self, self.scanListGeneration == generation,
+                  let current = self.active, current.id == cid else { return }
+            current.send(.scans(list))
         }
     }
 
@@ -691,12 +705,8 @@ final class RemoteLink {
             connectIfPossible()
             return
         }
-        if case .refused(.notPaired) = reason {
-            RemoteKeychain.delete(account: RemoteKeychain.remoteAccount)
-            remotePairing = nil
-            linkState = .problem("The scanner does not know this phone any more. Pair again.")
-            return
-        }
+        // A refusal is not authenticated (any phone can claim to be the scanner), so it never removes the pairing;
+        // a `notPaired` refusal is shown and the remote keeps trying.
         linkState = .lost(reason.text)
         scheduleReconnect()
     }
@@ -729,6 +739,7 @@ final class RemoteLink {
         switch message {
         case .status(let newStatus):
             status = newStatus
+            waitingForStatus = false
             if lastScansVersion != newStatus.scansVersion {
                 lastScansVersion = newStatus.scansVersion
                 requestScanList()
@@ -803,11 +814,8 @@ final class RemoteLink {
 
     private func receivedScans(_ list: [RemoteScanInfo]) {
         awaitingScanList = false
-        scannerScans = list.map { scan in
-            var clean = scan
-            clean.files = scan.files.filter { RemoteFiles.isPlainName($0.name) && !RemoteFiles.excludedNames.contains($0.name) }
-            return clean
-        }
+        // Entries from the other phone are checked before use: names, sizes and totals (no traps on peer input).
+        scannerScans = list.filter { RemoteFiles.isAcceptable($0) }
         scansLoaded = true
         for scan in scannerScans where activeTransfer?.scanID != scan.id {
             reconcileStaging(scan)
@@ -912,7 +920,8 @@ final class RemoteLink {
 
     /// Starts the next file of the first queued scan, or imports a scan whose files are all staged.
     private func pumpCopies() {
-        guard activeTransfer == nil, !awaitingScanList, let current = connection, connectionOpen else { return }
+        guard activeTransfer == nil, !awaitingScanList, !waitingForStatus, let current = connection,
+              connectionOpen else { return }
         while let scanID = copyQueue.first {
             guard let scan = scannerScans.first(where: { $0.id == scanID }) else {
                 copyQueue.removeFirst()
@@ -969,6 +978,8 @@ final class RemoteLink {
         case .busy:
             copies[transfer.scanID]?.phase = .waiting("Paused while the scanner records, saves or builds a map")
             copies[transfer.scanID]?.progress.resetRate()
+            // The last status may still say idle; ask again only after a newer one.
+            waitingForStatus = true
         case .changed:
             let url = stagingFolder(transfer.scanID).appendingPathComponent(transfer.name)
             do {
@@ -1013,15 +1024,27 @@ final class RemoteLink {
             try store.save(RemoteImport.record(from: scan, scannerName: scannerName, folderName: folder.name,
                                                copied: Date()))
         } catch {
-            // Put the files back so the copy is not lost; the scan folder (without scan.json) is removed.
+            // Put the files back so the copy is not lost. The new folder (no scan.json) is removed only when it is
+            // empty again; otherwise it stays under Incomplete scans with the files that could not be moved back.
+            var left: [String] = []
             if let created {
                 for name in moved {
-                    try? manager.moveItem(at: created.url.appendingPathComponent(name),
-                                          to: staging.appendingPathComponent(name))
+                    do {
+                        try manager.moveItem(at: created.url.appendingPathComponent(name),
+                                             to: staging.appendingPathComponent(name))
+                    } catch {
+                        left.append(name)
+                    }
                 }
-                store.discard(folderName: created.name)
+                if left.isEmpty { store.discard(folderName: created.name) }
             }
-            copies[scan.id]?.phase = .failed("The copy could not be added to this phone's library (\(error.localizedDescription)). Tap Retry.")
+            var text = "The copy could not be added to this phone's library (\(error.localizedDescription))."
+            if let created, !left.isEmpty {
+                text += " \(left.count) file(s) are in Incomplete scans on Home (\(created.name)); share or delete them there, then copy again."
+            } else {
+                text += " Tap Retry."
+            }
+            copies[scan.id]?.phase = .failed(text)
             return
         }
         // Only the manifest is left in the staging folder; a leftover folder is harmless.

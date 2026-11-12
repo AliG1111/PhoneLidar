@@ -58,6 +58,20 @@ enum RemoteFiles {
     static func neededFreeBytes(remaining: Int64) -> Int64 {
         max(remaining, 0) + RemoteLinkConstants.freeSpaceMargin
     }
+
+    /// A scan from the scanner's list that the remote can safely copy: at least one file, plain unique names other
+    /// than `scan.json`, sizes from 0 to 1 TB, finite times, and a total of at most 1 TB.
+    static func isAcceptable(_ scan: RemoteScanInfo) -> Bool {
+        var names = Set<String>()
+        var total: Int64 = 0
+        for file in scan.files {
+            guard isPlainName(file.name), !excludedNames.contains(file.name), names.insert(file.name).inserted,
+                  file.size >= 0, file.size <= RemoteLinkConstants.maxScanBytes, file.modified.isFinite else { return false }
+            total += file.size
+            guard total <= RemoteLinkConstants.maxScanBytes else { return false }
+        }
+        return !scan.files.isEmpty
+    }
 }
 
 /// What a copy in progress was started from, saved next to its staged files as `.transfer.json`.
@@ -124,6 +138,46 @@ enum RemoteStaging {
     /// True when every listed file is staged with its full size.
     static func isComplete(sizes: [String: Int64], scan: RemoteScanInfo) -> Bool {
         scan.files.allSatisfy { sizes[$0.name] == $0.size }
+    }
+}
+
+/// State of one scan copy on the remote.
+enum RemoteCopyPhase: Equatable, Sendable {
+    case queued
+    case copying
+    /// Continues by itself (scanner busy, link lost, list refreshing).
+    case waiting(String)
+    /// Stopped, or partly copied earlier: Resume or Discard.
+    case paused
+    case failed(String)
+    case importing
+    case done
+}
+
+struct RemoteCopyState: Equatable, Sendable {
+    var phase: RemoteCopyPhase
+    var progress: TransferProgress
+}
+
+/// What the row of a scanner scan offers on the remote screen.
+enum RemoteCopyRow: Equatable {
+    case open
+    case copy
+    case progress
+    case paused
+    case failed(String)
+    case importing
+
+    static func kind(onThisPhone: Bool, state: RemoteCopyState?) -> RemoteCopyRow {
+        if onThisPhone { return .open }
+        guard let state else { return .copy }
+        switch state.phase {
+        case .queued, .copying, .waiting: return .progress
+        case .paused: return .paused
+        case .failed(let message): return .failed(message)
+        case .importing: return .importing
+        case .done: return .copy           // copied earlier, then deleted from this phone: offer the copy again
+        }
     }
 }
 

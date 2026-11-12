@@ -139,7 +139,7 @@ struct RemoteControlView: View {
     private var recordingSection: some View {
         Section {
             VStack(alignment: .leading, spacing: 4) {
-                Text(Self.phaseText(link.status))
+                Text(RemoteStatusText.phase(link.status))
                     .font(.title2.weight(.bold).monospacedDigit())
                     .foregroundStyle(link.status?.phase == .recording ? Color.red : Color.primary)
                 if let failure = link.status?.failure {
@@ -194,7 +194,7 @@ struct RemoteControlView: View {
     private var readoutsSection: some View {
         if let status = link.status {
             Section {
-                ForEach(Self.alerts(status), id: \.self) { text in
+                ForEach(RemoteStatusText.alerts(status), id: \.self) { text in
                     Label(text, systemImage: "exclamationmark.triangle.fill")
                         .font(.callout)
                         .foregroundStyle(.orange)
@@ -208,9 +208,9 @@ struct RemoteControlView: View {
                 }
                 LabeledContent("Baseline", value: status.calibrating ? "Calibrating…" : (status.baselineSaved ? "Calibrated" : "Not calibrated"))
                 LabeledContent("Level", value: LineScanView.levelText(status.levelX, status.levelY))
-                LabeledContent("Heat", value: Self.heatText(status.heat))
+                LabeledContent("Heat", value: RemoteStatusText.heat(status.heat))
                 LabeledContent("Free storage", value: status.freeBytes.map { LineStorage.text($0) } ?? "—")
-                LabeledContent("Battery", value: Self.batteryText(status))
+                LabeledContent("Battery", value: RemoteStatusText.battery(status))
             } header: {
                 Text("Scanner readouts")
             }
@@ -249,7 +249,9 @@ struct RemoteControlView: View {
             Text("\(scan.created.formatted(date: .abbreviated, time: .shortened)) · \(Units.bytes(scan.totalBytes))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if store.record(id: scan.id) != nil {
+            let copy = link.copies[scan.id]
+            switch RemoteCopyRow.kind(onThisPhone: store.record(id: scan.id) != nil, state: copy) {
+            case .open:
                 HStack {
                     Label("On this phone", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
@@ -257,60 +259,49 @@ struct RemoteControlView: View {
                     Button("Open") { onOpenScan(scan.id) }
                         .buttonStyle(.bordered)
                 }
-            } else if let copy = link.copies[scan.id] {
-                copyControls(scan, copy)
-            } else {
+            case .copy:
                 Button("Copy to this phone") { link.copy(scan.id) }
                     .buttonStyle(.bordered)
                     .disabled(!link.isConnected)
+            case .progress:
+                ProgressView(value: copy?.progress.fraction ?? 0)
+                Text(copy.map(Self.copyText) ?? "")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Button("Stop copy") { link.pauseCopy(scan.id) }
+                    .buttonStyle(.bordered)
+            case .paused:
+                ProgressView(value: copy?.progress.fraction ?? 0)
+                Text(String(format: "Partly copied (%.0f %%)", (copy?.progress.fraction ?? 0) * 100))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Resume") { link.copy(scan.id) }
+                        .buttonStyle(.bordered)
+                        .disabled(!link.isConnected)
+                    Button("Discard", role: .destructive) { confirmDiscard = scan }
+                        .buttonStyle(.bordered)
+                }
+            case .failed(let message):
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                HStack {
+                    Button("Retry") { link.copy(scan.id) }
+                        .buttonStyle(.bordered)
+                        .disabled(!link.isConnected)
+                    Button("Discard", role: .destructive) { confirmDiscard = scan }
+                        .buttonStyle(.bordered)
+                }
+            case .importing:
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Adding to this phone's library…")
+                        .font(.caption)
+                }
             }
         }
         .padding(.vertical, 2)
-    }
-
-    @ViewBuilder
-    private func copyControls(_ scan: RemoteScanInfo, _ copy: RemoteLink.CopyState) -> some View {
-        switch copy.phase {
-        case .queued, .copying, .waiting:
-            ProgressView(value: copy.progress.fraction)
-            Text(Self.copyText(copy))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-            Button("Stop copy") { link.pauseCopy(scan.id) }
-                .buttonStyle(.bordered)
-        case .paused:
-            ProgressView(value: copy.progress.fraction)
-            Text(String(format: "Partly copied (%.0f %%)", copy.progress.fraction * 100))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack {
-                Button("Resume") { link.copy(scan.id) }
-                    .buttonStyle(.bordered)
-                    .disabled(!link.isConnected)
-                Button("Discard", role: .destructive) { confirmDiscard = scan }
-                    .buttonStyle(.bordered)
-            }
-        case .failed(let message):
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(.red)
-            HStack {
-                Button("Retry") { link.copy(scan.id) }
-                    .buttonStyle(.bordered)
-                    .disabled(!link.isConnected)
-                Button("Discard", role: .destructive) { confirmDiscard = scan }
-                    .buttonStyle(.bordered)
-            }
-        case .importing:
-            HStack(spacing: 8) {
-                ProgressView()
-                Text("Adding to this phone's library…")
-                    .font(.caption)
-            }
-        case .done:
-            Label("Copied", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        }
     }
 
     // MARK: - Helpers
@@ -339,44 +330,6 @@ struct RemoteControlView: View {
         case .lost, .problem: return .orange
         case .off, .waiting, .connecting: return .primary
         }
-    }
-
-    static func phaseText(_ status: RemoteStatus?) -> String {
-        guard let status else { return "Waiting for the scanner's status…" }
-        switch status.phase {
-        case .closed: return "Line scan is not open on the scanner"
-        case .starting: return "Starting…"
-        case .ready: return status.calibrating ? "Calibrating baseline…" : "Ready"
-        case .arming: return "Starting recording…"
-        case .recording:
-            let seconds = Int(status.elapsed)
-            return String(format: "● REC %ld:%02ld · %ld frames", seconds / 60, seconds % 60, status.frames)
-        case .saving: return "Saving…"
-        case .building: return "Building map…"
-        case .failed: return "Error on the scanner"
-        }
-    }
-
-    static func alerts(_ status: RemoteStatus) -> [String] {
-        var lines: [String] = []
-        if let banner = status.banner { lines.append(banner) }
-        for warning in status.warnings where !lines.contains(warning) { lines.append(warning) }
-        return lines
-    }
-
-    static func heatText(_ heat: RemoteHeat) -> String {
-        switch heat {
-        case .normal: return "Normal"
-        case .serious: return "Hot: live overlay slowed"
-        case .critical: return "Too hot: recording stopped"
-        }
-    }
-
-    static func batteryText(_ status: RemoteStatus) -> String {
-        guard let battery = status.battery else { return "—" }
-        var text = String(format: "%.0f %%", battery * 100)
-        if let charging = status.charging { text += charging ? " · charging" : " · on battery" }
-        return text
     }
 
     static func copyText(_ copy: RemoteLink.CopyState) -> String {
