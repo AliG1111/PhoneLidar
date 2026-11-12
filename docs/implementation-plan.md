@@ -247,16 +247,16 @@ All Low, from [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md). Each needs n
 
 Owner's decisions: direct phone-to-phone Wi-Fi; Line scan only; the scanning phone keeps running its scan when the link drops and reconnects by itself; the second phone starts and stops scans and copies the scan files to itself for review. Requirements FR-RMT-01…12, NFR-PERF-08, NFR-REL-07, NFR-SEC-06; design §3.9, §6.15, §7.20, §10.10. Branch `remote-link`, milestone **M2**, review record `docs/reviews/2026-11-12-M2.md`. Under the token budget this is one session: the orchestrator (Opus 5.5) writes the code; a task touching networking and UI takes the higher assignment.
 
-- [ ] P11.1 Requirements, design, plan for the remote link (Opus 5.5 / max)
-- [ ] P11.2 Pure logic: `RemoteProtocol`, `RemoteCrypto`, `RemoteTransfer` (Opus 5.5 / high)
-- [ ] P11.3 Unit tests for framing, records, handshake and channel, pairing window, listing, resume offsets, staging reconcile, progress, import record (Sonnet 5.5 / high; written with P11.2 by the orchestrator)
-- [ ] P11.4 Networking: `RemoteConnection` (handshake, channel, liveness, file sender/receiver), `RemoteListener`, `RemoteBrowser`, `ScannerSecrets`, `RemoteKeychain` (Opus 5.5 / high)
-- [ ] P11.5 `RemoteLink` service: roles, scanner side, remote side, reconnection, copy queue and import (Opus 5.5 / high)
-- [ ] P11.6 Line scan integration: `RemoteScannerTarget`, keep the screen open after a save, Remote button and chip (Opus 5.5 / high)
-- [ ] P11.7 Views: Remote screen, scanner sheet, Home section; `Info.plist` Local Network keys; `project.yml` test sources (Opus 5.5 / high)
-- [ ] P11.8 CI green (build + unit tests, 0 warnings) (Sonnet 5.5 / medium)
-- [ ] P11.9 Change review of the PR (area-split first review for a new subsystem: networking/crypto and integration/UI), fixes, re-reviews until no new findings (Opus 5.5 / high)
-- [ ] P11.10 Milestone M2 final review of the remote link and its integration (Opus 5.5 / max); code findings re-reviewed at Opus 5.5 / high
+- [x] P11.1 Requirements, design, plan for the remote link (Opus 5.5 / max)
+- [x] P11.2 Pure logic: `RemoteProtocol`, `RemoteCrypto`, `RemoteTransfer` (Opus 5.5 / high)
+- [x] P11.3 Unit tests for framing, records, handshake and channel, pairing window, listing, resume offsets, staging reconcile, progress, import record (Sonnet 5.5 / high; written with P11.2 by the orchestrator)
+- [x] P11.4 Networking: `RemoteConnection` (handshake, channel, liveness, file sender/receiver), `RemoteListener`, `RemoteBrowser`, `ScannerSecrets`, `RemoteKeychain` (Opus 5.5 / high)
+- [x] P11.5 `RemoteLink` service: roles, scanner side, remote side, reconnection, copy queue and import (Opus 5.5 / high)
+- [x] P11.6 Line scan integration: `RemoteScannerTarget`, keep the screen open after a save, Remote button and chip (Opus 5.5 / high)
+- [x] P11.7 Views: Remote screen, scanner sheet, Home section; `Info.plist` Local Network keys; `project.yml` test sources (Opus 5.5 / high)
+- [x] P11.8 CI green (build + unit tests, 0 warnings) (Sonnet 5.5 / medium)
+- [x] P11.9 Change review of the PR (area-split first review for a new subsystem: networking/crypto and integration/UI), fixes, re-reviews until no new findings (Opus 5.5 / high)
+- [x] P11.10 Milestone M2 final review of the remote link and its integration (Opus 5.5 / max); code findings re-reviewed at Opus 5.5 / high
 - [ ] P11.11 README (user guide), requirements traceability, CLAUDE.md, change log; `REVISIONS.md` and the owner's local folder (Sonnet 5.5 / medium; orchestrator)
 
 ## 7. Change log
