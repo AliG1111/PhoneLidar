@@ -917,4 +917,11 @@ final class RemoteBrowser: @unchecked Sendable {
             MainActor.assumeIsolated { callback(found) }
         }
     }
+
+    private func report(_ event: Event) {
+        guard let callback = onEvent else { return }
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { callback(event) }
+        }
+    }
 }
