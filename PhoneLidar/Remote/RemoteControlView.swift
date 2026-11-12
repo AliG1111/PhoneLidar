@@ -27,6 +27,9 @@ struct RemoteControlView: View {
                 if link.pairedScannerName != nil {
                     scansSection
                 }
+                if !link.partialCopies.isEmpty {
+                    partialsSection
+                }
             }
             .navigationTitle("Remote control")
             .navigationBarTitleDisplayMode(.inline)
@@ -68,7 +71,7 @@ struct RemoteControlView: View {
             .confirmationDialog("Forget the paired scanner?", isPresented: $confirmForget, titleVisibility: .visible) {
                 Button("Forget", role: .destructive) { link.forgetScanner() }
             } message: {
-                Text("This phone has to pair again with a new code. Partly copied scans are kept.")
+                Text("This phone has to pair again with a new code. Partly copied scans are kept and can be discarded under Partly copied scans.")
             }
             .confirmationDialog("Discard the partly copied files?",
                                 isPresented: Binding(get: { confirmDiscard != nil }, set: { if !$0 { confirmDiscard = nil } }),
@@ -91,6 +94,7 @@ struct RemoteControlView: View {
             if let name = link.pairedScannerName {
                 LabeledContent("Paired scanner", value: name)
             }
+            LabeledContent("This phone", value: link.identity.name)
             if let error = link.pairError {
                 Text(error)
                     .font(.footnote)
@@ -99,7 +103,7 @@ struct RemoteControlView: View {
         } header: {
             Text("Link")
         } footer: {
-            Text("Wi-Fi must be on in Settings on both phones; no Wi-Fi network is needed. The scanner keeps recording if the link drops, and this phone reconnects by itself.")
+            Text("Wi-Fi must be on in Settings on both phones; no Wi-Fi network is needed. The scanner keeps recording if the link drops, and this phone reconnects by itself. After pairing, the scanner's Remote settings show this phone's name as the paired remote.")
         }
     }
 
@@ -239,6 +243,27 @@ struct RemoteControlView: View {
             }
         } footer: {
             Text("A copy continues after a dropped link and pauses while the scanner records. Copied scans are listed under Saved scans on Home.")
+        }
+    }
+
+    private var partialsSection: some View {
+        Section {
+            ForEach(link.partialCopies) { partial in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(partial.manifest.scan.name)
+                        .font(.headline)
+                    Text("From \(partial.manifest.scannerName) · \(Units.bytes(partial.stagedBytes)) of \(Units.bytes(partial.manifest.scan.totalBytes))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Discard", role: .destructive) { confirmDiscard = partial.manifest.scan }
+                        .buttonStyle(.bordered)
+                }
+                .padding(.vertical, 2)
+            }
+        } header: {
+            Text("Partly copied scans")
+        } footer: {
+            Text("Copies the paired scanner does not offer now (deleted there, another scanner, or not in its list). Discard frees the space on this phone.")
         }
     }
 

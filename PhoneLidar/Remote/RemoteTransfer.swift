@@ -115,6 +115,26 @@ enum RemoteStaging {
         }
     }
 
+    /// A copy in progress found in the staging root, with the bytes it holds.
+    struct Partial: Equatable, Identifiable {
+        var id: UUID { manifest.scan.id }
+        let manifest: RemoteStagingManifest
+        let stagedBytes: Int64
+    }
+
+    /// Every staging folder with a readable manifest whose folder name is its scan ID, newest copy first.
+    static func partials(root: URL) -> [Partial] {
+        let folders = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        return folders.compactMap { folder -> Partial? in
+            guard let manifest = loadManifest(in: folder),
+                  folder.lastPathComponent == manifest.scan.id.uuidString else { return nil }
+            let sizes = stagedSizes(in: folder, scan: manifest.scan)
+            return Partial(manifest: manifest, stagedBytes: stagedBytes(sizes: sizes, scan: manifest.scan))
+        }
+        .sorted { $0.manifest.started > $1.manifest.started }
+    }
+
     /// Sizes of the staged files of `scan` that exist (by name).
     static func stagedSizes(in folder: URL, scan: RemoteScanInfo) -> [String: Int64] {
         var sizes: [String: Int64] = [:]

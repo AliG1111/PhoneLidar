@@ -46,6 +46,14 @@ final class RemoteRulesTests: XCTestCase {
         XCTAssertEqual(RemoteStatusText.phase(status(.ready)), "Ready")
         XCTAssertEqual(RemoteStatusText.phase(status(.ready, calibrating: true)), "Calibrating baseline…")
         XCTAssertEqual(RemoteStatusText.phase(status(.closed)), "Line scan is not open on the scanner")
+        // Out-of-range numbers from the other phone do not trap (R-3).
+        var hostile = status(.recording)
+        hostile.elapsed = 1e300
+        hostile.frames = -4
+        XCTAssertFalse(RemoteStatusText.phase(hostile).isEmpty)
+        let clean = hostile.sanitized()
+        XCTAssertEqual(clean.elapsed, 1e9)
+        XCTAssertEqual(clean.frames, 0)
 
         var warned = status(.recording)
         warned.banner = "Phone is hot"
@@ -125,6 +133,36 @@ final class RemoteRulesTests: XCTestCase {
         XCTAssertEqual(RemoteScanList.fitting([]), [])
         let many = (0..<250).map { _ in scan([]) }
         XCTAssertEqual(RemoteScanList.fitting(many).count, RemoteLinkConstants.maxListedScans)
+    }
+
+    func testDuplicateScanIDsKeepTheNewest() {
+        let first = scan([RemoteFileInfo(name: "a", size: 1, modified: 1)])
+        var duplicate = scan([RemoteFileInfo(name: "b", size: 2, modified: 2)])
+        duplicate = RemoteScanInfo(id: first.id, name: "copy", created: duplicate.created, summary: [], files: duplicate.files)
+        let other = scan([RemoteFileInfo(name: "c", size: 3, modified: 3)])
+        XCTAssertEqual(RemoteScanList.uniqueByID([first, duplicate, other]).map(\.name), ["Line", "Line"])
+        XCTAssertEqual(RemoteScanList.uniqueByID([first, duplicate, other]).map(\.id), [first.id, other.id])
+    }
+
+    func testPartialCopiesAreFoundInTheStagingRoot() throws {
+        let root = try makeTempFolder()
+        XCTAssertEqual(RemoteStaging.partials(root: root.appendingPathComponent("missing")), [])
+        let older = scan([RemoteFileInfo(name: "Video.mov", size: 100, modified: 1)])
+        let newer = scan([RemoteFileInfo(name: "Depth.bin", size: 50, modified: 1)])
+        let olderFolder = RemoteStaging.folder(for: older.id, root: root)
+        try RemoteStaging.saveManifest(RemoteStagingManifest(scan: older, scannerName: "iPhone A", started: Date(timeIntervalSince1970: 1)),
+                                       in: olderFolder)
+        try Data(count: 40).write(to: olderFolder.appendingPathComponent("Video.mov"))
+        try RemoteStaging.saveManifest(RemoteStagingManifest(scan: newer, scannerName: "iPhone B", started: Date(timeIntervalSince1970: 2)),
+                                       in: RemoteStaging.folder(for: newer.id, root: root))
+        // A folder whose name is not its manifest's scan ID, and a folder without a manifest, are ignored.
+        try RemoteStaging.saveManifest(RemoteStagingManifest(scan: scan([]), scannerName: "x", started: Date()),
+                                       in: root.appendingPathComponent("not-an-id"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(UUID().uuidString), withIntermediateDirectories: true)
+        let partials = RemoteStaging.partials(root: root)
+        XCTAssertEqual(partials.map(\.id), [newer.id, older.id])
+        XCTAssertEqual(partials.map(\.stagedBytes), [0, 40])
+        XCTAssertEqual(partials.last?.manifest.scannerName, "iPhone A")
     }
 
     // MARK: Scanner pairing attempts

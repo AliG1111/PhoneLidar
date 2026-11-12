@@ -52,6 +52,7 @@ targets:
       - path: PhoneLidar/Line/TopoGridFile.swift
       - path: PhoneLidar/Line/TopoMapBuilder.swift
       - path: PhoneLidar/Line/TopoReplayData.swift
+      - path: PhoneLidar/Remote/RemoteConnection.swift
       - path: PhoneLidar/Remote/RemoteCrypto.swift
       - path: PhoneLidar/Remote/RemoteProtocol.swift
       - path: PhoneLidar/Remote/RemoteTransfer.swift

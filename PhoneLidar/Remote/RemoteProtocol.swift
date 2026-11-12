@@ -137,14 +137,16 @@ struct RemoteStatus: Codable, Equatable, Sendable {
         }
     }
 
-    /// The same status with every non-finite number removed (`JSONEncoder` throws on NaN and ∞).
+    /// The same status with every non-finite number removed (`JSONEncoder` throws on NaN and ∞) and time and frame
+    /// count bounded, so a received status cannot make a view's integer conversion trap.
     func sanitized() -> RemoteStatus {
         func finite(_ value: Double?) -> Double? {
             guard let value, value.isFinite else { return nil }
             return value
         }
         var copy = self
-        copy.elapsed = elapsed.isFinite ? elapsed : 0
+        copy.elapsed = elapsed.isFinite ? min(max(elapsed, 0), 1e9) : 0
+        copy.frames = max(frames, 0)
         copy.speed = finite(speed)
         copy.lock = lock.isFinite ? min(max(lock, 0), 1) : 0
         copy.distance = finite(distance)
@@ -190,6 +192,12 @@ struct RemoteScanInfo: Codable, Equatable, Sendable, Identifiable {
 enum RemoteScanList {
     /// Largest record of a scan list, bytes: the frame limit minus room for the tag and headers.
     static var recordLimit: Int { RemoteLinkConstants.frameLimit - 1_024 }
+
+    /// One entry per scan ID, the first (newest) kept: a folder duplicated in the Files app has the same ID.
+    static func uniqueByID(_ scans: [RemoteScanInfo]) -> [RemoteScanInfo] {
+        var seen = Set<UUID>()
+        return scans.filter { seen.insert($0.id).inserted }
+    }
 
     /// Keeps the newest scans (the list is newest first, at most `maxListedScans`) so the record fits `limit`.
     static func fitting(_ scans: [RemoteScanInfo], limit: Int = recordLimit) -> [RemoteScanInfo] {
@@ -242,7 +250,7 @@ enum RemoteStatusText {
         case .ready: return status.calibrating ? "Calibrating baseline…" : "Ready"
         case .arming: return "Starting recording…"
         case .recording:
-            let seconds = Int(max(status.elapsed, 0))
+            let seconds = status.elapsed.isFinite ? Int(min(max(status.elapsed, 0), 1e9)) : 0
             return String(format: "● REC %ld:%02ld · %ld frames", seconds / 60, seconds % 60, status.frames)
         case .saving: return "Saving…"
         case .building: return "Building map…"

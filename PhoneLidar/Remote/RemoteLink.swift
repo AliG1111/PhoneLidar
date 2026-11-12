@@ -74,6 +74,9 @@ final class RemoteLink {
     private(set) var scannerScans: [RemoteScanInfo] = []
     private(set) var scansLoaded = false
     private(set) var copies: [UUID: CopyState] = [:]
+    /// Partly copied scans that the paired scanner does not offer now (deleted there, another scanner, list cut):
+    /// shown so they can be discarded.
+    private(set) var partialCopies: [RemoteStaging.Partial] = []
 
     // MARK: - Private
 
@@ -94,6 +97,9 @@ final class RemoteLink {
     @ObservationIgnored private var freeBytes: Int64?
     @ObservationIgnored private var statusTicks = 0
     @ObservationIgnored private var scanListGeneration = 0
+    @ObservationIgnored private var scannerPermissionDenied = false
+    /// A scan list asked for while recording: sent when the scanner is idle again.
+    @ObservationIgnored private var listRequestedWhileBusy = false
 
     // Remote
     @ObservationIgnored private var browser: RemoteBrowser?
@@ -254,12 +260,31 @@ final class RemoteLink {
         sendStatus()
     }
 
-    /// The Line scan screen starts a recording (record button or remote): stop any file send at once (NFR-REL-07).
-    func scannerRecordingStarts() {
-        guard let connection = active else { return }
-        lastStatusBusy = true
-        connection.stopSending(reason: .busy, message: "The scanner started recording; the copy continues when it is idle.")
-        sendStatus()
+    /// The Line scan screen of this phone starts a recording (record button or remote command). A scanner stops
+    /// any file send at once; a remote pauses its own copy while it records (NFR-REL-07).
+    func recordingStarts() {
+        switch mode {
+        case .scanner:
+            guard let connection = active else { return }
+            lastStatusBusy = true
+            connection.stopSending(reason: .busy, message: "The scanner started recording; the copy continues when it is idle.")
+            sendStatus()
+        case .remote:
+            if let transfer = activeTransfer {
+                connection?.cancelFile(transferID: transfer.id)
+                activeTransfer = nil
+            }
+            for id in copyQueue { copies[id]?.phase = .waiting(Self.localRecordingText) }
+        case .off:
+            break
+        }
+    }
+
+    private static let localRecordingText = "Paused while this phone records"
+
+    /// True while this phone's own Line scan screen records, saves or builds a map.
+    private var localBusy: Bool {
+        target?.remoteLineStatus().isBusy ?? false
     }
 
     func openPairingWindow() {
@@ -316,8 +341,13 @@ final class RemoteLink {
         guard mode == .scanner, appActive else { return }
         switch event {
         case .ready:
+            // A ready listener does not prove Local Network access; only the probe does.
+            if active == nil, !scannerPermissionDenied, case .problem = linkState { linkState = .waiting }
+        case .permissionGranted:
+            scannerPermissionDenied = false
             if active == nil, case .problem = linkState { linkState = .waiting }
         case .permissionDenied:
+            scannerPermissionDenied = true
             if active == nil { linkState = .problem(RemoteCloseReason.permissionText) }
         case .failed(let message):
             listenerFailed(message)
@@ -344,9 +374,14 @@ final class RemoteLink {
             accepted.cancel()
             return
         }
-        // A full set of handshakes (for example silent connections) makes room by dropping the oldest.
+        // A full set of handshakes makes room by dropping the oldest one that has not sent a hello (silent
+        // connections); handshakes in progress are kept and the new connection is refused instead.
         if pending.count >= RemoteLinkConstants.maxPendingConnections {
-            pending.removeFirst().cancel()
+            guard let index = pending.firstIndex(where: { !$0.hasHello }) else {
+                accepted.cancel()
+                return
+            }
+            pending.remove(at: index).cancel()
         }
         let connection = RemoteConnection(accepted: accepted, side: .scanner(secrets), identity: identity, queue: queue)
         let cid = connection.id
@@ -359,23 +394,19 @@ final class RemoteLink {
     }
 
     private func scannerOpened(_ cid: UUID, _ opened: RemoteConnection.Opened) {
-        guard let index = pending.firstIndex(where: { $0.id == cid }) else { return }
+        guard let index = pending.firstIndex(where: { $0.id == cid }) else {
+            // Replaced by a newer handshake after it had finished: the remote already holds the new key, so the
+            // pairing is stored here too and the remote's next connection resumes with it.
+            if opened.newPairingKey != nil, mode == .scanner, appActive { storePairing(opened) }
+            return
+        }
         let connection = pending.remove(at: index)
         guard mode == .scanner, appActive else {
             connection.cancel()
             return
         }
-        if let key = opened.newPairingKey {
-            let pairing = RemotePairing(peerID: opened.peerID, peerName: opened.peerName, key: key, created: Date())
-            secrets.setPairing(pairing)
-            closePairingWindow()
-            pairedPeerName = opened.peerName
-            do {
-                try RemoteKeychain.save(pairing, account: RemoteKeychain.scannerAccount)
-                scannerNotice = "Paired with \(opened.peerName)."
-            } catch {
-                scannerNotice = "Paired with \(opened.peerName) until the app closes: \(error.localizedDescription)"
-            }
+        if opened.newPairingKey != nil {
+            storePairing(opened)
         } else if secrets.currentPairing?.peerID != opened.peerID {
             // Another remote paired while this one was connecting.
             connection.cancel()
@@ -389,6 +420,20 @@ final class RemoteLink {
         lastStatusBusy = false
         startStatusLoop()
         sendStatus()
+    }
+
+    private func storePairing(_ opened: RemoteConnection.Opened) {
+        guard let key = opened.newPairingKey else { return }
+        let pairing = RemotePairing(peerID: opened.peerID, peerName: opened.peerName, key: key, created: Date())
+        secrets.setPairing(pairing)
+        closePairingWindow()
+        pairedPeerName = opened.peerName
+        do {
+            try RemoteKeychain.save(pairing, account: RemoteKeychain.scannerAccount)
+            scannerNotice = "Paired with \(opened.peerName)."
+        } catch {
+            scannerNotice = "Paired with \(opened.peerName) until the app closes: \(error.localizedDescription)"
+        }
     }
 
     private func scannerClosed(_ cid: UUID, _ reason: RemoteCloseReason) {
@@ -415,7 +460,11 @@ final class RemoteLink {
         case .command(let id, let action):
             runCommand(id: id, action: action, on: connection)
         case .listScans:
-            sendScanList(on: connection)
+            if localBusy {
+                listRequestedWhileBusy = true        // folder listing waits until the recording is saved
+            } else {
+                sendScanList(on: connection)
+            }
         case .fileRequest(let request):
             serveFile(request, on: connection)
         default:
@@ -471,13 +520,20 @@ final class RemoteLink {
         }
         lastStatusBusy = current.isBusy
         connection.send(.status(current.sanitized()))
+        if !current.isBusy, listRequestedWhileBusy {
+            listRequestedWhileBusy = false
+            sendScanList(on: connection)
+        }
     }
 
     /// Saved Line scans not being recorded or built, newest first.
     private func copyableScans() -> [ScanRecord] {
         let active = store.activeLineFolders
+        var seen = Set<UUID>()
+        // One entry per ID (a folder duplicated in the Files app keeps its ID); the newest is kept, which is also
+        // the record `store.record(id:)` serves.
         return Array(store.scans
-            .filter { $0.kind == .line && !active.contains($0.folderName) }
+            .filter { $0.kind == .line && !active.contains($0.folderName) && seen.insert($0.id).inserted }
             .prefix(RemoteLinkConstants.maxListedScans))
     }
 
@@ -551,6 +607,7 @@ final class RemoteLink {
 
     private func startRemote() {
         remotePairing = RemoteKeychain.load(account: RemoteKeychain.remoteAccount)
+        refreshPartials()
         if connection == nil { linkState = .waiting }
         if browser == nil { startBrowser() }
     }
@@ -634,6 +691,15 @@ final class RemoteLink {
             pairError = "\(scanner.name) is out of reach."
             return
         }
+        // A phone pretending to be the scanner could learn the code from a pairing attempt (NFR-SEC-06), so pairing
+        // is refused while two services claim the same scanner ID or name.
+        let clash = foundScanners.contains { other in
+            other.id != scanner.id && other.names.contains(where: { scanner.names.contains($0) || $0 == scanner.name })
+        }
+        guard !scanner.isAmbiguous, !clash else {
+            pairError = "More than one phone answers as \(scanner.name), so pairing is refused. Make sure only the scanner has Allow remote control on, move away from other phones, then try again."
+            return
+        }
         reconnectTask?.cancel()
         reconnectTask = nil
         dropConnection()
@@ -654,6 +720,7 @@ final class RemoteLink {
         scansLoaded = false
         for id in copyQueue { copies[id]?.phase = .paused }
         copyQueue.removeAll()
+        refreshPartials()
         linkState = mode == .remote && appActive ? .waiting : .off
     }
 
@@ -675,13 +742,13 @@ final class RemoteLink {
         guard let current = connection, current.id == cid else { return }
         connectionOpen = true
         failures = 0
+        pairError = nil
         if let key = opened.newPairingKey {
             let pairing = RemotePairing(peerID: opened.peerID, peerName: opened.peerName, key: key, created: Date())
             remotePairing = pairing
             pairingTarget = nil
             do {
                 try RemoteKeychain.save(pairing, account: RemoteKeychain.remoteAccount)
-                pairError = nil
             } catch {
                 pairError = "Paired until the app closes: \(error.localizedDescription)"
             }
@@ -737,7 +804,9 @@ final class RemoteLink {
     private func remoteReceived(_ cid: UUID, _ message: RemoteMessage) {
         guard let current = connection, current.id == cid, connectionOpen else { return }
         switch message {
-        case .status(let newStatus):
+        case .status(let received):
+            // Numbers from the other phone are bounded before any view converts them.
+            let newStatus = received.sanitized()
             status = newStatus
             waitingForStatus = false
             if lastScansVersion != newStatus.scansVersion {
@@ -815,7 +884,7 @@ final class RemoteLink {
     private func receivedScans(_ list: [RemoteScanInfo]) {
         awaitingScanList = false
         // Entries from the other phone are checked before use: names, sizes and totals (no traps on peer input).
-        scannerScans = list.filter { RemoteFiles.isAcceptable($0) }
+        scannerScans = RemoteScanList.uniqueByID(list.filter { RemoteFiles.isAcceptable($0) })
         scansLoaded = true
         for scan in scannerScans where activeTransfer?.scanID != scan.id {
             reconcileStaging(scan)
@@ -824,7 +893,16 @@ final class RemoteLink {
             copies[id]?.phase = .failed("No longer offered by the scanner.")
         }
         copyQueue.removeAll { id in !scannerScans.contains { $0.id == id } }
+        refreshPartials()
         pumpCopies()
+    }
+
+    /// Staging folders of scans the scanner does not offer now (not queued or copying).
+    private func refreshPartials() {
+        let offered = Set(scannerScans.map(\.id))
+        partialCopies = RemoteStaging.partials(root: stagingRoot).filter { partial in
+            !offered.contains(partial.id) && !copyQueue.contains(partial.id) && activeTransfer?.scanID != partial.id
+        }
     }
 
     /// Drops staged files that no longer match the scanner's files, and shows partly copied scans.
@@ -905,6 +983,7 @@ final class RemoteLink {
         } catch {
             copies[scanID]?.phase = .failed("The partly copied files could not be deleted (\(error.localizedDescription)).")
         }
+        refreshPartials()
     }
 
     /// The active file transfer stops (link lost or closed); the scan stays queued and continues later.
@@ -928,8 +1007,9 @@ final class RemoteLink {
                 copies[scanID]?.phase = .failed("No longer offered by the scanner.")
                 continue
             }
-            guard let scannerStatus = status, !scannerStatus.isBusy else {
-                let text = status == nil ? "Waiting for the scanner's status" : "Paused while the scanner records, saves or builds a map"
+            guard let scannerStatus = status, !scannerStatus.isBusy, !localBusy else {
+                let text = localBusy ? Self.localRecordingText
+                    : (status == nil ? "Waiting for the scanner's status" : "Paused while the scanner records, saves or builds a map")
                 for id in copyQueue { copies[id]?.phase = .waiting(text) }
                 return
             }

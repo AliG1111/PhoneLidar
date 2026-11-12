@@ -235,7 +235,7 @@ A second iPhone running Phone LiDAR controls a mounted Line scan phone, for moun
 **Set up once**
 1. On the **scanner** (the mounted phone): open **Line scan**, tap the antenna button next to **Close**, turn on **Allow remote control**, then tap **Pair a remote**. A 6-digit code shows for 5 minutes.
 2. On the **remote** (the phone in your hand): Home › **Remote link** › **Control a scanner phone**. The scanner appears under **Scanners nearby** with its name (for example "iPhone 1A2B"); tap it and enter the code.
-3. Both phones show **Connected to …**. The pairing is kept: from now on the remote connects by itself whenever both phones have the app open. A wrong code is refused; after a wrong code the scanner waits 2 s before it accepts another try, and every 5 wrong codes it shows a new code. **Forget** (scanner sheet, or the **…** menu on the remote) removes the pairing.
+3. Both phones show **Connected to …**. Check that the scanner's Remote settings show your phone's name (the remote screen shows it as **This phone**) as the **Paired remote**. The pairing is kept: from now on the remote connects by itself whenever both phones have the app open. A wrong code is refused; one pairing attempt runs at a time, after a wrong code the scanner waits 2 s before it accepts another try, and every 5 wrong codes it shows a new code. If more than one phone answers with the scanner's name, pairing is refused until only the scanner is advertising. **Forget** (scanner sheet, or the **…** menu on the remote) removes the pairing.
 4. If iOS asked about the local network and **Don't Allow** was tapped, both screens say "Local Network access is off for Phone LiDAR": turn it on in **Settings › Privacy & Security › Local Network**.
 
 **Using it**
@@ -245,18 +245,19 @@ A second iPhone running Phone LiDAR controls a mounted Line scan phone, for moun
 - While remote control is allowed, the scanner's Line scan screen **stays open after each save** ("Saved "…". Ready for the next recording.") so the next recording can be started from the remote. Without remote control it opens the scan as before.
 - The remote screen keeps the remote phone awake while it is open. **Close** returns to Home and keeps the link (and any copy) running while the app is open, so you can open a copied scan and come back; **…** › **Turn the remote link off** stops it.
 
-**When the link drops** (out of range, steel in the way, a phone locked)
-- The scanner **keeps recording**, saving and building the map as if nothing happened; all data stays on the scanner.
-- Both phones say "Link lost (…)". The remote retries by itself (after 1, 2, 4, then every 5 s) and the scanner keeps waiting for it, so the link comes back without touching either phone once they are in range with the app open. iOS stops the link while the app is in the background (phone locked or another app open) and it reconnects when the app is back on screen.
+**When the link drops** (out of range, steel in the way, the remote phone locked)
+- The scanner **keeps recording**, saving and building the map as if nothing happened; all data stays on the scanner. (Locking the scanner phone itself or switching to another app on it still stops and saves the recording, as it always has: iOS stops the camera.)
+- Both phones say "Link lost (…)". The remote retries by itself (after 1, 2, 4, then every 5 s) and the scanner keeps waiting for it, so the link comes back without touching either phone once they are in range with the app open (usually within about 15 s). iOS stops the link while the app is in the background (phone locked or another app open) and it reconnects when the app is back on screen.
 - No range figure is published for this kind of link; it depends on the two phones and what is between them. Measure it at the mount (P9 test V12 in `docs/implementation-plan.md`).
 
 **Copying scans to the remote for review**
 - **Scans on the scanner** lists the scanner's saved Line scans with date and size (a recording that is still being saved or built appears once it is done). Tap **Copy to this phone**. The copy shows MB copied, the rate and the time left; map and statistics files come first, `Depth.bin` and `Video.mov` last (about 120 MB of video per recorded minute plus the depth data).
 - When it finishes, the scan is added to the remote's **Saved scans** with the scanner's name, date and summary plus "Copied from <scanner> on <date>.", and opens with the normal **Topographic map**, **Topographic replay** and **Playback** screens. **Open** jumps to it.
 - A copy **pauses while the scanner records, saves or builds a map** and continues afterwards; a dropped link pauses it and it continues from where it stopped after reconnecting. If the remote app was closed, the scan shows **Partly copied (N %)** with **Resume** and **Discard**. **Stop copy** pauses it by hand. A file that changed on the scanner since the copy started (for example after **Rebuild map**) is copied again.
-- The remote checks its free storage first (the remaining size plus 500 MB). Partial copies are kept out of the library until every file is complete.
+- The remote checks its free storage first (the remaining size plus 500 MB). Partial copies are kept out of the library until every file is complete. A copy also pauses while the remote phone itself records a Line scan.
+- **Partly copied scans** lists partial copies the paired scanner does not offer now (deleted there, a different scanner paired, or not in its list); **Discard** frees their space.
 
-**Security**: the phones only talk to the phone they are paired with. Every connection is checked with the pairing key and all traffic is encrypted, so other phones nearby cannot start or stop a scan or copy files. The 6-digit code protects the pairing against other people's phones; pair in a place where nobody is deliberately attacking the link at that moment.
+**Security**: after pairing, the phones only talk to the phone they are paired with. Every connection is checked with the 256-bit pairing key and all traffic is encrypted, so other phones nearby cannot start or stop a scan or copy files. Limit of the pairing step: a phone running modified software that pretends to be the scanner while you pair can work out the 6-digit code from that one attempt and pair in your place. So pair where no such phone is around, and afterwards check that the scanner shows your phone as the paired remote; if it shows another name, tap **Forget** and pair again.
 
 ## Opening scans on Windows
 

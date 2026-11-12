@@ -33,8 +33,9 @@ PhoneLidar/Line/             Line scan: LineCapturePipeline, LineMotionMath (pur
                              LinePlaybackView, TopoMapBuilder/Renderer/View, TopoGridFile,
                              TopoReplayData/Model/Scene/View, DepthColors, DisplayLinkProxy
 PhoneLidar/Remote/           Remote link: RemoteProtocol/RemoteCrypto/RemoteTransfer (pure, tested), RemoteConnection
-                             (NWConnection, handshake, channel, file sender/receiver, listener, browser), RemoteKeychain,
-                             RemoteLink (@MainActor service in the environment), RemoteControlView, RemoteLinkViews
+                             (NWConnection, handshake, channel, file sender/receiver; loopback-tested), RemoteDiscovery
+                             (listener, permission probe, browser), RemoteKeychain, RemoteLink (@MainActor service in
+                             the environment), RemoteControlView, RemoteLinkViews
 Tests/PhoneLidarTests/       Host-less XCTest bundle (pure-logic tests, run in CI)
 README.md                    User guide (the build guide); kept in sync with the claude.ai project copy
 docs/                        requirements.md, design.md, implementation-plan.md, reviews/
@@ -144,7 +145,7 @@ Claude-Session: https://claude.ai/code/session_014WLjMvrCLDLxVAm3jLG84p
 - docs/requirements.md — FR/NFR IDs, acceptance criteria, traceability and status.
 - docs/design.md — architecture, concurrency, algorithms, byte-exact file formats, technology choices, risks, guide
   vs code discrepancies.
-- docs/implementation-plan.md — model matrix, workflow, self-review checklist, phases P0–P10, change log.
+- docs/implementation-plan.md — model matrix, workflow, self-review checklist, phases P0–P11, change log.
 - docs/reviews/ — milestone review records.
 - User guide: `README.md` (repo), the same content as the project copy on claude.ai; the orchestrator syncs the copies,
   and the owner's local `phone-lidar-build-guide.md` is replaced from it. Update README for every user-visible change.

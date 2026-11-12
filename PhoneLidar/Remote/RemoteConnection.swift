@@ -16,7 +16,12 @@ struct RemoteIdentity: Sendable, Equatable {
 enum RemoteCloseReason: Sendable, Equatable {
     case closedByUs
     case peerClosed
+    /// No data on an open link for `linkTimeout`.
     case timeout
+    /// The other phone did not answer a handshake step in time.
+    case noAnswer
+    /// The handshake did not finish within `handshakeTimeout`.
+    case setupTimeout
     case refused(HandshakeMessage.Refusal)
     case wrongScanner
     case permissionDenied
@@ -24,11 +29,20 @@ enum RemoteCloseReason: Sendable, Equatable {
 
     static let permissionText = "Local Network access is off for Phone LiDAR. Turn it on in Settings › Privacy & Security › Local Network."
 
+    /// The reason without a final period, to be placed inside a sentence ("Link lost (…).").
     var text: String {
+        var value = rawText
+        while value.hasSuffix(".") { value.removeLast() }
+        return value
+    }
+
+    private var rawText: String {
         switch self {
         case .closedByUs: return "disconnected"
         case .peerClosed: return "the other phone closed the link"
         case .timeout: return String(format: "no data from the other phone for %.0f s", RemoteLinkConstants.linkTimeout)
+        case .noAnswer: return String(format: "the other phone did not answer within %.0f s", RemoteLinkConstants.helloTimeout)
+        case .setupTimeout: return String(format: "the connection was not set up within %.0f s", RemoteLinkConstants.handshakeTimeout)
         case .wrongScanner: return "a different phone answered"
         case .permissionDenied: return Self.permissionText
         case .failed(let text): return text
@@ -39,28 +53,10 @@ enum RemoteCloseReason: Sendable, Equatable {
             case .notPairing: return "the scanner is not pairing: tap Pair a remote on the scanner first"
             case .wrongCode: return "wrong code"
             case .authentication: return "the other phone could not be verified"
-            case .busy: return "the scanner is busy: wait 2 s and try again"
+            case .busy: return "the scanner is busy with another pairing attempt: try again in a few seconds"
             }
         }
     }
-}
-
-/// Hands an accepted `NWConnection` to the main actor.
-final class AcceptedConnection: @unchecked Sendable {
-    // Immutable; the connection is only started later, on the link queue.
-    let connection: NWConnection
-
-    init(_ connection: NWConnection) {
-        self.connection = connection
-    }
-}
-
-/// A scanner found by the browser. `endpoints`: every advertised path to it (peer-to-peer, Wi-Fi).
-struct FoundScanner: Identifiable, Equatable, @unchecked Sendable {
-    // Immutable values; NWEndpoint is a value type.
-    let id: UUID
-    let name: String
-    let endpoints: [NWEndpoint]
 }
 
 /// One link connection: handshake, encrypted records, liveness, and the file sender (scanner) or receiver (remote).
@@ -125,6 +121,11 @@ final class RemoteConnection: @unchecked Sendable {
 
     let id = UUID()
     private let queue: DispatchQueue
+    private let helloLock = NSLock()
+    private var helloSeen = false
+
+    /// Scanner: true once a well-formed hello arrived (read on the main actor to pick a connection to drop).
+    var hasHello: Bool { helloLock.withLock { helloSeen } }
     private let connection: NWConnection
     private let side: Side
     private let identity: RemoteIdentity
@@ -151,6 +152,8 @@ final class RemoteConnection: @unchecked Sendable {
     private var receiver: FileReceiver?
     /// Scanner: this connection holds the one pairing attempt (`ScannerSecrets.lookup`) until its confirm or close.
     private var holdsPairAttempt = false
+    /// Scanner: when the server hello was sent (the remote answers with its confirm straight away).
+    private var serverHelloSentAt: TimeInterval = 0
 
     /// Remote side: connects to a scanner endpoint.
     init(endpoint: NWEndpoint, side: Side, identity: RemoteIdentity, queue: DispatchQueue) {
@@ -198,6 +201,20 @@ final class RemoteConnection: @unchecked Sendable {
         (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
+    /// Short text for a network error (NWError's own description is a debug string).
+    static func describe(network error: NWError) -> String {
+        switch error {
+        case .posix(let code):
+            return "network error: " + String(cString: strerror(code.rawValue)).lowercased()
+        case .dns(let code):
+            return "network name error \(code)"
+        case .tls(let status):
+            return "secure connection error \(status)"
+        default:
+            return "network error"
+        }
+    }
+
     // MARK: - Public (any thread)
 
     func start() {
@@ -240,6 +257,14 @@ final class RemoteConnection: @unchecked Sendable {
             closeSender()
             do {
                 let handle = try FileHandle(forReadingFrom: url)
+                // The file may have been replaced (Rebuild map renames new files over old ones) after the main actor
+                // checked it by path: compare the opened file itself.
+                guard Self.opened(handle, matches: request) else {
+                    try? handle.close()
+                    sendNow(.fileError(transferID: request.transferID, reason: .changed,
+                                       message: "\(request.name) changed on the scanner."))
+                    return
+                }
                 try handle.seek(toOffset: UInt64(request.offset))
                 sender = FileSender(transferID: request.transferID, handle: handle, size: request.size,
                                     offset: request.offset)
@@ -249,6 +274,14 @@ final class RemoteConnection: @unchecked Sendable {
             }
             pumpSender()
         }
+    }
+
+    /// Size and modification time of an open file, from `fstat`, against the request.
+    private static func opened(_ handle: FileHandle, matches request: RemoteFileRequest) -> Bool {
+        var info = stat()
+        guard fstat(handle.fileDescriptor, &info) == 0 else { return false }
+        let modified = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
+        return Int64(info.st_size) == request.size && abs(modified - request.modified) < 0.001
     }
 
     /// Scanner: stops a running send and tells the remote why.
@@ -319,7 +352,7 @@ final class RemoteConnection: @unchecked Sendable {
             // NWConnection retries by itself; the handshake time limit ends a wait that does not recover.
             if Self.isPolicyDenied(error) { close(.permissionDenied) }
         case .failed(let error):
-            close(Self.isPolicyDenied(error) ? .permissionDenied : .failed(error.localizedDescription))
+            close(Self.isPolicyDenied(error) ? .permissionDenied : .failed(Self.describe(network: error)))
         case .cancelled:
             close(.peerClosed)
         default:
@@ -337,7 +370,7 @@ final class RemoteConnection: @unchecked Sendable {
             }
             guard !self.isClosedOrRefusing else { return }
             if let error {
-                self.close(.failed(error.localizedDescription))
+                self.close(.failed(Self.describe(network: error)))
             } else if isComplete {
                 self.close(.peerClosed)
             } else {
@@ -396,6 +429,7 @@ final class RemoteConnection: @unchecked Sendable {
         let hello = try HandshakeMessage.decode(frame)
         guard hello.type == .clientHello, hello.isWellFormedHello, let mode = hello.mode,
               let peerID = hello.deviceID, let peerKey = hello.publicKey else { throw RemoteLinkError.badHandshake }
+        helloLock.withLock { helloSeen = true }
         guard hello.version == RemoteLinkConstants.protocolVersion else {
             refuse(.version)
             return
@@ -418,6 +452,7 @@ final class RemoteConnection: @unchecked Sendable {
         let keys = try RemoteHandshake.keys(privateKey: key, peerPublicKey: peerKey, secret: secret, transcript: transcript)
         state = .awaitingClientConfirm(keys: keys, transcript: transcript, mode: mode, peerID: peerID,
                                        peerName: Self.cleanName(hello.deviceName))
+        serverHelloSentAt = Self.now
         sendFrame(reply)
     }
 
@@ -571,7 +606,7 @@ final class RemoteConnection: @unchecked Sendable {
     private func sendFrame(_ payload: Data) {
         lastSend = Self.now
         connection.send(content: RemoteFrame.encode(payload), completion: .contentProcessed { [weak self] error in
-            if let error { self?.close(.failed(error.localizedDescription)) }
+            if let error { self?.close(.failed(Self.describe(network: error))) }
         })
     }
 
@@ -706,9 +741,12 @@ final class RemoteConnection: @unchecked Sendable {
             break
         case .awaitingClientHello:
             // An accepted connection that stays silent would hold a handshake slot.
-            if time - startedAt > RemoteLinkConstants.helloTimeout { close(.timeout) }
+            if time - startedAt > RemoteLinkConstants.helloTimeout { close(.noAnswer) }
+        case .awaitingClientConfirm:
+            // The remote sends its confirm right after the server hello; a silent one would hold the pairing attempt.
+            if time - serverHelloSentAt > RemoteLinkConstants.helloTimeout { close(.noAnswer) }
         default:
-            if time - startedAt > RemoteLinkConstants.handshakeTimeout { close(.timeout) }
+            if time - startedAt > RemoteLinkConstants.handshakeTimeout { close(.setupTimeout) }
         }
     }
 
@@ -736,164 +774,6 @@ final class RemoteConnection: @unchecked Sendable {
     private func deliver(_ work: @escaping @MainActor @Sendable () -> Void) {
         DispatchQueue.main.async {
             MainActor.assumeIsolated { work() }
-        }
-    }
-}
-
-/// Bonjour advertising and accepting connections on the scanner.
-final class RemoteListener: @unchecked Sendable {
-    // `listener` is created and cancelled on the main actor; its handlers run on `queue` and only read the
-    // callbacks, which are set before `start()`.
-    enum Event: Sendable {
-        case ready
-        case permissionDenied
-        case failed(String)
-    }
-
-    private let queue: DispatchQueue
-    private let identity: RemoteIdentity
-    private var listener: NWListener?
-
-    var onEvent: (@MainActor @Sendable (Event) -> Void)?
-    var onConnection: (@MainActor @Sendable (AcceptedConnection) -> Void)?
-
-    init(identity: RemoteIdentity, queue: DispatchQueue) {
-        self.identity = identity
-        self.queue = queue
-    }
-
-    func start() throws {
-        let listener = try NWListener(using: RemoteConnection.parameters())
-        let txt = NWTXTRecord(["id": identity.id.uuidString, "v": String(RemoteLinkConstants.protocolVersion)])
-        listener.service = NWListener.Service(name: identity.name, type: RemoteLinkConstants.serviceType,
-                                              domain: nil, txtRecord: txt.data)
-        listener.stateUpdateHandler = { [weak self] state in
-            self?.stateChanged(state)
-        }
-        listener.newConnectionHandler = { [weak self] connection in
-            self?.accepted(connection)
-        }
-        self.listener = listener
-        listener.start(queue: queue)
-    }
-
-    func cancel() {
-        listener?.stateUpdateHandler = nil
-        listener?.newConnectionHandler = nil
-        listener?.cancel()
-        listener = nil
-    }
-
-    private func stateChanged(_ state: NWListener.State) {
-        switch state {
-        case .ready:
-            report(.ready)
-        case .waiting(let error):
-            if RemoteConnection.isPolicyDenied(error) { report(.permissionDenied) }
-        case .failed(let error):
-            report(RemoteConnection.isPolicyDenied(error) ? .permissionDenied : .failed(error.localizedDescription))
-        default:
-            break
-        }
-    }
-
-    private func accepted(_ connection: NWConnection) {
-        guard let callback = onConnection else {
-            connection.cancel()
-            return
-        }
-        let box = AcceptedConnection(connection)
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated { callback(box) }
-        }
-    }
-
-    private func report(_ event: Event) {
-        guard let callback = onEvent else { return }
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated { callback(event) }
-        }
-    }
-}
-
-/// Finds advertising scanners on the remote.
-final class RemoteBrowser: @unchecked Sendable {
-    // `browser` is created and cancelled on the main actor; its handlers run on `queue` and only read the
-    // callbacks, which are set before `start()`.
-    enum Event: Sendable {
-        case ready
-        case permissionDenied
-        case failed(String)
-    }
-
-    private let queue: DispatchQueue
-    private var browser: NWBrowser?
-
-    var onEvent: (@MainActor @Sendable (Event) -> Void)?
-    var onResults: (@MainActor @Sendable ([FoundScanner]) -> Void)?
-
-    init(queue: DispatchQueue) {
-        self.queue = queue
-    }
-
-    func start() {
-        let parameters = NWParameters()
-        parameters.includePeerToPeer = true
-        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: RemoteLinkConstants.serviceType, domain: nil),
-                                using: parameters)
-        browser.stateUpdateHandler = { [weak self] state in
-            self?.stateChanged(state)
-        }
-        browser.browseResultsChangedHandler = { [weak self] results, _ in
-            self?.resultsChanged(results)
-        }
-        self.browser = browser
-        browser.start(queue: queue)
-    }
-
-    func cancel() {
-        browser?.stateUpdateHandler = nil
-        browser?.browseResultsChangedHandler = nil
-        browser?.cancel()
-        browser = nil
-    }
-
-    private func stateChanged(_ state: NWBrowser.State) {
-        switch state {
-        case .ready:
-            report(.ready)
-        case .waiting(let error):
-            if RemoteConnection.isPolicyDenied(error) { report(.permissionDenied) }
-        case .failed(let error):
-            report(RemoteConnection.isPolicyDenied(error) ? .permissionDenied : .failed(error.localizedDescription))
-        default:
-            break
-        }
-    }
-
-    /// Groups results by the TXT `id` (one scanner can be reachable over several interfaces).
-    private func resultsChanged(_ results: Set<NWBrowser.Result>) {
-        var names: [UUID: String] = [:]
-        var endpoints: [UUID: [NWEndpoint]] = [:]
-        for result in results {
-            guard case .service(let name, _, _, _) = result.endpoint,
-                  case .bonjour(let txt) = result.metadata,
-                  let text = txt.dictionary["id"], let id = UUID(uuidString: text) else { continue }
-            names[id] = names[id] ?? name
-            endpoints[id, default: []].append(result.endpoint)
-        }
-        let found = names.map { FoundScanner(id: $0.key, name: $0.value, endpoints: endpoints[$0.key] ?? []) }
-            .sorted { ($0.name, $0.id.uuidString) < ($1.name, $1.id.uuidString) }
-        guard let callback = onResults else { return }
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated { callback(found) }
-        }
-    }
-
-    private func report(_ event: Event) {
-        guard let callback = onEvent else { return }
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated { callback(event) }
         }
     }
 }

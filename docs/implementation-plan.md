@@ -237,6 +237,8 @@ All Low, from [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md). Each needs n
 - [ ] F-11 `store.save` then reload on main after Save image or a map build: infrequent, small folders (Sonnet 5.5 / high)
 - [ ] B-13r Replay `SCNGeometry` is still rebuilt per change: performance only; part of the SceneKit → RealityKit/Metal backlog item (Opus 5.5 / high)
 - [ ] Split `LineScanView.swift` (~1,070 lines) and `LinePlaybackView.swift` (~1,060 lines) below the ~800-line guideline; no behaviour change (Sonnet 5.5 / high)
+- [ ] Split `RemoteLink.swift` (~1,150 lines; scanner side, remote side, copy queue) below the ~800-line guideline: needs its private state opened to internal or a separate copy-queue type; no behaviour change, so it waits for the next change to the file (Opus 5.5 / high)
+- [ ] Pairing without the offline code-recovery limit (R-19, NFR-SEC-06): a comparison step on both screens or a PAKE; needs an owner decision on the extra pairing step (Opus 5.5 / max)
 - [ ] Move `ObjectPhotos.hasCompleteModel` and the Object resume decision into a Storage file so the test target can cover them (Sonnet 5.5 / high)
 - [ ] Update every pinned action in `ios-build.yml` to a release on Node 24 (GitHub reports the Node 20 runtime as deprecated) (Sonnet 5.5 / medium)
 - [ ] Check which unit-test class takes about 83 s on CI and whether it can be made faster (Sonnet 5.5 / medium)

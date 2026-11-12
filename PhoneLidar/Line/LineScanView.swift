@@ -81,7 +81,7 @@ struct LineScanView: View {
             // Remote control allowed: stay on this screen after a save (FR-RMT-09).
             let remoteLink = link
             model.keepOpenAfterSave = { [weak remoteLink] in remoteLink?.mode == .scanner }
-            model.onRecordingStart = { [weak remoteLink] in remoteLink?.scannerRecordingStarts() }
+            model.onRecordingStart = { [weak remoteLink] in remoteLink?.recordingStarts() }
             model.start(store: store)
             link.attachScanner(model)
         }
