@@ -239,6 +239,36 @@ Byte-level definitions are in [design.md §7](design.md#7-on-disk-formats). Each
 | FR-EXP-18 | `AcrossProfile.csv`, `AlongProfile.csv`, `TopoProfiles.json` | §7.16 |
 | FR-EXP-19 | `TopoMapGrid.png`, `TopoMap.png`, `TopoReplay_<t>s.png` | §7.17 |
 
+### 5.13 Single-frame LiDAR map (FR-SFM)
+
+The owner wants the scanned height of each passing strand, not values averaged between frames. These requirements add a map built from one reading per cell. Algorithm: [design §13](design.md#13-single-frame-lidar-map).
+
+| ID | Requirement | Acceptance criteria |
+|---|---|---|
+| FR-SFM-01 | Line scan screen: **Map** setting *Averaged* / *Single frame (no averaging)*, before recording, stored in `Recording.json` as `mapMethod` (`averaged` / `singleReading`; absent = averaged). Choosing *Single frame* turns **Raw LiDAR depth** on, because Apple's filter smooths over time. | The setting is in `Recording.json`; raw depth is on after choosing Single frame. |
+| FR-SFM-02 | Single-frame build: every cell takes exactly one depth reading: of all readings that land in the cell, the one whose depth row was closest to the scan line (the depth row nearest the principal point `cy`, where the view looks straight down); equal distances keep the earlier frame. No reading is averaged with another. | A cell's value equals one depth pixel of one frame (unit test). |
+| FR-SFM-03 | Repeated depth frames: a frame in which ≥ 90 % of the pixels valid in both it and the previous frame are identical to the previous frame is a repeat of older laser data and is not used. The count is reported. | A synthetic recording with duplicated frames uses only the originals (unit test). |
+| FR-SFM-04 | Outputs: the FR-TOPO-04 set plus `ScanLineProfiles.csv`: one row per frame (frame, time, travel, repeated flag), then, for each map row, the scan-row reading nearest the row centre (within half a cell; blank otherwise). | File present after a single-frame build; values match the scan row of each frame. |
+| FR-SFM-05 | `TopoStats` records `mapMethod`. Single-frame maps: readings per cell = 1, repeat-reading noise blank in `TopoStats.csv` and "—" on screen; summary line "Map method: one reading per cell (no averaging) …" with frames used and repeated frames skipped. | Values in `TopoStats.csv`/`.json` and the summary. |
+| FR-SFM-06 | Map screen: **Map method** picker and **Rebuild map** build either method from the same recording. Default = method of the map on screen, else the recording's `mapMethod`. The replay uses the map last built. | Rebuilding as Averaged and back as Single frame changes `TopoStats.json` `mapMethod` and the map. |
+
+### 5.14 Laser line scan (FR-LAS)
+
+Laser-line triangulation with the phone's main camera for strand-level topography. Algorithm and formats: [design §14](design.md#14-laser-line-scan).
+
+| ID | Requirement | Acceptance criteria |
+|---|---|---|
+| FR-LAS-01 | Home: new scan mode **Laser line scan (flake topography)**, available on any iPhone with a back wide camera. | Row on Home; opens the laser screen. |
+| FR-LAS-02 | Capture: back wide camera, 1920 × 1080 8-bit YUV (fallback 1280 × 720), frame rate 240 / 120 / 60 fps (default 240; the highest available when the requested one is not), video stabilisation off, auto-exposure with a shutter limit (1/1000 s default; 1/2000, 1/4000) and exposure bias, camera intrinsics per frame when available. Focus and white balance are locked when the baseline is calibrated; the locked lens position is saved and restored. | Readout shows the active fps and format; recorded `LaserRecording.json` holds them. |
+| FR-LAS-03 | Line detection on the luma plane, every 2nd column: per column the brightest row in the search band; valid when it is ≥ 30 grey levels above the darkest value within ±12 rows; sub-pixel centre = centre of gravity of the contiguous pixels above half-height (max ±10 rows). Search band = baseline rows ± the shift of the maximum height setting (default 100 mm); full frame on every 4th frame until a baseline exists. | Synthetic Gaussian lines are found to ≤ 0.05 px (unit test). |
+| FR-LAS-04 | Calibration: camera height H (lens to belt, mm; entered, or measured with the LiDAR); baseline on the empty belt (1 s; per-column median; ≥ 50 % of columns needed; gaps interpolated; coverage shown); height scale from a shim of known thickness under part of the line (preferred), else from the laser angle and side. Stored in *Calibration › LaserCalibration.json* and copied into every recording. | Calibration survives closing the screen; a recording holds its calibration. |
+| FR-LAS-05 | Geometry: shift d = row − baseline row (px); height h = H·d / (A + d) with the signed scale A (px) from the calibration (shim: A = d_shim·(H − t)/t; angle: A = ±f_y·tan θ, + when the laser is on the left of the portrait screen); across x = (u − c_x)(H − h)/f_x; along y = (v − c_y)(H − h)/f_y. Readings with |A + d| < 1 px or h outside [−0.5 H, 0.8 H] are dropped. | Formula unit tests; a shim reads its thickness. |
+| FR-LAS-06 | Speed and travel: `SpeedEstimator` on the rows of the frame away from the laser band (the larger side), every ⌈fps / 30⌉-th frame; mm per pixel from H minus the line's median height; travel at every frame = travel at the last tracked frame + held speed × elapsed time. | Travel unit test; live speed readout. |
+| FR-LAS-07 | Recording: `scan.json` is written at Record (so a killed recording stays in the library), `LaserRecording.json` at Record and at Stop, `Profiles.bin` (raw sub-pixel line rows per frame) and `LaserFrames.csv` streamed. Stops and saves on background, camera interruption or error, critical heat, free storage < 300 MB or a write error; no start below 1 GB free. Captured data is never deleted on failure. | Files present after Stop; a stopped recording keeps its frames. |
+| FR-LAS-08 | Map: heights above the belt; **single reading per cell** by default (the reading nearest the cell centre), *Averaged* selectable; cell = max(across column spacing at the belt, 90th-percentile travel per frame, 0.2 mm) rounded up to 0.1 mm, ×1.25 until ≤ 3,000,000 cells; outputs and summary as FR-TOPO-04/07. | Map files after Stop and after Rebuild map. |
+| FR-LAS-09 | The map screen (statistics, method picker, rebuild) and the replay work for laser scans; the replay uses the tracked frames and reveals material at the laser line. | Both screens open a laser scan. |
+| FR-LAS-10 | Live view: detected line (green) and baseline (yellow) over the picture, across height profile, speed, % of columns detected, median and maximum height on the line, actual fps and dropped frames. | Visible while previewing and recording. |
+
 ## 6. Non-functional requirements
 
 Status values: **Met** (shown by the code or CI), **Partially met**, **Not met**, **Unverified** (a target that needs device measurement; the P9 test that measures it is named). Numbers marked UNVERIFIED come from the build guide's "expected performance" (published LiDAR measurements) or are proposed targets; none has been measured with this app.
@@ -261,6 +291,7 @@ Status values: **Met** (shown by the code or CI), **Partially met**, **Not met**
 | NFR-PERF-05 | Replay timing follows recording time at the selected speed (clock step clamped to ≤ 0.1 s per refresh). | At 1×, replay time vs wall clock within ±1 % over 60 s; at 4×, ratio 4.00 ± 0.04 (P9 V7). | Unverified |
 | NFR-PERF-06 | Playback stays responsive: the overlay updates per frame; whole-recording probe statistics are computed in parallel off the main thread. | Probe min/max appear ≤ 2 s after lifting the finger on a 60 s recording (P9 V4). | Unverified |
 | NFR-PERF-07 | Sustained recording on USB-C power on a plant mount. A "Hot" label shows at serious/critical thermal state; at serious state the live overlay and LiDAR tilt refresh every 6th frame instead of every 2nd (recording continues), at critical state the recording is stopped and saved. | 10-minute recording completes; NFR-PERF-01 still met; no thermal shutdown (P9 V1). | Unverified |
+| NFR-PERF-08 | Laser line scan: per-frame line detection, travel and recording keep up at 240 fps; frames dropped by the camera are counted, shown live and saved. | Dropped frames ≤ 2 % over a 60 s recording at 240 fps (P9 V13). | Unverified |
 
 ### 6.3 Measurement accuracy (all UNVERIFIED on device)
 
@@ -273,6 +304,8 @@ Status values: **Met** (shown by the code or CI), **Partially met**, **Not met**
 | NFR-ACC-05 | Equipment mesh point-to-point distances at 0.5–3 m. | Proposed: within ±1 cm or ±1 % (whichever is larger) of tape, live and in the viewer (P9 V9). | Unverified |
 | NFR-ACC-06 | Map completeness and geometry. | Coverage ≥ 95 % for a run whose material fills the view (coverage is computed over the measured extent with the empty padding trimmed, B-4, and the cell is never smaller than a depth-pixel footprint, P-1, so a gap-free scan has no empty rows or columns); no missing columns along the run; across width within ±1 % of the tape width of a board (P9 V6). | Unverified |
 | NFR-ACC-07 | Sampling limits stated by the build guide: ~15 real LiDAR samples per second (30 depth frames/s delivered), real laser-spot spacing ≈ 5 cm across at 1 m. Features smaller than the spot spacing are interpolated by the depth pipeline. | Informational; test pieces in P9 are ≥ 100 mm square. | Unverified |
+| NFR-ACC-08 | Laser line height per single reading (no averaging), after shim calibration. | Proposed: shims and steps of 0.5–10 mm read within ±0.2 mm at 0.5 m and ±0.3 mm at 1 m camera height (P9 V12). | Unverified |
+| NFR-ACC-09 | Single-frame LiDAR map: each value is one LiDAR reading; per-reading noise and the ≈ 5 cm spot spacing at 1 m are not reduced (NFR-ACC-07). | Informational; P9 V14 compares single-frame and averaged maps of one recording. | Unverified |
 
 ### 6.4 Reliability and data integrity
 
@@ -462,10 +495,27 @@ Paths are relative to `PhoneLidar/`. Status legend in §4. Review IDs name the M
 | FR-EXP-17 | Line/TopoMapBuilder.swift (`statsCSV`) | Implemented |
 | FR-EXP-18 | Line/TopoMapBuilder.swift (`profileCSV`) | Implemented |
 | FR-EXP-19 | Line/TopoMapBuilder.swift; Line/TopoMapRenderer.swift (`compositePNG`); Line/TopoReplayModel.swift | Implemented |
+| FR-SFM-01 | Line/LineScanView.swift; Line/LineCapturePipeline.swift; Line/LineRecording.swift (`mapMethod`) | Implemented – not verified on device |
+| FR-SFM-02 | Line/MapCells.swift; Line/TopoMapBuilder.swift | Implemented |
+| FR-SFM-03 | Line/MapCells.swift (`ScanLineMath`); Line/TopoMapBuilder.swift | Implemented |
+| FR-SFM-04 | Line/TopoMapBuilder.swift (`scanLineProfilesCSV`) | Implemented |
+| FR-SFM-05 | Line/TopoMapBuilder.swift; Line/TopoMapView.swift | Implemented |
+| FR-SFM-06 | Line/TopoMapView.swift; Line/MapRebuild.swift | Implemented – not verified on device |
+| FR-LAS-01 | App/HomeView.swift; Storage/ScanStore.swift (`ScanKind.laser`); Laser/LaserCapturePipeline.swift (`isSupported`) | Implemented – not verified on device |
+| FR-LAS-02 | Laser/LaserCapturePipeline.swift | Implemented – not verified on device |
+| FR-LAS-03 | Laser/LaserLineDetector.swift | Implemented |
+| FR-LAS-04 | Laser/LaserGeometry.swift; Laser/LaserScanView.swift; Laser/LidarDistanceProbe.swift | Implemented – not verified on device |
+| FR-LAS-05 | Laser/LaserGeometry.swift | Implemented |
+| FR-LAS-06 | Laser/LaserGeometry.swift (`LaserTravel`); Laser/LaserCapturePipeline.swift; Line/SpeedEstimator.swift (`rows`) | Implemented – not verified on device |
+| FR-LAS-07 | Laser/LaserRecording.swift; Laser/LaserCapturePipeline.swift; Laser/LaserScanView.swift | Implemented – not verified on device |
+| FR-LAS-08 | Laser/LaserMapBuilder.swift; Line/MapCells.swift; Line/TopoMapBuilder.swift (`finish`) | Implemented |
+| FR-LAS-09 | Line/TopoMapView.swift; Line/TopoReplayView.swift; Line/MapRebuild.swift; Line/TopoReplayData.swift | Implemented – not verified on device |
+| FR-LAS-10 | Laser/LaserScanView.swift | Implemented – not verified on device |
 
 ## 9. Document history
 
 | Date | Change |
 |---|---|
+| 2026-11-12 | P11: single-frame LiDAR map (FR-SFM-01…06), laser line scan (FR-LAS-01…10), NFR-PERF-08, NFR-ACC-08/09. |
 | 2026-11-10 | Updated for the M1 review fixes (cycles 1–2, on `process-alignment` `547de8c`): recovery of killed recordings (FR-LINE-14), incomplete scans, delete confirmation, baseline coverage thresholds, short-shutter exposure limit, trimmed map extent and cell sizing, CV in distance mode only, replay run-out, gap fill and measured-only statistics, playback without or with a short video, RoomReport totals block, Object photos kept, camera-permission handling, Photos permission. Items that were *Not implemented* moved to *Implemented – not verified on device*; NFR statuses refreshed. |
 | 2026-11-10 | First version, reconstructed from the code at `1cf693e` and the build guide (P8 process alignment). Gaps cross-referenced to the M1 cycle-1 review findings. |

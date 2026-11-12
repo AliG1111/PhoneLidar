@@ -26,6 +26,7 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P8 | Process alignment: docs, CLAUDE.md, unit tests in CI, milestone M1 reviews and fixes, final review | Done (PR #9, build #61) |
 | P9 | On-device validation on the iPhone 17 Pro Max | Not started |
 | P10 | Backlog | Open |
+| P11 | Flake topography: single-frame LiDAR map and laser line scan (milestone M2) | In progress (branch `flake-topography`) |
 
 Build numbers are GitHub Actions run numbers of the `Build iOS app` workflow on `main` (artifact `PhoneLidar-unsigned-ipa-<n>`).
 
@@ -207,6 +208,29 @@ Common setup for line-scan tests: phone in the mount at about 1.0 m (record the 
 - [ ] **V9 Mesh point-to-point against tape** — on a machine or frame, choose five pairs of sharp features 0.3–3 m apart; tape each distance; measure each live with Set start/end point, then again in the 3D viewer on the saved mesh. Pass (*proposed*, NFR-ACC-05): every live and viewer measurement within ±1 cm or ±1 % (whichever is larger) of the tape value. — owner runs; analysis (Sonnet 5.5 / high)
 - [ ] **V10 Zone speed uniformity** — from the V2 runs, the mean of each `ZoneSpeeds.csv` column over the steady part. Pass (*proposed*): every zone with ≥ 80 % readings within ±2 % of the main mean speed (FR-SPD-04); report zones that fail (edge zones point to lens distortion, R-01). — analysis only (Opus 5.5 / high)
 - [ ] V11 Record the results, update NFR statuses in [requirements.md](requirements.md) §6 and the expected-performance section of the build guide (Sonnet 5.5 / medium)
+
+### P11 — Flake topography: single-frame LiDAR map and laser line scan (milestone M2)
+
+Owner's request (2026-11-12): per-frame height of the passing strands instead of values averaged between frames, for line speeds of 100–1000 mm/s. Requirements FR-SFM-01…06, FR-LAS-01…10, NFR-PERF-08, NFR-ACC-08/09; design §13–§14. One branch `flake-topography`, one PR.
+
+Review plan for M2 (token budget): P11 is a new subsystem, so its first review is the milestone final review: one fresh Opus 5.5 / max reviewer over the whole P11 diff and its callers (this counts as the PR's change review). Fixes are re-reviewed on the fix diff at Opus 5.5 / high until a review yields no new findings.
+
+- [x] P11.1 Requirements, design §13–§14, this phase (Opus 5.5 / max)
+- [ ] P11.2 `MapCells` + `MapMethod`; split `TopoMapBuilder.build` into accumulation and a shared `finish`; single-reading LiDAR build (scan-line score), repeated-frame detection, `ScanLineProfiles.csv`, `TopoStats.mapMethod`/`sensor`, summary line (Opus 5.5 / high)
+- [ ] P11.3 `mapMethod` in `Recording.json`; Map setting on the Line scan screen (forces raw depth); map-screen method picker and rebuild via `MapRebuild` (capture + UI → Opus 5.5 / high)
+- [ ] P11.4 Laser pure logic: `LaserLineDetector`, `LaserGeometry` (calibration, formulas, baseline, shim, `LaserTravel`), `LaserRecording` (`Profiles.bin`, JSON, CSV), `LaserMapBuilder`, `TopoReplaySource.make(grid:direction:frames:)`, `SpeedEstimator` row crop (Opus 5.5 / high)
+- [ ] P11.5 `LaserCapturePipeline` and `LidarDistanceProbe` (Opus 5.5 / high)
+- [ ] P11.6 `LaserScanView`, `ScanKind.laser`, Home row, scan-detail section, laser branch of the map screen and replay (capture + UI → Opus 5.5 / high)
+- [ ] P11.7 Unit tests for P11.2 and P11.4; add the new pure-logic files to the test target (Sonnet 5.5 / high)
+- [ ] P11.8 CI green: app build and unit tests, 0 warnings (Sonnet 5.5 / medium for compile-error triage)
+- [ ] P11.9 M2 final review of the P11 diff (Opus 5.5 / max), fixes, re-reviews of the fix diffs until no new findings (Opus 5.5 / high); record in `docs/reviews/2026-11-12-M2.md`
+- [ ] P11.10 Build guide (`README.md`) sections for both modes, `CLAUDE.md` repo map, requirements statuses (Sonnet 5.5 / medium)
+- [ ] P11.11 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator; local sync Haiku 5.5 / low)
+
+P9 additions (owner runs on the device; analysis assignment in brackets):
+- [ ] **V12 Laser height on shims** — camera at 0.5 m and 1.0 m; shim-calibrate with a 10 mm gauge; then gauges of 0.5, 1, 2, 5 mm (calliper-measured) on the belt, stationary 5 s and moving at 100 and 1000 mm/s. Pass (*proposed*, NFR-ACC-08): single readings within ±0.2 mm at 0.5 m and ±0.3 mm at 1 m (Opus 5.5 / high)
+- [ ] **V13 Laser frame rate** — 60 s at 240 fps on moving material. From `LaserRecording.json` and `LaserFrames.csv`: active fps, dropped frames, frame intervals. Pass: dropped ≤ 2 % (NFR-PERF-08) (Sonnet 5.5 / high)
+- [ ] **V14 Single-frame vs averaged LiDAR map** — one Line recording with Map = Single frame on a strand mat; rebuild as Averaged; compare `TopoStats` and profiles; report the repeated-frame share from the summary and `ScanLineProfiles.csv` (Opus 5.5 / high)
 
 ### P10 — Backlog
 

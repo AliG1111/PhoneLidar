@@ -461,6 +461,8 @@ Not recoverable: the video after the last complete 5 s fragment, the tail of `Re
 
 ## 7. On-disk formats
 
+Formats added in P11 (`ScanLineProfiles.csv`, `LaserRecording.json`, `Profiles.bin`, `LaserFrames.csv`, `LaserCalibration.json`, the optional `mapMethod` and `sensor` keys) are specified in [§13](#13-single-frame-lidar-map) and [§14](#14-laser-line-scan).
+
 ### 7.1 General
 - All files of a scan live in its folder (§8). Text is UTF-8 without BOM. Numbers are written with `String(format:)` (not localized: "." decimal separator) or by `JSONEncoder`.
 - Binary integers and floats are little-endian (iOS is little-endian; headers are written explicitly LE, bulk Float32/UInt16 arrays in host order).
@@ -785,3 +787,110 @@ The code wins; the build guide should be corrected (or the code changed, where a
 | GC-16 | Statistics include CV. | In height mode CV is written as 0 to `TopoStats.csv`/`.json` (B-7) and hidden on screen. | Resolved: CV is computed only in distance mode; blank in `TopoStats.csv`, absent in `TopoStats.json` and hidden on screen in height mode (§6.9, §7.15). |
 | GC-17 | Short shutter (1/1000 s). | Exposure is set once to a custom 1/1000 s with ISO scaled from the auto-exposure value 1 s after the camera starts; it does not adapt to later light changes (A-7). | Resolved: the short shutter is continuous auto exposure with `activeMaxExposureDuration` = 1/1000 s, so it follows light changes (A-7). |
 | GC-18 | `README.md` (in the repo) describes the app. | The README predates Line scan (C-22); the build guide is the current user documentation. | Resolved: README rewritten as the user guide (build guide content). |
+
+## 13. Single-frame LiDAR map
+
+Added in P11 (FR-SFM). Goal: the scanned height of the surface as measured, one reading per map cell, instead of the mean of every reading that lands in the cell.
+
+### 13.1 What still limits a single-frame map
+
+One depth frame is Apple's fusion of the laser spots with the camera image into 320 × 240. The spots are ≈ 5 cm apart at 1 m (R-04); values between spots follow the picture, not a measurement. A single-frame map therefore shows per-reading noise and the spot spacing unchanged. It removes the two effects that smear relief along the travel: Apple's temporal filter (raw depth is forced on) and the mean of readings taken at different times.
+
+### 13.2 Map method
+
+`MapMethod` (`Line/MapCells.swift`): `averaged` (the existing running mean, unchanged) or `singleReading`. Stored as optional `mapMethod` in `Recording.json` (the setting at Record) and in `TopoStats.json` (the method of the map on disk). Resolution order for a build: explicit choice on the map screen › `Recording.json` › `averaged`.
+
+### 13.3 Accumulation (`MapCells`)
+
+Grid geometry is the same as §6.8. `MapCells` holds per cell `means` (value − zRef), `m2s` and `hits` for `averaged`, and `means`, `hits` (0/1) and `scores` for `singleReading`. Adding a reading with score s to a single-reading cell replaces the cell when the cell is empty or s < the stored score (strictly smaller, so the first of equal scores stays). `TopoMapBuilder.finish` (trim, statistics, profiles, image, files; formerly the second half of `build`) is shared by both methods and by the laser builder.
+
+LiDAR score = |v − v_scan| (depth rows), v_scan = clamp(round(c_y), border, H − 1 − border) per frame. Each cell therefore takes the reading from the frame in which it passed closest to the scan line: a line scanner built from the central depth row, with the neighbouring rows filling the travel between frames.
+
+### 13.4 Repeated frames (`ScanLineMath.identicalFraction`)
+
+For each frame after the first: n_both = pixels with z > 0 in this and the previous frame (previous delivered frame, used or not), n_same = those with equal values (Depth.bin stores 0.1 mm steps, so equality is exact). Repeat when n_both ≥ 100 and n_same / n_both ≥ 0.90. Repeated frames add no readings. The summary reports frames used and repeats skipped; `ScanLineProfiles.csv` keeps them with `repeated = 1`. Interpolated (not identical) frames are not detectable this way; P9 V14 measures how often frames repeat on the iPhone 17 Pro Max.
+
+### 13.5 `ScanLineProfiles.csv`
+
+Written with the other map files (staged, renamed together) for single-reading builds only. Header: `frame,time_s,travel_mm,repeated,` then one column per map row: its centre `x_min + (r + 0.5)·cell` as `%.0f` mm. Each frame row: `frame` (index in `Recording.json`), `time_s` (`%.4f`), `travel_mm` (`%.2f`), `repeated` (0/1), then for each map row the value (height or distance, `%.1f`) of the scan-row pixel whose x = (u − c_x)·z/f_x is nearest the row centre, when within half a cell; blank otherwise. Rows are the trimmed map's rows (same as `TopoMap.csv`).
+
+### 13.6 Statistics and summary
+
+`singleReading`: `meanHitsPerCell` = 1, `repeatStdDev` = 0 in JSON and blank in `TopoStats.csv` (`repeat_reading_std_dev`), "—" on screen. New summary line, recognised as a map line on rebuild: `Map method: one reading per cell (no averaging); N of M frames used, K repeated depth frames skipped`. `TopoStats.mapMethod` is absent for averaged maps written before P11 and treated as `averaged`.
+
+## 14. Laser line scan
+
+Added in P11 (FR-LAS). Sheet-of-light triangulation: a line laser projects a line across the belt at an angle; the main camera looks straight down; the line moves along the image in proportion to the height under it.
+
+### 14.1 Modules (`PhoneLidar/Laser/`)
+
+| File | Role | Test target |
+|---|---|---|
+| `LaserLineDetector.swift` | Per-column peak and sub-pixel centre on a luma plane. | Yes |
+| `LaserGeometry.swift` | `LaserCalibration` (Codable), height/across/along formulas, shim and angle scale, baseline from frames, `LaserTravel`. | Yes |
+| `LaserRecording.swift` | `LaserRecordingInfo`, `Profiles.bin` writer/reader, `LaserFrames.csv` rows, calibration store. | Yes |
+| `LaserMapBuilder.swift` | Map from `Profiles.bin` via `MapCells` and `TopoMapBuilder.finish`; replay frames; summary. | Yes |
+| `LaserCapturePipeline.swift` | AVCaptureSession on the wide camera, per-frame processing, calibration capture, recorder. | No (device) |
+| `LidarDistanceProbe.swift` | One-shot camera height from the LiDAR depth camera (median of the central 20 % of 30 frames). | No (device) |
+| `LaserScanView.swift` | Screen, model, overlay, profile chart, settings, calibration controls. | No |
+
+`Line/MapRebuild.swift` dispatches map rebuilds and replay loading to the LiDAR or laser builder (a laser scan is a folder with `LaserRecording.json`).
+
+### 14.2 Capture
+
+- Device `builtInWideAngleCamera` (back). Format score: supports the requested fps (+1000), 1920 × 1080 (+500) or 1280 × 720 (+200), 8-bit 420 full range (+100) / video range (+90). If no format reaches the requested fps, the highest-fps 8-bit format at ≥ 1280 wide is used. `activeVideoMin/MaxFrameDuration` = 1/fps.
+- Video data output, `alwaysDiscardsLateVideoFrames = true`, native landscape (`videoRotationAngle = 0`), stabilisation off, `isCameraIntrinsicMatrixDeliveryEnabled` when supported (intrinsics from the `CameraIntrinsicMatrix` attachment; fallback f = W/2 / tan(fov/2), c = centre). Dropped frames are counted in `captureOutput(_:didDrop:from:)`.
+- Exposure: continuous auto-exposure with `activeMaxExposureDuration` = the shutter limit (1/1000, 1/2000, 1/4000 s, clamped to the format) and `setExposureTargetBias` (−3…+1 EV). Focus: continuous until a baseline is calibrated, then `.locked`; white balance locked at the same time. A saved calibration restores its lens position (`setFocusModeLocked(lensPosition:)`).
+- Queues: `phonelidar.laser.session` (configuration, start/stop), `phonelidar.laser.data` (frames, detection, tracking, recorder). UI updates ≤ 15 Hz.
+
+### 14.3 Line detection (`LaserLineDetector`)
+
+Columns u = first + k·stride (stride 2, first = 1), rows v in the band [v_lo, v_hi). Pass 1 (row-major, cache-friendly): per column the maximum value and its row. Pass 2 per column: background b = minimum within ±12 rows of the peak (inside the band); valid when peak − b ≥ minContrast (30). Threshold t = b + (peak − b)/2. Walk up and down from the peak while I > t (max 10 rows each way); centre = Σ v·(I − t) / Σ (I − t) over those rows (a saturated plateau gives its middle). Output: row (Float, NaN = none) per column and the fraction detected.
+
+Band: with a baseline, [min(y₀) − m, max(y₀) + m] where m = shift of the maximum height setting (`LaserGeometry.shift(height:)`, at least 8 px), clamped to the frame. Without one, the full frame on every 4th frame.
+
+### 14.4 Geometry (`LaserGeometry`)
+
+Camera looking straight down from height H (mm, lens to belt). A laser plane at angle θ to the optical axis, projected from one side. A surface at height h intercepts the plane displaced along the travel by h·tan θ toward the laser; in the image that is d = A·h/(H − h) px with A = ±f_y·tan θ. Inverting: **h = H·d / (A + d)**.
+- Sign: buffer v increases toward the left of the portrait screen; a laser on the left moves raised points to larger v, so A > 0 (left) or A < 0 (right).
+- Shim: H known, shim thickness t, measured median shift d_t ⇒ A = d_t·(H − t)/t (sign follows the data).
+- Angle: A = side·f_y·tan θ.
+- Inverse for the band: d(h) = A·h/(H − h).
+- Positions: across x = (u − c_x)·(H − h)/f_x; along y = (v − c_y)·(H − h)/f_y; map q = s·travel − y (s = `bufferSign`), as §6.8.
+- Rejected: no baseline value, |A + d| < 1 px, h ∉ [−0.5 H, 0.8 H].
+- Baseline: per column, median of the detected rows over the calibration frames (≥ 50 % of frames detected, else no value). Coverage = columns with a value ÷ columns; < 50 % is refused. Missing columns are filled by linear interpolation between neighbours with values (edges: nearest value) and counted.
+- Shim measurement: 30 frames; per column median shift; columns with |d| ≥ max(1.5 px, 0.5·P95(|d|)) form the shim; d_t = median of those (≥ 10 columns needed).
+
+### 14.5 Speed and travel
+
+`SpeedEstimator.process(_:rows:)` (new optional full-resolution row range) builds its pyramid from the rows away from the laser band: the larger of [0, v_lo − 8) and [v_hi + 8, H); the estimator resets when the crop size changes. It runs every k = max(1, round(fps / 30)) frames. Speed = `LineMotionMath.trackedSpeed` with distance = H − (median line height, 0 without readings) and f = f_y. `LaserTravel` keeps a `LineSpeedTracker` fed on tracked frames (dt between tracked frames); travel for any frame at time t = travel at the last tracked frame + held speed × (t − t_tracked).
+
+### 14.6 Files
+
+Scan folder `laser_<yyyy-MM-dd_HHmmss>`:
+
+**`LaserRecording.json`** (`JSONEncoder.pretty`, written at Record and rewritten at Stop): `version` (1), `videoWidth`, `videoHeight`, `frameRate` (requested), `activeFrameRate`, `direction`, `columnFirst`, `columnStride`, `columnCount`, `fx`, `fy`, `cx`, `cy` (px of the video buffer), `shutterLimit` (s), `exposureBias` (EV), `maxHeight` (mm), `mapMethod`, `calibration` (`LaserCalibration`), optional `frameCount`, `duration` (s), `droppedFrames`, `stopReason`.
+
+**`LaserCalibration`** (also *Documents/Calibration/LaserCalibration.json*): `date`, `cameraHeight` (mm), `cameraHeightSource` (`entered`/`lidar`), `scale` (A, px, signed), `scaleSource` (`shim`/`angle`), `shimThickness` (mm, optional), `shimShift` (px, optional), `laserAngle` (degrees, optional), `laserSide` (`left`/`right`), `videoWidth`, `videoHeight`, `columnFirst`, `columnStride`, `baselineRows` ([Float], one per column, NaN never stored: gaps filled), `coverage` (%), `filledColumns`, `lensPosition` (optional), `fx`, `fy`, `cx`, `cy`. A calibration applies only to the same video size and column layout.
+
+**`Profiles.bin`** (little endian): header 32 bytes: `PLLP`, version (UInt32 = 1), columns N, first column, column stride, row scale (UInt32 = 32: rows are stored in 1/32 px), two reserved UInt32. Then fixed-size records of 24 + 2N bytes: time (Float64, s from the first frame), travel (Float64, mm), speed (Float32, mm/s, NaN = no reading this frame), flags (UInt32; bit 0 = tracked frame, bit 1 = speed valid), then N × UInt16 rows (round(v·32); 0xFFFF = no detection). A cut-off last record is ignored. Records are buffered and written every 0.25 s.
+
+**`LaserFrames.csv`** (streamed, `TextFileWriter`): `frame,time_s,speed_mm_s,travel_mm,detected_pct,median_height_mm,max_height_mm`; speed empty except on tracked frames with a reading.
+
+Map files: the FR-TOPO-04 set (heights above the belt, `TopoStats.sensor = laserLine`), plus the summary lines of §14.7.
+
+### 14.7 Map (`LaserMapBuilder`)
+
+Pass 1 over `Profiles.bin`: bounds of q and x over all valid readings, the across spacing stride·H/f_x and the 90th percentile of positive travel steps. Cell = max(across spacing, P90 step, 0.2) rounded up to 0.1 mm; ×1.25 until ≤ 3,000,000 cells (long runs at fine cells are coarsened; `Profiles.bin` keeps the full data). Pass 2 adds every reading: `singleReading` score = |q − q_centre| + |x − x_centre| of its cell (mm), `averaged` as §13.3. zRef = 0, height mode. Speed statistics use tracked frames only. Summary adds `Laser line: N profiles at F fps, P % of columns detected, height scale from a T mm shim` (or `from a θ° laser angle`), `camera height H mm` and the map-method line. Replay frames = tracked frames (≈ 30 Hz): times, travel, speed and reveal p = travel − s·y_line, y_line = (median baseline row − c_y)·H/f_y.
+
+### 14.8 Risks
+
+| ID | Risk | Mitigation |
+|---|---|---|
+| L-01 | 240 fps format may be binned or cropped, changing the field of view. | Intrinsics per frame; format and fps stored; guide shows the active format. |
+| L-02 | Ambient light or wood colour hides the line. | Short shutter, exposure bias, contrast threshold; guide recommends a band-pass filter matching the laser and a bright line laser. |
+| L-03 | Laser speckle on wood limits the sub-pixel centre (≈ 0.15–0.5 px). | Shim calibration measures the real scale; P9 V12 measures repeatability. |
+| L-04 | Occlusion: a strand edge can hide the line from the camera (laser shadow). | Readings drop out (no detection) instead of reading wrong; small angles reduce shadows at the cost of resolution. |
+| L-05 | Lens distortion (R-01) bends the line across the width. | The baseline is per column, so a flat belt reads 0 everywhere; heights use the per-column shift. |
+| L-06 | Laser safety. | Guide: use a Class 2 (or lower) line laser where people can look into it; follow plant rules. |
+
