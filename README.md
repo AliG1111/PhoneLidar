@@ -22,11 +22,13 @@ Line scans open to **Topographic map + variance statistics**, **Topographic repl
 
 Home lists **Saved scans** and, when there are any, **Incomplete scans** (see *Library, deleting and recovering*).
 
+**Remote link** (Line scan only): a second iPhone with the app can start and stop a mounted Line scan phone, show its readouts and copy its scans for review, over a direct phone-to-phone Wi-Fi link (see *Remote control from a second phone*).
+
 ## Folder layout
 
 ```
 project.yml                     XcodeGen spec (the .xcodeproj is generated on the build Mac)
-Support/Info.plist              App settings (camera and Photos-save permissions, Files-app access)
+Support/Info.plist              App settings (camera, Photos-save and Local Network permissions, Files-app access)
 PhoneLidar/App/                 App entry + home screen, camera-permission screen, keep-screen-awake helper
 PhoneLidar/Room/                RoomPlan scanning + CSV report
 PhoneLidar/Mesh/                LiDAR mesh scanning, AR measuring, OBJ/PLY/USDZ export
@@ -37,6 +39,8 @@ PhoneLidar/Line/                Line scan: LiDAR + video capture, speed tracking
 PhoneLidar/Viewer/              SceneKit 3D viewer with measuring
 PhoneLidar/Library/             Scan detail / share / rename / delete, incomplete scans
 PhoneLidar/Storage/             Scan storage, unit formatting, CSV
+PhoneLidar/Remote/              Phone-to-phone remote link: connection, pairing and encryption, status and
+                                commands, scan copies, Remote screen and scanner settings
 PhoneLidar/Assets.xcassets/     App icon
 Tests/PhoneLidarTests/          Unit tests (run in the cloud build)
 docs/                           Requirements, design, implementation plan, review records
@@ -80,7 +84,7 @@ The cloud build installs XcodeGen 2.46.0 from a release file whose checksum is v
 4. On the iPhone:
    - **Settings › General › VPN & Device Management** → under **DEVELOPER APP** tap your Apple ID → **Trust** (needs internet). Without this the app shows *Untrusted Developer*.
    - **Settings › Privacy & Security › Developer Mode** → On → restart → confirm.
-5. Launch **Phone LiDAR** and allow camera access. If you turn camera access off later, the scan screens show **Camera is off** (Line scan: *Camera access is off for Phone LiDAR…*) with an **Open Settings** button.
+5. Launch **Phone LiDAR** and allow camera access. The first time the remote link is used, iOS also asks to find devices on the local network: tap **Allow** (needed on both phones). If you turn camera access off later, the scan screens show **Camera is off** (Line scan: *Camera access is off for Phone LiDAR…*) with an **Open Settings** button.
 
 Free Apple ID limits: the app stops opening after 7 days until it is re-signed (drag the same or a newer `.ipa` into Sideloadly with the same Apple ID; scans are kept). Sideloadly's automatic-refresh option does this over Wi-Fi while the PC is on. Free accounts are limited to 3 sideloaded apps and 10 new App IDs per 7 days.
 
@@ -223,6 +227,36 @@ Scan › **Topographic replay (real time, adjustable speed)**. The screen turns 
 - Leaving the screen while it is still loading does not start a replay in the background.
 
 **Expected performance** (from published LiDAR measurements; untested on this app yet): ~15 real LiDAR samples per second (30 depth frames/s delivered), ±1–2 mm height after averaging at ~1 m, real laser-spot spacing ≈ 5 cm across at 1 m; speed ≈ ±0.2–0.3% once the distance scale is checked against a known speed or length.
+
+## Remote control from a second phone (Line scan)
+
+A second iPhone running Phone LiDAR controls a mounted Line scan phone, for mounts that are hard to reach. The two phones talk over a direct phone-to-phone Wi-Fi link: no router, Wi-Fi network or internet is needed, but **Wi-Fi must be switched on in Settings on both phones** (being joined to a network does not matter). The second phone needs no LiDAR.
+
+**Set up once**
+1. On the **scanner** (the mounted phone): open **Line scan**, tap the antenna button next to **Close**, turn on **Allow remote control**, then tap **Pair a remote**. A 6-digit code shows for 5 minutes.
+2. On the **remote** (the phone in your hand): Home › **Remote link** › **Control a scanner phone**. The scanner appears under **Scanners nearby** with its name (for example "iPhone 1A2B"); tap it and enter the code.
+3. Both phones show **Connected to …**. The pairing is kept: from now on the remote connects by itself whenever both phones have the app open. A wrong code is refused; after a wrong code the scanner waits 2 s before it accepts another try, and every 5 wrong codes it shows a new code. **Forget** (scanner sheet, or the **…** menu on the remote) removes the pairing.
+4. If iOS asked about the local network and **Don't Allow** was tapped, both screens say "Local Network access is off for Phone LiDAR": turn it on in **Settings › Privacy & Security › Local Network**.
+
+**Using it**
+- Leave the scanner on the Line scan screen (mounted, levelled, calibrated as usual). The screen stays awake; a chip under the top bar shows **Remote: …** and the antenna button turns green when the remote is connected.
+- On the remote: **Start** and **Stop** work exactly like the scanner's record button. Every command is answered: "Recording started.", "Recording stopped: the scanner is saving it.", or "Refused: …" with the scanner's reason (too hot, not enough storage, still calibrating, Line scan not open). "No answer from the scanner." appears after 5 s without an answer.
+- **Scanner readouts** on the remote, 4 times per second: state (Ready, ● REC m:ss · frames, Saving, Building map), speed (mm/s, m/min, ft/min), texture lock, distance, height above the baseline when calibrated, baseline, bubble level, heat, free storage and battery, plus the scanner's warnings and its last message.
+- While remote control is allowed, the scanner's Line scan screen **stays open after each save** ("Saved "…". Ready for the next recording.") so the next recording can be started from the remote. Without remote control it opens the scan as before.
+- The remote screen keeps the remote phone awake while it is open. **Close** returns to Home and keeps the link (and any copy) running while the app is open, so you can open a copied scan and come back; **…** › **Turn the remote link off** stops it.
+
+**When the link drops** (out of range, steel in the way, a phone locked)
+- The scanner **keeps recording**, saving and building the map as if nothing happened; all data stays on the scanner.
+- Both phones say "Link lost (…)". The remote retries by itself (after 1, 2, 4, then every 5 s) and the scanner keeps waiting for it, so the link comes back without touching either phone once they are in range with the app open. iOS stops the link while the app is in the background (phone locked or another app open) and it reconnects when the app is back on screen.
+- No range figure is published for this kind of link; it depends on the two phones and what is between them. Measure it at the mount (P9 test V12 in `docs/implementation-plan.md`).
+
+**Copying scans to the remote for review**
+- **Scans on the scanner** lists the scanner's saved Line scans with date and size (a recording that is still being saved or built appears once it is done). Tap **Copy to this phone**. The copy shows MB copied, the rate and the time left; map and statistics files come first, `Depth.bin` and `Video.mov` last (about 120 MB of video per recorded minute plus the depth data).
+- When it finishes, the scan is added to the remote's **Saved scans** with the scanner's name, date and summary plus "Copied from <scanner> on <date>.", and opens with the normal **Topographic map**, **Topographic replay** and **Playback** screens. **Open** jumps to it.
+- A copy **pauses while the scanner records, saves or builds a map** and continues afterwards; a dropped link pauses it and it continues from where it stopped after reconnecting. If the remote app was closed, the scan shows **Partly copied (N %)** with **Resume** and **Discard**. **Stop copy** pauses it by hand. A file that changed on the scanner since the copy started (for example after **Rebuild map**) is copied again.
+- The remote checks its free storage first (the remaining size plus 500 MB). Partial copies are kept out of the library until every file is complete.
+
+**Security**: the phones only talk to the phone they are paired with. Every connection is checked with the pairing key and all traffic is encrypted, so other phones nearby cannot start or stop a scan or copy files. The 6-digit code protects the pairing against other people's phones; pair in a place where nobody is deliberately attacking the link at that moment.
 
 ## Opening scans on Windows
 
