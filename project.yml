@@ -48,10 +48,15 @@ targets:
       - path: PhoneLidar/Line/LineMotionMath.swift
       - path: PhoneLidar/Line/LineRecording.swift
       - path: PhoneLidar/Line/LineRecordingRecovery.swift
+      - path: PhoneLidar/Line/MapCells.swift
       - path: PhoneLidar/Line/SpeedEstimator.swift
       - path: PhoneLidar/Line/TopoGridFile.swift
       - path: PhoneLidar/Line/TopoMapBuilder.swift
       - path: PhoneLidar/Line/TopoReplayData.swift
+      - path: PhoneLidar/Laser/LaserGeometry.swift
+      - path: PhoneLidar/Laser/LaserLineDetector.swift
+      - path: PhoneLidar/Laser/LaserMapBuilder.swift
+      - path: PhoneLidar/Laser/LaserRecording.swift
       - path: PhoneLidar/Storage/Formatting.swift
       - path: PhoneLidar/Storage/ScanStore.swift
     settings:

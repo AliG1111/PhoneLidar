@@ -80,6 +80,8 @@ struct LineRecordingInfo: Codable {
     /// True when the file was rebuilt from a cut-off Recording.json (`LineRecordingRepair`): the last frames
     /// may be missing. Absent (nil) in files that never needed a repair; older builds ignore the key.
     var repaired: Bool? = nil
+    /// Map method chosen on the Line scan screen at Record (design §13.2); absent = averaged.
+    var mapMethod: MapMethod? = nil
 }
 
 extension LineRecordingInfo {
@@ -142,6 +144,8 @@ struct LineRecordingHeader: Encodable {
     var direction: TravelDirection
     var tileColumns: Int
     var tileRows: Int
+    /// Written only for single-frame recordings, so averaged recordings keep the pre-P11 header.
+    var mapMethod: MapMethod? = nil
 }
 
 /// What a finished recording produced, for the scan summary.
@@ -262,6 +266,18 @@ enum LineMath {
         while lo < hi {
             let mid = (lo + hi + 1) / 2
             if frames[mid].time <= time { lo = mid } else { hi = mid - 1 }
+        }
+        return lo
+    }
+
+    /// Last index whose time is ≤ `time` (0 when all are later). `times` must be non-decreasing.
+    static func frameIndex(for time: Double, in times: [Double]) -> Int {
+        guard !times.isEmpty else { return 0 }
+        var lo = 0
+        var hi = times.count - 1
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if times[mid] <= time { lo = mid } else { hi = mid - 1 }
         }
         return lo
     }
@@ -549,6 +565,7 @@ final class LineRecorder: @unchecked Sendable {
     let filteredDepth: Bool
     let shortShutter: Bool
     let direction: TravelDirection
+    let mapMethod: MapMethod
 
     private let writer: AVAssetWriter
     private let videoInput: AVAssetWriterInput
@@ -572,8 +589,10 @@ final class LineRecorder: @unchecked Sendable {
     private(set) var stopReason: String?
 
     init(folder: URL, videoWidth: Int, videoHeight: Int, depthWidth: Int, depthHeight: Int,
-         filteredDepth: Bool, shortShutter: Bool, direction: TravelDirection, travelOffset: Double) throws {
+         filteredDepth: Bool, shortShutter: Bool, direction: TravelDirection, travelOffset: Double,
+         mapMethod: MapMethod = .averaged) throws {
         self.folder = folder
+        self.mapMethod = mapMethod
         self.videoWidth = videoWidth
         self.videoHeight = videoHeight
         self.depthWidth = depthWidth
@@ -608,7 +627,8 @@ final class LineRecorder: @unchecked Sendable {
             header: LineRecordingHeader(depthWidth: depthWidth, depthHeight: depthHeight,
                                         videoWidth: videoWidth, videoHeight: videoHeight,
                                         filteredDepth: filteredDepth, shortShutter: shortShutter,
-                                        direction: direction, tileColumns: columns, tileRows: rows))
+                                        direction: direction, tileColumns: columns, tileRows: rows,
+                                        mapMethod: mapMethod == .singleReading ? mapMethod : nil))
         framesWriter = try TextFileWriter(url: folder.appendingPathComponent("Frames.csv"), flushBytes: 64_000)
         zonesWriter = try TextFileWriter(url: folder.appendingPathComponent("ZoneSpeeds.csv"), flushBytes: 64_000)
         try framesWriter.line(LineRecorder.framesHeader.joined(separator: ","))

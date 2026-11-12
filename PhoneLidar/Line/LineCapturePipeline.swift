@@ -136,6 +136,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         var filtered: Bool
         var shortShutter: Bool
         var direction: TravelDirection
+        var mapMethod: MapMethod
     }
 
     deinit {
@@ -417,7 +418,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
 
     /// Starts recording into `folder` with the next frame. Reports `.recordingStarted` or
     /// `.recordingStartFailed` (also when no frame arrives within 3 s).
-    func startRecording(folder: URL, filtered: Bool, shortShutter: Bool, direction: TravelDirection) {
+    func startRecording(folder: URL, filtered: Bool, shortShutter: Bool, direction: TravelDirection,
+                        mapMethod: MapMethod = .averaged) {
         dataQueue.async { [self] in
             guard recorder == nil else {
                 onEvent?(.recordingStartFailed("a recording is already running"))
@@ -426,7 +428,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             pendingToken += 1
             let token = pendingToken
             pendingRecording = PendingRecording(token: token, folder: folder, filtered: filtered,
-                                                shortShutter: shortShutter, direction: direction)
+                                                shortShutter: shortShutter, direction: direction,
+                                                mapMethod: mapMethod)
             dataQueue.asyncAfter(deadline: .now() + 3) { [self] in
                 guard pendingRecording?.token == token else { return }
                 pendingRecording = nil
@@ -617,7 +620,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                 let created = try LineRecorder(folder: pending.folder, videoWidth: videoWidth, videoHeight: videoHeight,
                                                depthWidth: dw, depthHeight: dh, filteredDepth: pending.filtered,
                                                shortShutter: pending.shortShutter, direction: pending.direction,
-                                               travelOffset: travel)
+                                               travelOffset: travel, mapMethod: pending.mapMethod)
                 // Keep the baseline with the recording so its map and playback use the same reference.
                 if let activeBaseline {
                     do {

@@ -50,8 +50,10 @@ final class SpeedEstimator {
         previousEighth = nil
     }
 
-    func process(_ buffer: CVPixelBuffer) -> TextureShift? {
-        guard let half = Self.halfLevel(from: buffer) else { return nil }
+    /// `rows`: full-resolution buffer rows to track (laser mode keeps the laser band out, design §14.5); nil = all.
+    /// A change of the crop size resets the estimator (the previous level no longer matches).
+    func process(_ buffer: CVPixelBuffer, rows: Range<Int>? = nil) -> TextureShift? {
+        guard let half = Self.halfLevel(from: buffer, rows: rows) else { return nil }
         let eighth = Self.downsample(Self.downsample(half))
         defer {
             previousHalf = half
@@ -307,7 +309,7 @@ final class SpeedEstimator {
     // MARK: - Image pyramid
 
     /// Half-resolution 8-bit luma from an 8-bit or 10-bit 4:2:0 bi-planar camera buffer.
-    static func halfLevel(from buffer: CVPixelBuffer) -> Level? {
+    static func halfLevel(from buffer: CVPixelBuffer, rows: Range<Int>? = nil) -> Level? {
         let format = CVPixelBufferGetPixelFormatType(buffer)
         let eightBit = format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
             || format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
@@ -317,10 +319,13 @@ final class SpeedEstimator {
 
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return nil }
+        guard let planeBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return nil }
         let width = CVPixelBufferGetWidthOfPlane(buffer, 0)
-        let height = CVPixelBufferGetHeightOfPlane(buffer, 0)
+        let fullHeight = CVPixelBufferGetHeightOfPlane(buffer, 0)
         let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        let rowRange = (rows ?? 0..<fullHeight).clamped(to: 0..<fullHeight)
+        let base = planeBase + rowRange.lowerBound * stride
+        let height = rowRange.count
         let w = width / 2
         let h = height / 2
         guard w >= 64, h >= 64 else { return nil }
