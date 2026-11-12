@@ -7,8 +7,10 @@ struct LineScanView: View {
     var onFinish: (UUID?) -> Void
 
     @Environment(ScanStore.self) private var store
+    @Environment(RemoteLink.self) private var link
     @Environment(\.scenePhase) private var scenePhase
     @State private var model = LineScanModel()
+    @State private var showRemote = false
 
     var body: some View {
         ZStack {
@@ -49,6 +51,7 @@ struct LineScanView: View {
 
             VStack(spacing: 10) {
                 topBar
+                RemoteStatusChip()
                 if let banner = model.bannerText {
                     noticeBadge([banner], color: .orange)
                 }
@@ -75,9 +78,20 @@ struct LineScanView: View {
         .statusBarHidden()
         .onAppear {
             model.onSaved = { id in onFinish(id) }
+            // Remote control allowed: stay on this screen after a save (FR-RMT-09).
+            let remoteLink = link
+            model.keepOpenAfterSave = { [weak remoteLink] in remoteLink?.mode == .scanner }
             model.start(store: store)
+            link.attachScanner(model)
         }
-        .onDisappear { model.shutdown() }
+        .onDisappear {
+            link.detachScanner(model)
+            model.shutdown()
+        }
+        .sheet(isPresented: $showRemote) {
+            RemoteScannerSheet()
+                .environment(link)
+        }
         .onChange(of: scenePhase) { _, newPhase in
             model.scenePhaseChanged(newPhase)
         }
@@ -110,6 +124,16 @@ struct LineScanView: View {
             .tint(.white)
             .disabled(model.isBusy)
 
+            Button {
+                showRemote = true
+            } label: {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.title3)
+                    .foregroundStyle(remoteIconColor)
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("Remote control")
+
             Spacer()
 
             if model.thermal == .serious || model.thermal == .critical {
@@ -124,6 +148,15 @@ struct LineScanView: View {
                 .padding(.vertical, 6)
                 .background(model.phase == .recording ? Color.red.opacity(0.8) : Color.black.opacity(0.55),
                             in: Capsule())
+        }
+    }
+
+    private var remoteIconColor: Color {
+        guard link.mode == .scanner else { return .white }
+        switch link.linkState {
+        case .connected: return .green
+        case .lost, .problem: return .orange
+        case .off, .waiting, .connecting: return .cyan
         }
     }
 
@@ -500,6 +533,9 @@ final class LineScanModel {
 
     let pipeline = LineCapturePipeline()
     @ObservationIgnored var onSaved: ((UUID) -> Void)?
+    /// True while remote control is allowed: after a save the screen stays open and ready instead of opening the
+    /// scan, so the remote phone can start the next recording (FR-RMT-09).
+    @ObservationIgnored var keepOpenAfterSave: () -> Bool = { false }
     @ObservationIgnored private var store: ScanStore?
     @ObservationIgnored private var recordingFolder: (name: String, url: URL)?
     @ObservationIgnored private var stopReason: String?
@@ -877,7 +913,14 @@ final class LineScanModel {
             }
             releaseRecordingFolder()
             endBackgroundTask()
-            onSaved?(record.id)
+            if keepOpenAfterSave(), !closed {
+                // Remote control (FR-RMT-09): restart the camera and wait for the next recording.
+                notice = "Saved \"\(record.name)\". Ready for the next recording."
+                phase = .ready
+                pipeline.start(shortShutter: shortShutter)
+            } else {
+                onSaved?(record.id)
+            }
         }
     }
 
@@ -933,6 +976,71 @@ final class LineScanModel {
         guard backgroundTask != .invalid else { return }
         UIApplication.shared.endBackgroundTask(backgroundTask)
         backgroundTask = .invalid
+    }
+}
+
+// MARK: - Remote link
+
+extension LineScanModel: RemoteScannerTarget {
+    func remoteLineStatus() -> RemoteStatus {
+        var status = RemoteStatus()
+        status.lineScanOpen = true
+        switch phase {
+        case .starting: status.phase = .starting
+        case .ready: status.phase = .ready
+        case .arming: status.phase = .arming
+        case .recording: status.phase = .recording
+        case .saving: status.phase = .saving
+        case .building: status.phase = .building
+        case .failed(let message):
+            status.phase = .failed
+            status.failure = message
+        }
+        status.elapsed = elapsed
+        status.frames = recordedFrames
+        status.speed = speed
+        status.lock = quality
+        status.distance = medianDepth > 0 ? medianDepth : nil
+        status.heightMode = heightMode
+        status.centerHeight = centerHeight
+        status.baselineSaved = baseline != nil
+        status.calibrating = calibrating
+        status.levelX = levelX
+        status.levelY = levelY
+        status.banner = bannerText
+        status.warnings = phase == .recording ? recordingWarnings : []
+        status.notice = notice
+        switch pressure {
+        case .normal: status.heat = .normal
+        case .serious: status.heat = .serious
+        case .critical: status.heat = .critical
+        }
+        return status
+    }
+
+    /// Same path as the record button; refusals reuse the screen's own reasons.
+    func remoteStart() -> String? {
+        switch phase {
+        case .ready:
+            break
+        case .starting:
+            return "The scanner's camera is still starting."
+        case .arming, .recording:
+            return "The scanner is already recording."
+        case .saving, .building:
+            return "The scanner is still saving the last recording."
+        case .failed(let message):
+            return message
+        }
+        guard !calibrating else { return "The scanner is calibrating the baseline." }
+        startRecording()
+        return phase == .arming ? nil : (notice ?? "The recording did not start.")
+    }
+
+    func remoteStop() -> String? {
+        guard phase == .recording || phase == .arming else { return "The scanner is not recording." }
+        stop(reason: nil)
+        return nil
     }
 }
 
