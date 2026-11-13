@@ -34,6 +34,12 @@ final class SpeedEstimator {
     /// +1: material moves toward increasing buffer rows (right → left on a portrait screen).
     var travelSign = 1
 
+    /// True: the main match searches equally far both ways along the travel (template in the middle of the
+    /// picture), so movement against `travelSign` is measured over the same range as movement with it. Used while
+    /// the travel direction is detected automatically (design §6.16); `along` stays signed by `travelSign`.
+    /// Zones are not affected. A change needs no reset: the stored levels do not depend on it.
+    var searchesBothWays = false
+
     /// Zone grid for local speeds: columns run across the material (buffer x, top → bottom of the
     /// portrait screen), rows run along the travel (buffer y, right → left of the portrait screen).
     static let tileColumns = 6
@@ -83,12 +89,24 @@ final class SpeedEstimator {
         let tw = w8 / 2
         let tx = w8 / 4
         let th = max(12, h8 / 4)
-        let back = 6
         let across = 4
-        let ty = sign > 0 ? back + 1 : h8 - th - back - 1
-        // Up to 60 coarse steps (480 full-resolution pixels) per frame.
-        let forward = min(60, sign > 0 ? h8 - th - ty - 1 : ty - 1)
-        guard forward > back, ty >= 1, tx - across >= 0, tx + tw + across <= w8 else { return nil }
+        let back: Int
+        let ty: Int
+        let forward: Int
+        if searchesBothWays {
+            // Template in the middle: the same room (up to 60 coarse steps) with and against the travel sign.
+            ty = (h8 - th) / 2
+            forward = min(60, ty - 1, h8 - th - ty - 1)
+            back = forward
+            guard forward >= 3 else { return nil }
+        } else {
+            back = 6
+            ty = sign > 0 ? back + 1 : h8 - th - back - 1
+            // Up to 60 coarse steps (480 full-resolution pixels) per frame.
+            forward = min(60, sign > 0 ? h8 - th - ty - 1 : ty - 1)
+            guard forward > back else { return nil }
+        }
+        guard ty >= 1, tx - across >= 0, tx + tw + across <= w8 else { return nil }
 
         var coarseBest = Int.max
         var coarseD = 0
@@ -108,8 +126,10 @@ final class SpeedEstimator {
                 }
             }
         }
-        // Best match at the far end of the search: the material moved more than the search covers.
+        // Best match at the far end of the search: the material moved more than the search covers. Searching both
+        // ways, the same holds at the far end against the travel sign.
         if coarseD * sign >= forward { return nil }
+        if searchesBothWays && coarseD * sign <= -back { return nil }
 
         // Refine on the 1/2-scale image around the coarse result (×4 scale step).
         let hw = half.width

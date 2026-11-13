@@ -22,8 +22,9 @@ final class TopoReplayModel {
     }
 
     nonisolated static let speedPresets: [Double] = [0.1, 0.25, 0.5, 1, 2, 4, 8, 16]
-    nonisolated static let defaultElevation = 42.0
     nonisolated static let defaultShear = 0.36
+    /// Zoom limits (pinch and slider). Below 1 the strip still fits when it is turned with its length upright.
+    nonisolated static let zoomRange: ClosedRange<Double> = 0.2...8
     nonisolated static let defaultLengthFactor = 2.0
 
     let folder: URL
@@ -45,7 +46,11 @@ final class TopoReplayModel {
     var mode: Mode = .threeD
     var smooth = true
     var showPlanes = true
-    var elevation = TopoReplayModel.defaultElevation
+    /// 3D camera orientation: any, no limits (FR-RPL-06). Changed through `setOrientation` (gestures, reset) or
+    /// `setAngles` (settings sliders).
+    private(set) var orientation = ReplayOrientation.standard
+    /// Angles shown on the settings sliders (`ReplayAngles`).
+    private(set) var angles = ReplayAngles(ReplayOrientation.standard)
     var shear = TopoReplayModel.defaultShear
     var zoom = 1.0
     /// Height of the value range (base → top) as a fraction of the strip width.
@@ -209,8 +214,19 @@ final class TopoReplayModel {
         tolerance = defaultTolerance
     }
 
+    func setOrientation(_ value: ReplayOrientation) {
+        orientation = value
+        angles = ReplayAngles(value)
+    }
+
+    /// A slider changed one angle; the others stay as shown.
+    func setAngles(_ value: ReplayAngles) {
+        angles = value
+        orientation = value.orientation
+    }
+
     func resetView() {
-        elevation = Self.defaultElevation
+        setOrientation(.standard)
         shear = Self.defaultShear
         zoom = 1
     }
@@ -268,7 +284,8 @@ final class TopoReplayModel {
             lastCamera = nil
             readoutDue = true
         }
-        let camera = TopoReplayScene.CameraSettings(elevation: elevation, shear: shear, zoom: zoom, aspect: viewAspect)
+        let camera = TopoReplayScene.CameraSettings(orientation: orientation, shear: shear, zoom: zoom,
+                                                    aspect: viewAspect)
         if camera != lastCamera {
             sceneContent.applyCamera(camera)
             lastCamera = camera

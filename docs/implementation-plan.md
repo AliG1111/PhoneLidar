@@ -29,6 +29,7 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P11 | Remote link: second phone controls a Line scan phone over direct phone-to-phone Wi-Fi (start/stop, status, auto-reconnect, copy scans for review) | Done (PR #12, build #83) |
 | P12 | Flake topography: single-frame LiDAR map and laser line scan (milestone M3) | Done (PR #13, build #85) |
 | P13 | Laser side-wall calibration and wall re-zero | Done (PR #13, build #85) |
+| P14 | Automatic travel direction with manual override; unlimited rotation of the replay's 3D strip | In review (branch `auto-direction-free-rotation`) |
 
 Build numbers are GitHub Actions run numbers of the `Build iOS app` workflow on `main` (artifact `PhoneLidar-unsigned-ipa-<n>`).
 
@@ -296,6 +297,23 @@ Owner's request (2026-11-12): calibrate without clearing the belt, from the side
 
 P9 addition:
 - [ ] **V17 Side-wall calibration on the line** — measure h_w (±1 mm), H (tape, ±5 mm), the laser angle (digital gauge, ±0.1°), zero the level; calibrate on the walls with flakes on the belt; compare mat heights with an empty-belt shim calibration made at a shutdown, and with a known board on the belt. Pass: within ±5 mm (FR-LAS-15) (Opus 5.5 / high)
+
+### P14 — Automatic travel direction and free replay rotation (owner's request, 2026-11-13)
+
+Owner's request: rotate the topographic map in all orientations without limits; detect the direction of the scanned material automatically, with a manual override for when the detection has trouble. Requirements FR-DIR-01…06, FR-RPL-05/06/08, FR-LINE-04, FR-SPD-06, FR-LAS-06; design §6.2, §6.11, §6.16, §7.18. Branch `auto-direction-free-rotation`, one PR. One session (token budget): the orchestrator (Opus 5.5) writes code, tests and docs (a task touching capture and UI takes the higher assignment); one fresh change reviewer.
+
+- [x] P14.1 Requirements FR-DIR-01…06 and replay gesture changes, design §6.16 and §6.11, this phase (Opus 5.5 / max)
+- [x] P14.2 `TravelDirectionDetector` + `DirectionSetting`; `SpeedEstimator.searchesBothWays` (Opus 5.5 / high)
+- [x] P14.3 Line and laser pipelines: detection while not recording, direction fixed per recording, generation echo; screens: picker, readout, Record refusal, summary line (capture + UI → Opus 5.5 / high)
+- [x] P14.4 `ReplayOrientation` (quaternion trackball, twist, angles); scene camera with fixed scale, pivot at the window centre, light on the camera; gestures and settings sliders (Opus 5.5 / high)
+- [x] P14.5 Unit tests: detector, two-way search, orientation (Sonnet 5.5 / high; written with the code by the orchestrator)
+- [x] P14.6 CI green: app build and unit tests, 0 warnings (Sonnet 5.5 / medium for compile-error triage) — branch run 43441265753, PR run 43443688002
+- [x] P14.7 Change review of the PR diff and its callers (fresh Opus 5.5 / high), fixes, re-reviews until no new findings; record in [reviews/2026-11-13-P14.md](reviews/2026-11-13-P14.md)
+- [x] P14.8 Build guide (`README.md`), `CLAUDE.md` repo map (Sonnet 5.5 / medium; written by the orchestrator with the code)
+- [ ] P14.9 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator)
+
+P9 addition:
+- [ ] **V18 Direction detection and free rotation** — Line scan and Laser line scan with Direction Auto: open the screen with the line stopped (readout "Detecting…", Record refused), start the line (time to "detected"), run both directions if the conveyor can reverse, and a blank surface (stays undetected; manual override records). Replay: turn the strip through full turns in every direction, view from below, twist, double-tap reset. Pass: detection ≤ 1 s after textured material moves; never the wrong direction over 10 starts per direction; rotation never stops at a limit (Sonnet 5.5 / high)
 
 ## 7. Change log
 

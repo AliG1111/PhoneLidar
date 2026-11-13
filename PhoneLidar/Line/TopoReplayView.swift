@@ -284,7 +284,7 @@ private struct TopoReplayContent: View {
                     .allowsHitTesting(false)
             }
             .overlay(alignment: .bottomLeading) {
-                Text(String(format: "window %.2f m  ·  drag to tilt, pinch to zoom, double-tap to reset",
+                Text(String(format: "window %.2f m  ·  drag to turn any way, twist to roll, pinch to zoom, double-tap to reset",
                             model.stripLengthMM / 1000))
                     .font(.system(size: 9))
                     .foregroundStyle(.gray)
@@ -448,10 +448,15 @@ private struct ReplaySceneView: UIViewRepresentable {
         let pinch = UIPinchGestureRecognizer(target: coordinator, action: #selector(Coordinator.pinched(_:)))
         let pan = UIPanGestureRecognizer(target: coordinator, action: #selector(Coordinator.panned(_:)))
         pan.maximumNumberOfTouches = 1
+        let twist = UIRotationGestureRecognizer(target: coordinator, action: #selector(Coordinator.twisted(_:)))
         let doubleTap = UITapGestureRecognizer(target: coordinator, action: #selector(Coordinator.doubleTapped(_:)))
         doubleTap.numberOfTapsRequired = 2
+        // Pinch and twist work together (zoom and roll with the same two fingers).
+        pinch.delegate = coordinator
+        twist.delegate = coordinator
         view.addGestureRecognizer(pinch)
         view.addGestureRecognizer(pan)
+        view.addGestureRecognizer(twist)
         view.addGestureRecognizer(doubleTap)
         model.scnView = view
         return view
@@ -460,11 +465,9 @@ private struct ReplaySceneView: UIViewRepresentable {
     func updateUIView(_ uiView: ReplaySCNView, context: Context) {}
 
     @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         let model: TopoReplayModel
         private var startZoom = 1.0
-        private var startElevation = 0.0
-        private var startShear = 0.0
 
         init(model: TopoReplayModel) {
             self.model = model
@@ -472,18 +475,34 @@ private struct ReplaySceneView: UIViewRepresentable {
 
         @objc func pinched(_ recognizer: UIPinchGestureRecognizer) {
             if recognizer.state == .began { startZoom = model.zoom }
-            model.zoom = min(max(startZoom * Double(recognizer.scale), 0.5), 8)
+            model.zoom = min(max(startZoom * Double(recognizer.scale), TopoReplayModel.zoomRange.lowerBound),
+                             TopoReplayModel.zoomRange.upperBound)
         }
 
+        /// Trackball: the strip follows the finger in any direction, without limits (half a turn per short side
+        /// of the view). Applied in small steps, so the turn always follows the finger on screen.
         @objc func panned(_ recognizer: UIPanGestureRecognizer) {
-            guard model.mode == .threeD, let view = recognizer.view, view.bounds.width > 0 else { return }
-            if recognizer.state == .began {
-                startElevation = model.elevation
-                startShear = model.shear
-            }
+            guard model.mode == .threeD, let view = recognizer.view else { return }
+            let side = Double(min(view.bounds.width, view.bounds.height))
+            guard side > 0, recognizer.state == .began || recognizer.state == .changed else { return }
             let move = recognizer.translation(in: view)
-            model.shear = min(max(startShear + Double(move.x / view.bounds.width) * 1.6, -1.2), 1.2)
-            model.elevation = min(max(startElevation + Double(move.y / view.bounds.height) * 80, 5), 90)
+            recognizer.setTranslation(.zero, in: view)
+            model.setOrientation(model.orientation.dragged(dx: Double(move.x), dy: Double(move.y),
+                                                           radiansPerPoint: Double.pi / side))
+        }
+
+        /// Two-finger twist: roll about the line of sight, without limits.
+        @objc func twisted(_ recognizer: UIRotationGestureRecognizer) {
+            guard model.mode == .threeD, recognizer.state == .began || recognizer.state == .changed else { return }
+            let angle = Double(recognizer.rotation)
+            recognizer.rotation = 0
+            model.setOrientation(model.orientation.twisted(by: angle))
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            (gestureRecognizer is UIPinchGestureRecognizer && other is UIRotationGestureRecognizer)
+                || (gestureRecognizer is UIRotationGestureRecognizer && other is UIPinchGestureRecognizer)
         }
 
         @objc func doubleTapped(_ recognizer: UITapGestureRecognizer) {
@@ -765,9 +784,21 @@ private struct ReplaySettingsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    sliderRow(String(format: "View angle %.0f°", model.elevation), value: $model.elevation, range: 5...90)
-                    sliderRow(String(format: "Side angle %.2f", model.shear), value: $model.shear, range: -1.2...1.2)
-                    sliderRow(String(format: "Zoom %.1f×", model.zoom), value: $model.zoom, range: 0.5...8)
+                    sliderRow(String(format: "Tilt %.0f° (90° = from above, −90° = from below)", model.angles.tilt),
+                              value: Binding(get: { model.angles.tilt },
+                                             set: { var a = model.angles; a.tilt = $0; model.setAngles(a) }),
+                              range: -90...90)
+                    sliderRow(String(format: "Turn %.0f°", model.angles.turn),
+                              value: Binding(get: { model.angles.turn },
+                                             set: { var a = model.angles; a.turn = $0; model.setAngles(a) }),
+                              range: -180...180)
+                    sliderRow(String(format: "Roll %.0f°", model.angles.roll),
+                              value: Binding(get: { model.angles.roll },
+                                             set: { var a = model.angles; a.roll = $0; model.setAngles(a) }),
+                              range: -180...180)
+                    sliderRow(String(format: "Slant %.2f", model.shear), value: $model.shear, range: -1.2...1.2)
+                    sliderRow(String(format: "Zoom %.1f×", model.zoom), value: $model.zoom,
+                              range: TopoReplayModel.zoomRange)
                     Button("Reset view") { model.resetView() }
                 }
             }

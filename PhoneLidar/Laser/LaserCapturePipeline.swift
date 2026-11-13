@@ -25,6 +25,10 @@ struct LaserLiveUpdate: Sendable {
     var calibrationProgress: Double?
     /// False when the part of the picture outside the laser band is too small for speed tracking.
     var trackingAvailable = true
+    /// Direction found by the automatic detection (nil: not yet, or set by hand) and the generation of the
+    /// direction setting it belongs to (`LaserProcessingSettings.directionGeneration`).
+    var detectedDirection: TravelDirection?
+    var directionGeneration = 0
 }
 
 /// Active camera format and intrinsics, reported once frames arrive.
@@ -68,7 +72,10 @@ struct LaserProcessingSettings: Sendable {
     /// Lens to belt, mm (0 = unknown: no speed).
     var cameraHeight: Double
     var maxHeight: Double
-    var direction: TravelDirection
+    /// Auto (detected from the texture movement while no recording runs, design §6.16) or set by hand.
+    var direction: DirectionSetting
+    /// Counts direction-setting changes on the screen; echoed in `LaserLiveUpdate`.
+    var directionGeneration = 0
 }
 
 /// Wide-camera capture for the laser line scan (design §14.2–§14.5). Session work on `phonelidar.laser.session`,
@@ -106,6 +113,7 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     // Data-queue state
     private var settings = LaserProcessingSettings(calibration: nil, cameraHeight: 0, maxHeight: 100,
                                                    direction: .rightToLeft)
+    private var detector = TravelDirectionDetector()
     private var requestedFrameRate = 240.0
     private var format: LaserFormatInfo?
     private var intrinsicsFromFrames = false
@@ -136,6 +144,8 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private struct PendingRecording {
         var token: Int
         var folder: URL
+        /// Direction written in `LaserRecording.json` (set by hand or detected); kept for the whole recording.
+        var direction: TravelDirection
     }
 
     /// Rows collected for a calibration (baseline: full frame; shim: band).
@@ -383,8 +393,10 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     func setSettings(_ newSettings: LaserProcessingSettings) {
         dataQueue.async { [self] in
-            if newSettings.direction != settings.direction {
-                estimator.travelSign = newSettings.direction.bufferSign
+            if newSettings.direction != settings.direction
+                || newSettings.directionGeneration != settings.directionGeneration {
+                detector.reset()
+                if let manual = newSettings.direction.manual { estimator.travelSign = manual.bufferSign }
                 estimator.reset()
                 travel.clearHeldSpeed()
                 lastTrackTime = nil
@@ -419,7 +431,8 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     // MARK: - Recording
 
     /// Starts recording into `folder` with the next frame (`LaserRecording.json` and `scan.json` already exist).
-    func startRecording(folder: URL) {
+    /// `direction` is the one written in `LaserRecording.json`; tracking keeps it until the recording ends.
+    func startRecording(folder: URL, direction: TravelDirection) {
         dataQueue.async { [self] in
             guard recorder == nil else {
                 onEvent?(.recordingStartFailed("a recording is already running"))
@@ -427,7 +440,7 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
             }
             pendingToken += 1
             let token = pendingToken
-            pending = PendingRecording(token: token, folder: folder)
+            pending = PendingRecording(token: token, folder: folder, direction: direction)
             dataQueue.asyncAfter(deadline: .now() + 3) { [self] in
                 guard pending?.token == token else { return }
                 pending = nil
@@ -600,12 +613,31 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
             }
             let rows = LaserGeometry.trackingRows(band: trackBand, height: info.height)
             trackingAvailable = rows != nil
+            // Auto direction: while no recording runs, search both ways and let the shifts vote (design §6.16).
+            let detecting = settings.direction == .auto && recorder == nil
+            estimator.searchesBothWays = detecting
             if let rows, let shift = estimator.process(pixelBuffer, rows: rows, zones: false) {
                 let dt = lastTrackTime.map { time - $0 } ?? 0
-                let distance = H - max(0, medianHeight ?? 0)
-                rawSpeed = LineMotionMath.trackedSpeed(shiftPixels: shift.along, quality: shift.quality,
-                                                       trackedDistance: distance, centerDistance: H,
-                                                       focalPixels: info.fy, dt: dt)
+                var directionKnown = true
+                if detecting {
+                    detector.add(rowShift: shift.along * Double(estimator.travelSign), quality: shift.quality)
+                    if let found = detector.detected {
+                        if found.bufferSign != estimator.travelSign {
+                            // This shift is signed for the old direction; readings from before must not carry over.
+                            estimator.travelSign = found.bufferSign
+                            travel.clearHeldSpeed()
+                            directionKnown = false
+                        }
+                    } else {
+                        directionKnown = false      // no speed or travel until the material has been seen moving
+                    }
+                }
+                if directionKnown {
+                    let distance = H - max(0, medianHeight ?? 0)
+                    rawSpeed = LineMotionMath.trackedSpeed(shiftPixels: shift.along, quality: shift.quality,
+                                                           trackedDistance: distance, centerDistance: H,
+                                                           focalPixels: info.fy, dt: dt)
+                }
                 lastQuality = shift.quality
             } else {
                 if rows == nil { estimator.reset() }
@@ -622,8 +654,21 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
             pending = nil
             onEvent?(.recordingStartFailed("the calibration does not match the camera format. Calibrate again"))
         }
+        // Auto: the detection changed after the screen read it (LaserRecording.json already holds the old one).
+        if let request = pending, recorder == nil, settings.direction == .auto,
+           let current = detector.detected, current != request.direction {
+            pending = nil
+            onEvent?(.recordingStartFailed("the travel direction just changed to \(current.label). Tap Record again"))
+        }
         if let request = pending, recorder == nil {
             pending = nil
+            if request.direction.bufferSign != estimator.travelSign {
+                // The recording keeps the direction in its LaserRecording.json; this frame's speed used the old sign.
+                estimator.travelSign = request.direction.bufferSign
+                travel.clearHeldSpeed()
+                rawSpeed = nil
+                flags &= ~ProfilesFile.speedFlag
+            }
             do {
                 recorder = try LaserRecorder(folder: request.folder, columns: columns, startTime: time,
                                              travelOffset: travelNow, droppedAtStart: dropped)
@@ -659,7 +704,9 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 videoWidth: info.width, videoHeight: info.height,
                 calibrationProgress: collection.map { Double($0.frames.count) / Double($0.target) },
                 // Before a baseline the band comes from raw detections, so no tracking notice yet (M2R-4).
-                trackingAvailable: baselineReady ? trackingAvailable : true)
+                trackingAvailable: baselineReady ? trackingAvailable : true,
+                detectedDirection: settings.direction == .auto ? detector.detected : nil,
+                directionGeneration: settings.directionGeneration)
             onUpdate?(update)
         }
     }

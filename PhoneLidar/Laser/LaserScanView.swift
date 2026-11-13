@@ -300,12 +300,15 @@ struct LaserScanView: View {
             }
             Stepper(String(format: "Max height above belt %.0f mm", model.maxHeight),
                     value: Binding(get: { model.maxHeight }, set: { model.setMaxHeight($0) }), in: 10...300, step: 10)
-            Picker("Direction", selection: Binding(get: { model.direction }, set: { model.setDirection($0) })) {
-                ForEach(TravelDirection.allCases) { direction in
-                    Text(direction.label).tag(direction)
+            Picker("Direction", selection: Binding(get: { model.directionSetting }, set: { model.setDirection($0) })) {
+                ForEach(DirectionSetting.allCases) { setting in
+                    Text(setting.label).tag(setting)
                 }
             }
             .pickerStyle(.segmented)
+            Text(model.directionSetting.travelText(detected: model.detectedDirection))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Picker("Map", selection: $model.mapMethod) {
                 ForEach(MapMethod.allCases) { method in
                     Text(method == .averaged ? "Map: averaged" : "Map: single reading").tag(method)

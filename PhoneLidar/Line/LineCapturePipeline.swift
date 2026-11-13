@@ -38,6 +38,10 @@ struct LiveUpdate {
     var pictureAspect: Double = 0.75
     /// Problem with the recording that does not stop it (e.g. the video encoder stopped).
     var recordingWarning: String?
+    /// Direction found by the automatic detection (nil: not yet, or Direction is set by hand) and the generation of
+    /// the direction setting it belongs to (`LineCapturePipeline.setDirection`), so a late update is ignored.
+    var detectedDirection: TravelDirection?
+    var directionGeneration = 0
 }
 
 /// Camera system load, from the capture device's system pressure state.
@@ -119,7 +123,10 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     private var lastTime: CMTime?
     private var speedTracker = LineSpeedTracker()
     private var frameCounter = 0
-    private var direction: TravelDirection = .rightToLeft
+    /// Direction setting (Auto or by hand), its generation, and the automatic detection (design §6.16).
+    private var directionSetting: DirectionSetting = .rightToLeft
+    private var directionGeneration = 0
+    private var detector = TravelDirectionDetector()
     private var recorder: LineRecorder?
     private var pendingRecording: PendingRecording?
     private var pendingToken = 0
@@ -345,16 +352,29 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         }
     }
 
-    func setDirection(_ direction: TravelDirection) {
+    /// Direction by hand, or Auto: the direction is then detected from the texture movement while no recording
+    /// runs (design §6.16). `generation` comes back in `LiveUpdate.directionGeneration`.
+    func setDirection(_ setting: DirectionSetting, generation: Int) {
         dataQueue.async { [self] in
-            self.direction = direction
-            estimator.travelSign = direction.bufferSign
+            directionSetting = setting
+            directionGeneration = generation
+            detector.reset()
+            if let manual = setting.manual { estimator.travelSign = manual.bufferSign }
             estimator.reset()
             zoneSmoother.reset()
             // Readings taken with the old sign must not carry into the new direction.
             speedTracker.clearHeldSpeed()
             lastTime = nil
         }
+    }
+
+    /// Data queue: tracking sign for a new direction (detected, or fixed for a recording). Readings taken with the
+    /// old sign must not carry over; the stored picture levels stay valid, so the estimator is not reset.
+    private func applyTravelSign(_ direction: TravelDirection) {
+        guard estimator.travelSign != direction.bufferSign else { return }
+        estimator.travelSign = direction.bufferSign
+        zoneSmoother.reset()
+        speedTracker.clearHeldSpeed()
     }
 
     /// Continuous auto exposure throughout; with the short shutter on, auto exposure may not use
@@ -520,11 +540,34 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         // Speed from texture motion (LineMotionMath: pixels moved × (distance / focal length) / time, with gates).
         var shift: TextureShift?
         var rawSpeed: Double?
+        // Auto direction: while no recording runs, the main match searches both ways and its shifts vote for the
+        // direction (design §6.16). A recording keeps the direction it started with and the one-way search.
+        let detecting = directionSetting == .auto && recorder == nil
+        estimator.searchesBothWays = detecting
         let measured = estimator.process(pixelBuffer)
         var dt = 0.0
         if let last = lastTime { dt = (time - last).seconds }
         lastTime = time
-        if let m = measured, LineMotionMath.isSpeedInterval(dt) {
+        // Zone shifts of this frame were matched with the current sign; a sign change below drops them.
+        var tileShifts = estimator.lastTiles
+        var directionKnown = true
+        if detecting {
+            if let m = measured, LineMotionMath.isSpeedInterval(dt) {
+                detector.add(rowShift: m.along * Double(estimator.travelSign), quality: m.quality)
+            }
+            if let found = detector.detected {
+                if found.bufferSign != estimator.travelSign {
+                    applyTravelSign(found)
+                    tileShifts = []
+                    directionKnown = false      // this frame's shifts are signed for the old direction
+                }
+            } else {
+                // No direction yet: no speed, zone speeds or travel until the material has been seen moving.
+                tileShifts = []
+                directionKnown = false
+            }
+        }
+        if directionKnown, let m = measured, LineMotionMath.isSpeedInterval(dt) {
             shift = m
             // Distance of the tracked area itself sets the mm-per-pixel scale.
             let trackedDistance = LineMotionMath.regionMedian(millimetres, width: dw, height: dh,
@@ -534,13 +577,13 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                                                    focalPixels: fyVideo, dt: dt)
         }
         // Local speeds per zone: zone movement × (zone distance / focal length) / time.
-        let rawTiles = LineMotionMath.zoneSpeeds(
-            tiles: estimator.lastTiles.map { tile in tile.map { (along: $0.along, quality: $0.quality) } },
+        var rawTiles = LineMotionMath.zoneSpeeds(
+            tiles: tileShifts.map { tile in tile.map { (along: $0.along, quality: $0.quality) } },
             millimetres: millimetres, width: dw, height: dh, centerDistance: median, focalPixels: fyVideo, dt: dt,
             columns: SpeedEstimator.tileColumns, rows: SpeedEstimator.tileRows)
         let smoothTiles = zoneSmoother.add(rawTiles)
         let fastest = LineMotionMath.fastest(smoothTiles)
-        let rawFastest = LineMotionMath.fastest(rawTiles)
+        var rawFastest = LineMotionMath.fastest(rawTiles)
 
         // Travel (held speed through frames without lock) and the half-second rolling average.
         let smoothed = speedTracker.add(rawSpeed: rawSpeed, dt: dt)
@@ -614,8 +657,24 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         }
 
         // Recording.
+        // Auto: the detection changed after the screen read it (e.g. the line reversed just before Record). Refuse
+        // rather than lock the recording to a direction against the movement.
+        if let pending = pendingRecording, recorder == nil, directionSetting == .auto,
+           let current = detector.detected, current != pending.direction {
+            pendingRecording = nil
+            onEvent?(.recordingStartFailed("the travel direction just changed to \(current.label). Tap Record again"))
+        }
         if let pending = pendingRecording, recorder == nil {
             pendingRecording = nil
+            // The recording keeps its direction: the screen passes the direction in use (set by hand or detected).
+            // If that differs from the sign this frame was tracked with, its shifts are not recorded.
+            if pending.direction.bufferSign != estimator.travelSign {
+                applyTravelSign(pending.direction)
+                shift = nil
+                rawSpeed = nil
+                rawTiles = [Double?](repeating: nil, count: rawTiles.count)
+                rawFastest = nil
+            }
             do {
                 let created = try LineRecorder(folder: pending.folder, videoWidth: videoWidth, videoHeight: videoHeight,
                                                depthWidth: dw, depthHeight: dh, filteredDepth: pending.filtered,
@@ -629,6 +688,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                         created.addNote("Baseline not copied into the recording (\(error.localizedDescription)): "
                                         + "map and playback show distances from the camera.")
                     }
+                }
+                if directionSetting == .auto {
+                    created.addNote(DirectionSetting.detectedNote(pending.direction))
                 }
                 recorder = created
                 autoStopReason = nil
@@ -665,7 +727,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             if let reason = active.stopReason { requestAutoStop(reason) }
         }
 
-        onUpdate?(LiveUpdate(speed: smoothed, rawSpeed: rawSpeed, quality: shift?.quality ?? 0,
+        // While the direction is being detected the lock % still shows the texture match.
+        let lock = shift?.quality ?? (detecting ? measured?.quality ?? 0 : 0)
+        onUpdate?(LiveUpdate(speed: smoothed, rawSpeed: rawSpeed, quality: lock,
                              medianDepth: median, travel: travel, angle: angle,
                              depthImage: image, depthRange: range,
                              recordedFrames: recorder?.frameCount ?? 0,
@@ -680,7 +744,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                              fastestSpeed: fastest?.speed,
                              fastestTile: fastest?.index,
                              pictureAspect: Double(dh) / Double(max(dw, 1)),
-                             recordingWarning: recorder?.videoProblem.map { "Video not recording: \($0)" }))
+                             recordingWarning: recorder?.videoProblem.map { "Video not recording: \($0)" },
+                             detectedDirection: directionSetting == .auto ? detector.detected : nil,
+                             directionGeneration: directionGeneration))
     }
 
     /// Zone with the largest speed magnitude (signed speed returned). See `LineMotionMath.fastest`.

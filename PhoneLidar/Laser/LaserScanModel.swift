@@ -36,7 +36,12 @@ final class LaserScanModel {
     private(set) var shutterLimit: Double = 1.0 / 1000
     private(set) var exposureBias: Double = 0
     private(set) var maxHeight: Double = 100
-    private(set) var direction: TravelDirection = .rightToLeft
+    /// Auto (default) or set by hand (FR-DIR-01). Kept between visits.
+    private(set) var directionSetting: DirectionSetting = .auto
+    /// Counts setting changes, so a live update made under an earlier setting is not read as the detection.
+    private var directionGeneration = 0
+    /// The recording being made took its direction from the detection (adds a summary line).
+    private var recordingDirectionDetected = false
     var mapMethod: MapMethod = .singleReading
     /// Camera height being typed (applied with Set).
     var cameraHeightText = ""
@@ -107,6 +112,15 @@ final class LaserScanModel {
         else { return nil }
         return calibration
     }
+
+    /// Direction found by the automatic detection, from the latest live update of the current setting.
+    var detectedDirection: TravelDirection? {
+        guard directionSetting == .auto, let live, live.directionGeneration == directionGeneration else { return nil }
+        return live.detectedDirection
+    }
+
+    /// Direction in use: set by hand, or detected (nil while Auto has not seen the material move).
+    var direction: TravelDirection? { directionSetting.manual ?? detectedDirection }
 
     var canRecord: Bool {
         phase == .ready && !calibrating && activeCalibration?.isComplete == true && thermal != .critical
@@ -372,8 +386,9 @@ final class LaserScanModel {
         exposureBias = defaults.double(forKey: "laserExposureBias")
         if let height = defaults.object(forKey: "laserMaxHeight") as? Double, height >= 10 { maxHeight = height }
         if let raw = defaults.string(forKey: "laserMapMethod"), let method = MapMethod(rawValue: raw) { mapMethod = method }
-        if let raw = defaults.string(forKey: "laserDirection"), let value = TravelDirection(rawValue: raw) {
-            direction = value
+        // "laserDirection" (a fixed direction, before Auto existed) is no longer read: the default is Auto.
+        if let raw = defaults.string(forKey: "laserDirectionSetting"), let value = DirectionSetting(rawValue: raw) {
+            directionSetting = value
         }
     }
 
@@ -383,12 +398,13 @@ final class LaserScanModel {
         defaults.set(exposureBias, forKey: "laserExposureBias")
         defaults.set(maxHeight, forKey: "laserMaxHeight")
         defaults.set(mapMethod.rawValue, forKey: "laserMapMethod")
-        defaults.set(direction.rawValue, forKey: "laserDirection")
+        defaults.set(directionSetting.rawValue, forKey: "laserDirectionSetting")
     }
 
     private func pushSettings() {
         pipeline.setSettings(LaserProcessingSettings(calibration: calibration, cameraHeight: appliedCameraHeight ?? 0,
-                                                     maxHeight: searchHeight, direction: direction))
+                                                     maxHeight: searchHeight, direction: directionSetting,
+                                                     directionGeneration: directionGeneration))
     }
 
     /// Search band height: the wall tops must stay inside it with a side-wall calibration.
@@ -432,8 +448,9 @@ final class LaserScanModel {
         pushSettings()
     }
 
-    func setDirection(_ value: TravelDirection) {
-        direction = value
+    func setDirection(_ value: DirectionSetting) {
+        directionSetting = value
+        directionGeneration += 1
         savePreferences()
         pushSettings()
     }
@@ -530,7 +547,8 @@ final class LaserScanModel {
         notice = nil
         // Full-frame search while the baseline is captured.
         pipeline.setSettings(LaserProcessingSettings(calibration: nil, cameraHeight: H, maxHeight: maxHeight,
-                                                     direction: direction))
+                                                     direction: directionSetting,
+                                                     directionGeneration: directionGeneration))
         let pipeline = self.pipeline
         pipeline.lockFocusAndWhiteBalance { lens in
             Task { @MainActor in
@@ -597,7 +615,8 @@ final class LaserScanModel {
         notice = nil
         // The band must reach the shim even before a scale exists.
         pipeline.setSettings(LaserProcessingSettings(calibration: c, cameraHeight: c.cameraHeight,
-                                                     maxHeight: max(maxHeight, t * 3), direction: direction))
+                                                     maxHeight: max(maxHeight, t * 3), direction: directionSetting,
+                                                     directionGeneration: directionGeneration))
         pipeline.collectRows(frames: 30, every: 1) { frames in
             Task { @MainActor in self.shimCollected(frames, thickness: t) }
         }
@@ -686,7 +705,8 @@ final class LaserScanModel {
         notice = nil
         // Full-frame search, band large enough for the walls.
         pipeline.setSettings(LaserProcessingSettings(calibration: nil, cameraHeight: H, maxHeight: max(maxHeight, hw + 20),
-                                                     direction: direction))
+                                                     direction: directionSetting,
+                                                     directionGeneration: directionGeneration))
         let pipeline = self.pipeline
         let side = laserSide
         pipeline.lockFocusAndWhiteBalance { lens in
@@ -808,6 +828,10 @@ final class LaserScanModel {
                 + "\(LineStorage.text(LineStorage.minimumToStart)) needed."
             return
         }
+        guard let direction else {
+            notice = "Recording not started: \(DirectionSetting.notDetectedReason)."
+            return
+        }
         let folder: (name: String, url: URL)
         do {
             folder = try store.newFolder(kind: .laser)
@@ -835,10 +859,11 @@ final class LaserScanModel {
             recordingFolder = folder
             recordingRecord = record
             recordingInfo = info
+            recordingDirectionDetected = directionSetting == .auto
             stopReason = nil
             savePreferences()
             phase = .arming
-            pipeline.startRecording(folder: folder.url)
+            pipeline.startRecording(folder: folder.url, direction: direction)
         } catch {
             notice = "Recording not started: the recording files could not be created (\(error.localizedDescription))."
             // Nothing was recorded yet: remove the new folder (and its scan.json if that was written).
@@ -895,6 +920,7 @@ final class LaserScanModel {
             summary.append(String(format: "%ld camera frames dropped (%.1f %%)", result.droppedFrames,
                                   100 * Double(result.droppedFrames) / Double(result.frameCount + result.droppedFrames)))
         }
+        if recordingDirectionDetected { summary.append(DirectionSetting.detectedNote(info.direction)) }
         summary += result.notes
         do {
             try info.save(to: folder.url)
