@@ -111,7 +111,38 @@ extension LineScanModel {
         }
     }
 
+    /// Reads the stored reference. A damaged file is moved aside (never overwritten) and reported (P16-3).
+    func loadHeightReference() {
+        let folder = HeightReference.standardFolder
+        switch HeightReference.read(from: folder) {
+        case .missing:
+            heightReference = HeightReference()
+        case .loaded(let reference):
+            heightReference = reference
+        case .damaged(let reason):
+            heightReference = HeightReference()
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy-MM-dd_HHmmss"
+            let aside = folder.appendingPathComponent("HeightReference-unreadable-\(formatter.string(from: Date())).json")
+            do {
+                try FileManager.default.moveItem(at: folder.appendingPathComponent(HeightReference.fileName), to: aside)
+                calibrationMessage = "HeightReference.json could not be read (\(reason)); it was kept as "
+                    + "\(aside.lastPathComponent). Set up the height reference again."
+            } catch {
+                referenceSaveBlocked = true
+                calibrationMessage = "HeightReference.json could not be read (\(reason)) and is left as it is: "
+                    + "height reference changes are not saved until it is removed (Files › Phone LiDAR › Calibration)."
+            }
+        }
+    }
+
     private func saveReference() {
+        guard !referenceSaveBlocked else {
+            calibrationMessage = "Height reference in use but not saved: the unreadable HeightReference.json in "
+                + "Calibration must be removed first."
+            return
+        }
         do {
             try heightReference.save(to: HeightReference.standardFolder)
         } catch {

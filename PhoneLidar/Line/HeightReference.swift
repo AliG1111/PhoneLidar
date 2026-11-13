@@ -141,6 +141,37 @@ struct HeightReference: Codable, Equatable, Sendable {
     var levelZeroX: Double?
     var levelZeroY: Double?
 
+    init(method: HeightReferenceMethod = .emptyBelt, cameraHeight: Double? = nil, wallHeight: Double? = nil,
+         topBand: WallBand? = nil, bottomBand: WallBand? = nil, walls: WallCalibration? = nil,
+         levelZeroX: Double? = nil, levelZeroY: Double? = nil) {
+        self.method = method
+        self.cameraHeight = cameraHeight
+        self.wallHeight = wallHeight
+        self.topBand = topBand
+        self.bottomBand = bottomBand
+        self.walls = walls
+        self.levelZeroX = levelZeroX
+        self.levelZeroY = levelZeroY
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case method, cameraHeight, wallHeight, topBand, bottomBand, walls, levelZeroX, levelZeroY
+    }
+
+    /// Every key optional (`method` defaults to `emptyBelt`); a key present with a wrong type still fails, so a damaged
+    /// file is reported rather than read as something else.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        method = try c.decodeIfPresent(HeightReferenceMethod.self, forKey: .method) ?? .emptyBelt
+        cameraHeight = try c.decodeIfPresent(Double.self, forKey: .cameraHeight)
+        wallHeight = try c.decodeIfPresent(Double.self, forKey: .wallHeight)
+        topBand = try c.decodeIfPresent(WallBand.self, forKey: .topBand)
+        bottomBand = try c.decodeIfPresent(WallBand.self, forKey: .bottomBand)
+        walls = try c.decodeIfPresent(WallCalibration.self, forKey: .walls)
+        levelZeroX = try c.decodeIfPresent(Double.self, forKey: .levelZeroX)
+        levelZeroY = try c.decodeIfPresent(Double.self, forKey: .levelZeroY)
+    }
+
     /// Camera → belt along the normal (mm), nil when the chosen plane method is not set up.
     var beltDistance: Double? {
         switch method {
@@ -182,10 +213,30 @@ struct HeightReference: Codable, Equatable, Sendable {
 
     static var standardFolder: URL { Baseline.standardFolder }
 
-    /// The reference saved in `folder`, nil if missing or unreadable.
+    /// What reading `HeightReference.json` gave.
+    enum ReadResult {
+        case missing
+        case loaded(HeightReference)
+        /// The file exists but could not be read or decoded (the reason).
+        case damaged(String)
+    }
+
+    /// Reads the reference saved in `folder`, telling a missing file from a damaged one (P16-3).
+    static func read(from folder: URL) -> ReadResult {
+        let url = folder.appendingPathComponent(fileName)
+        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        do {
+            let data = try Data(contentsOf: url)
+            return .loaded(try JSONDecoder.iso.decode(HeightReference.self, from: data))
+        } catch {
+            return .damaged(error.localizedDescription)
+        }
+    }
+
+    /// The reference saved in `folder`, nil if missing or damaged.
     static func load(from folder: URL) -> HeightReference? {
-        guard let data = try? Data(contentsOf: folder.appendingPathComponent(fileName)) else { return nil }
-        return try? JSONDecoder.iso.decode(HeightReference.self, from: data)
+        if case .loaded(let reference) = read(from: folder) { return reference }
+        return nil
     }
 
     func save(to folder: URL) throws {
@@ -390,6 +441,8 @@ struct MapHeightModel {
     var reference: HeightReference?
     /// Fractions of the buffer width kept in the map (side walls), nil = all.
     var keptAcross: ClosedRange<Double>?
+    /// Set when the recording's HeightReference.json could not be read (the map falls back; the summary says why).
+    var note: String?
 
     var isHeight: Bool {
         if case .distance = kind { return false }
@@ -417,14 +470,22 @@ struct MapHeightModel {
     /// The model for a recording folder: a ready camera-height or side-wall reference (`HeightReference.json`)
     /// first, then a matching `Baseline.bin`, else distances.
     static func load(folder: URL, width: Int, height: Int, frames: [LineFrameInfo]) -> MapHeightModel {
-        if let reference = HeightReference.load(from: folder), reference.method != .emptyBelt,
-           let plane = reference.plane(frames: frames) {
-            return MapHeightModel(kind: .plane(plane), reference: reference, keptAcross: reference.keptAcross)
+        var note: String?
+        switch HeightReference.read(from: folder) {
+        case .loaded(let reference):
+            if reference.method != .emptyBelt, let plane = reference.plane(frames: frames) {
+                return MapHeightModel(kind: .plane(plane), reference: reference, keptAcross: reference.keptAcross)
+            }
+        case .damaged(let reason):
+            note = "Height reference: HeightReference.json could not be read (\(reason)); the map uses the "
+                + "baseline or distances instead."
+        case .missing:
+            break
         }
         if let baseline = Baseline.load(from: folder), baseline.matches(width: width, height: height) {
-            return MapHeightModel(kind: .baseline(baseline.values), reference: nil, keptAcross: nil)
+            return MapHeightModel(kind: .baseline(baseline.values), reference: nil, keptAcross: nil, note: note)
         }
-        return MapHeightModel(kind: .distance, reference: nil, keptAcross: nil)
+        return MapHeightModel(kind: .distance, reference: nil, keptAcross: nil, note: note)
     }
 
     /// Depth columns used by a map `width` pixels wide with `border` columns skipped at each edge.
@@ -438,8 +499,9 @@ struct MapHeightModel {
         return lo < hi ? lo..<hi : lo..<lo
     }
 
-    /// Summary line for plane references (nil otherwise).
+    /// Summary line for plane references or an unreadable reference file (nil otherwise).
     var summaryLine: String? {
+        if let note { return note }
         guard let plane, let reference else { return nil }
         return reference.summaryLine(plane: plane)
     }

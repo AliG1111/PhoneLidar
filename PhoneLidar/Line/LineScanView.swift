@@ -555,8 +555,10 @@ final class LineScanModel {
     var levelZeroX = UserDefaults.standard.double(forKey: "lineLevelZeroX")
     var levelZeroY = UserDefaults.standard.double(forKey: "lineLevelZeroY")
     var baseline: Baseline? = Baseline.load(from: Baseline.standardFolder)
-    /// Height reference (empty belt, camera height or side walls; design §16), kept in Calibration.
-    var heightReference: HeightReference = HeightReference.load(from: HeightReference.standardFolder) ?? HeightReference()
+    /// Height reference (empty belt, camera height or side walls; design §16), kept in Calibration; read in `start`.
+    var heightReference = HeightReference()
+    /// The stored reference file is damaged and could not be moved aside: changes are not saved over it (P16-3).
+    @ObservationIgnored var referenceSaveBlocked = false
     /// Which capture `calibrating` belongs to.
     var calibrationKind: CalibrationKind?
     var heightMode = false
@@ -647,6 +649,7 @@ final class LineScanModel {
         guard !started else { return }
         started = true
         self.store = store
+        loadHeightReference()
         // Keep the screen awake for the whole Line scan screen (mounting, levelling, calibration, recording);
         // an auto-lock would cancel the calibration. Reset in shutdown().
         UIApplication.shared.isIdleTimerDisabled = true

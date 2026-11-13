@@ -94,7 +94,8 @@ enum ParallaxMapBuilder {
 
         let times = frames.map(\.time)
         var lastIndex = -1
-        try await decode(videoURL: videoURL, width: videoWidth, height: videoHeight) { time, luma, bytesPerRow in
+        try await decode(videoURL: videoURL, width: videoWidth, height: videoHeight, frameTimes: times) {
+            time, luma, bytesPerRow in
             guard let index = nearestFrame(time: time, times: times), index > lastIndex else { return }
             lastIndex = index
             let f = frames[index]
@@ -158,7 +159,7 @@ enum ParallaxMapBuilder {
 
     /// Decodes Video.mov in order and hands each frame's luma plane (buffer orientation) to `body` with its time
     /// from the start of the recording (seconds).
-    private static func decode(videoURL: URL, width: Int, height: Int,
+    private static func decode(videoURL: URL, width: Int, height: Int, frameTimes: [Double],
                                body: (Double, UnsafeBufferPointer<UInt8>, Int) throws -> Void) async throws {
         let asset = AVURLAsset(url: videoURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
@@ -175,27 +176,48 @@ enum ParallaxMapBuilder {
             throw LineError.configuration("Video.mov cannot be read (\(assetReader.error?.localizedDescription ?? "unknown error")).")
         }
         defer { if assetReader.status == .reading { assetReader.cancelReading() } }
-        var firstTime: Double?
-        while let sample = output.copyNextSampleBuffer() {
-            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-            guard pts.isFinite else { continue }
-            // Movie time normally starts at the first recorded frame; a source-clock timeline is shifted to it.
-            if firstTime == nil { firstTime = pts > 1 ? pts : 0 }
-            let time = pts - (firstTime ?? 0)
-            CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-            defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-            guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 1,
-                  CVPixelBufferGetWidthOfPlane(pixelBuffer, 0) == width,
-                  CVPixelBufferGetHeightOfPlane(pixelBuffer, 0) == height,
-                  let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else {
-                throw LineError.configuration(String(format: "Video.mov frames are not %ld × %ld like the recording.",
-                                                     width, height))
+        // Movie time starts at the first recorded frame (offset 0). A source-clock timeline (first sample > 1 s) is
+        // aligned from its first three samples, which are skipped (P16-6).
+        var offset: Double?
+        var firstTimes: [Double] = []
+        var finished = false
+        while !finished {
+            // One pool per frame: AVFoundation's per-sample objects are released as the decode goes (P16-5).
+            try autoreleasepool {
+                guard let sample = output.copyNextSampleBuffer() else {
+                    finished = true
+                    return
+                }
+                guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else { return }
+                let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+                guard pts.isFinite else { return }
+                if offset == nil {
+                    if firstTimes.isEmpty && pts <= 1 {
+                        offset = 0
+                    } else {
+                        firstTimes.append(pts)
+                        if firstTimes.count >= 3 {
+                            offset = ParallaxGeometry.timelineOffset(firstTimes: firstTimes, frameTimes: frameTimes)
+                                ?? firstTimes[0]
+                        }
+                        return
+                    }
+                }
+                let time = pts - (offset ?? 0)
+                CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+                defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+                guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 1,
+                      CVPixelBufferGetWidthOfPlane(pixelBuffer, 0) == width,
+                      CVPixelBufferGetHeightOfPlane(pixelBuffer, 0) == height,
+                      let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else {
+                    throw LineError.configuration(String(format: "Video.mov frames are not %ld × %ld like the "
+                                                         + "recording.", width, height))
+                }
+                let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+                let luma = UnsafeBufferPointer(start: base.assumingMemoryBound(to: UInt8.self),
+                                               count: bytesPerRow * height)
+                try body(time, luma, bytesPerRow)
             }
-            let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
-            let luma = UnsafeBufferPointer(start: base.assumingMemoryBound(to: UInt8.self),
-                                           count: bytesPerRow * height)
-            try body(time, luma, bytesPerRow)
         }
         if assetReader.status == .failed {
             throw LineError.configuration("Video.mov could not be decoded (\(assetReader.error?.localizedDescription ?? "unknown error")).")

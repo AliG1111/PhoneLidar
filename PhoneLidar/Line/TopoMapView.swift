@@ -104,7 +104,8 @@ struct TopoMapView: View {
                 if let profiles, profiles.across.count >= 2 {
                     Section(heightMode ? "Across-width profile (height above \(referenceName))"
                                        : "Across-width profile (up = closer to camera)") {
-                        ProfileChart(points: profiles.across, xLabel: "Across (mm)", heightMode: heightMode)
+                        ProfileChart(points: profiles.across, xLabel: "Across (mm)", heightMode: heightMode,
+                                     aboveBelt: stats.heightAboveBelt)
                             .frame(height: 180)
                     }
                 }
@@ -112,7 +113,7 @@ struct TopoMapView: View {
                     Section(heightMode ? "Along-travel profile (height above \(referenceName))"
                                        : "Along-travel profile (up = closer to camera)") {
                         ProfileChart(points: Self.thinned(profiles.along, to: 800), xLabel: "Along (mm)",
-                                     heightMode: heightMode)
+                                     heightMode: heightMode, aboveBelt: stats.heightAboveBelt)
                             .frame(height: 180)
                     }
                 }
@@ -312,6 +313,8 @@ struct ProfileChart: View {
     let points: [ProfilePoint]
     let xLabel: String
     var heightMode = false
+    /// Heights above the belt (camera height or side walls) rather than above the baseline.
+    var aboveBelt = false
 
     var body: some View {
         Chart(points) { point in
@@ -321,7 +324,9 @@ struct ProfileChart: View {
         }
         .chartYScale(domain: .automatic(includesZero: false, reversed: !heightMode))
         .chartXAxisLabel { Text(xLabel) }
-        .chartYAxisLabel { Text(heightMode ? "Height above baseline (mm)" : "Distance (mm)") }
+        .chartYAxisLabel {
+            Text(heightMode ? (aboveBelt ? "Height above the belt (mm)" : "Height above baseline (mm)") : "Distance (mm)")
+        }
     }
 }
 

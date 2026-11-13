@@ -180,7 +180,13 @@ final class ParallaxProcessor {
         let camera = input.camera
         let advance: Double
         if let last = lastStoredTravel {
-            advance = abs(input.travel - last) * camera.fy / input.medianDepth
+            let moved = input.travel - last
+            // Belt running backwards (jog, jam clearing): store nothing, start again from here when it runs forward.
+            guard moved >= 0 else {
+                lastStoredTravel = input.travel
+                return
+            }
+            advance = moved * camera.fy / input.medianDepth
             guard advance >= Double(settings.rowStep) else { return }      // no new material yet
         } else {
             advance = Double(settings.rowStep)

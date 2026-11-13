@@ -103,6 +103,15 @@ final class ParallaxGeometryTests: XCTestCase {
         XCTAssertNil(camera.project(SIMD3<Double>(0, 0, -1)))
     }
 
+    func testTimelineOffsetSkipsAMissingFirstFrame() throws {
+        let frames = (0..<20).map { Double($0) / 30 }
+        // Source clock: the video starts at frame 1 (frame 0 was not encoded).
+        let samples = [1000 + frames[1], 1000 + frames[2], 1000 + frames[3]]
+        let offset = try XCTUnwrap(ParallaxGeometry.timelineOffset(firstTimes: samples, frameTimes: frames))
+        XCTAssertEqual(samples[0] - offset, frames[1], accuracy: 1e-9)
+        XCTAssertNil(ParallaxGeometry.timelineOffset(firstTimes: [], frameTimes: frames))
+    }
+
     func testParabolicPeak() {
         XCTAssertEqual(parabolicPeak(0.5, 1, 0.5) ?? 9, 0, accuracy: 1e-12)
         XCTAssertGreaterThan(parabolicPeak(0.6, 1, 0.9) ?? -1, 0)
@@ -288,6 +297,21 @@ final class ParallaxProcessorTests: XCTestCase {
         let ridge = try XCTUnwrap(HeightMath.median(result.ridge))
         XCTAssertEqual(flat, 1000, accuracy: 1.5)
         XCTAssertEqual(ridge, 950, accuracy: 3.0)
+    }
+
+    func testABeltRunningBackwardsStoresNoTemplates() {
+        let camera = ParallaxCamera(width: 240, height: 180, fx: 240, fy: 240, cx: 120, cy: 90, lens: nil)
+        let lidar = [Float](repeating: 1000, count: 24 * 18)
+        let processor = ParallaxProcessor(width: 240, height: 180, sign: 1, normal: SIMD3<Double>(0, 0, 1),
+                                          acrossPerAlong: 0, depthWidth: 24, depthHeight: 18,
+                                          depthFrame: { _ in lidar })
+        let image = SyntheticTexture.frame(camera: camera, travel: 0, sign: 1, belt: 1000, ridgeTop: 1000, ridge: 0...0)
+        for i in 0..<20 {
+            let input = ParallaxProcessor.FrameInput(index: i, travel: -12 * Double(i), medianDepth: 1000,
+                                                     camera: camera)
+            _ = image.withUnsafeBufferPointer { processor.add(input, luma: $0, bytesPerRow: 240) }
+        }
+        XCTAssertEqual(processor.counters.templatesStored, 1)
     }
 
     func testAStoppedBeltStoresNoTemplatesAfterTheFirst() {

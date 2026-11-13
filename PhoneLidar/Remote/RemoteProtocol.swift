@@ -106,6 +106,8 @@ struct RemoteStatus: Codable, Equatable, Sendable {
     var heightMode = false
     /// Height above the baseline in the centre of the view, mm.
     var centerHeight: Double?
+    /// The scanner's height reference is ready (the key keeps its pre-P16 name: a baseline, camera height or wall
+    /// calibration).
     var baselineSaved = false
     var calibrating = false
     /// Bubble level (gravity minus the saved zero), degrees. +X = right edge high, +Y = top edge high.

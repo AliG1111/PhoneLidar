@@ -163,6 +163,28 @@ enum ParallaxGeometry {
         return HeightMath.median(ratios) ?? 0
     }
 
+    /// Offset (s) of a source-clock video timeline: of the candidates "the first sample is one of the first five
+    /// recording frames", the one that puts the first samples nearest to recording frames (frame 0 may be missing
+    /// from the video). Nil without samples or frames.
+    static func timelineOffset(firstTimes: [Double], frameTimes: [Double]) -> Double? {
+        guard let first = firstTimes.first, !frameTimes.isEmpty else { return nil }
+        var best: (offset: Double, cost: Double)?
+        for k in 0..<min(5, frameTimes.count) {
+            let offset = first - frameTimes[k]
+            var cost = 0.0
+            for t in firstTimes {
+                let shifted = t - offset
+                let i = LineMath.frameIndex(for: shifted, inTimes: frameTimes)
+                var d = abs(frameTimes[i] - shifted)
+                if i + 1 < frameTimes.count { d = min(d, abs(frameTimes[i + 1] - shifted)) }
+                cost += d
+            }
+            if let b = best, cost >= b.cost - 1e-9 { continue }
+            best = (offset, cost)
+        }
+        return best?.offset
+    }
+
     /// Map cell for a parallax map: the patch spacing at the typical distance, rounded up to 0.1 mm.
     static func cellSize(spacingPixels: Int, distance: Double, focal: Double) -> Double {
         guard focal > 0, distance > 0 else { return 2 }

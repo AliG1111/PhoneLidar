@@ -20,6 +20,27 @@ enum MapRecording: Sendable {
     }
 }
 
+/// One map build per scan folder at a time: two builds would stage their files under the same temporary names
+/// (P16-1). Guarded by `lock`, so it is safe from any thread.
+final class MapBuildRegistry: @unchecked Sendable {
+    static let shared = MapBuildRegistry()
+    private let lock = NSLock()
+    private var active: Set<String> = []
+
+    /// True when the folder was free and is now claimed.
+    func claim(_ folder: URL) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return active.insert(folder.standardizedFileURL.path).inserted
+    }
+
+    func release(_ folder: URL) {
+        lock.lock()
+        active.remove(folder.standardizedFileURL.path)
+        lock.unlock()
+    }
+}
+
 /// Map builds and replay inputs. Everything here runs off the main thread.
 enum MapRebuild {
     /// Reads the recording in `folder` (a cut-off Recording.json is repaired on disk, as Line scan does after
@@ -34,6 +55,11 @@ enum MapRebuild {
     /// that builder only.
     static func build(folder: URL, recording: MapRecording, method: MapMethod?,
                       progress: (@Sendable (Double) -> Void)? = nil) async throws -> TopoMapBuilder.Output {
+        guard MapBuildRegistry.shared.claim(folder) else {
+            throw LineError.configuration("This scan's map is already being built. Wait until that build has "
+                                          + "finished, then try again.")
+        }
+        defer { MapBuildRegistry.shared.release(folder) }
         let direction = recording.direction
         let composite: (CGImage, TopoStats) throws -> Data = { image, stats in
             try TopoMapRenderer.compositePNG(map: image, stats: stats, direction: direction)

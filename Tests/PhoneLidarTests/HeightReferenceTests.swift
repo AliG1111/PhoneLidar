@@ -86,6 +86,21 @@ final class HeightReferenceTests: XCTestCase {
         XCTAssertEqual(back.cameraHeight, 5)
     }
 
+    func testMissingKeysDefaultAndDamagedFilesAreReported() throws {
+        let folder = try makeTempFolder()
+        guard case .missing = HeightReference.read(from: folder) else { return XCTFail("expected missing") }
+        let partial = try JSONDecoder.iso.decode(HeightReference.self, from: Data(#"{"cameraHeight":1200}"#.utf8))
+        XCTAssertEqual(partial.method, .emptyBelt)
+        XCTAssertEqual(partial.cameraHeight, 1200)
+        try Data(#"{"method":"cameraHeight","cameraHeight":"tall"}"#.utf8)
+            .write(to: folder.appendingPathComponent(HeightReference.fileName))
+        guard case .damaged = HeightReference.read(from: folder) else { return XCTFail("expected damaged") }
+        XCTAssertNil(HeightReference.load(from: folder))
+        let model = MapHeightModel.load(folder: folder, width: 64, height: 48, frames: [makeFrame()])
+        XCTAssertFalse(model.isHeight)
+        XCTAssertTrue(model.summaryLine?.hasPrefix("Height reference: HeightReference.json could not be read") == true)
+    }
+
     func testWallBandsAreClampedAndCoverColumns() {
         let band = WallBand(start: 0.95, end: 0.2).clamped
         XCTAssertEqual(band.start, 0.2, accuracy: 1e-12)

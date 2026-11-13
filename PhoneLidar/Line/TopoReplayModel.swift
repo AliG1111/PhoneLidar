@@ -125,7 +125,12 @@ final class TopoReplayModel {
     /// Colour scale ends: target ± 2 tolerances (blue … red).
     var colorLow: Double { target - 2 * tolerance }
     var colorHigh: Double { target + 2 * tolerance }
-    var valueName: String { heightMode ? "Height above baseline" : "Relative height (+ = closer to camera)" }
+    /// Heights above the belt (camera height or side walls) rather than above the baseline; set by the screen.
+    var heightAboveBelt = false
+    var valueName: String {
+        heightMode ? (heightAboveBelt ? "Height above the belt" : "Height above baseline")
+            : "Relative height (+ = closer to camera)"
+    }
 
     // MARK: Clock
 
