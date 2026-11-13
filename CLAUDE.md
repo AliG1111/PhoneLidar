@@ -156,7 +156,7 @@ Claude-Session: https://claude.ai/code/session_014WLjMvrCLDLxVAm3jLG84p
 - docs/requirements.md — FR/NFR IDs, acceptance criteria, traceability and status.
 - docs/design.md — architecture, concurrency, algorithms, byte-exact file formats, technology choices, risks, guide
   vs code discrepancies.
-- docs/implementation-plan.md — model matrix, workflow, self-review checklist, phases P0–P13, change log.
+- docs/implementation-plan.md — model matrix, workflow, self-review checklist, phases P0–P14, change log.
 - docs/reviews/ — milestone review records.
 - User guide: `README.md` (repo), the same content as the project copy on claude.ai; the orchestrator syncs the copies,
   and the owner's local `phone-lidar-build-guide.md` is replaced from it. Update README for every user-visible change.
