@@ -33,8 +33,10 @@ PhoneLidar/Line/             Line scan: LineCapturePipeline, LineMotionMath (pur
                              SpeedEstimator, Baseline, LineRecording (formats, streaming recorder, repair),
                              LineRecordingRecovery (background recovery of killed recordings), LineScanView,
                              LinePlaybackView, TopoMapBuilder/Renderer/View, TopoGridFile,
-                             TopoReplayData/Model/Scene/View, DepthColors, DisplayLinkProxy, MapCells (map method,
-                             cell accumulator, single-frame helpers), MapRebuild (map/replay for both sensors)
+                             TopoReplayData/Model/Scene/View, TopoReplayOrientation (free 3D camera orientation),
+                             DepthColors, DisplayLinkProxy, MapCells (map method, cell accumulator, single-frame
+                             helpers), MapRebuild (map/replay for both sensors), TravelDirectionDetector
+                             (Auto/manual direction setting and detection, used by both sensors)
 PhoneLidar/Laser/            Laser line scan (design §14): LaserCapturePipeline, LaserLineDetector, LaserGeometry,
                              LaserWalls (side walls), LaserRecording (Profiles.bin), LaserMapBuilder, LidarDistanceProbe,
                              LaserScanView/Model
@@ -119,6 +121,9 @@ Full matrix: docs/implementation-plan.md §2. Every plan task names its assignme
 - Orientation conventions (design §6.1): buffers stay in sensor landscape; buffer x/depth u = across = top → bottom of
   the portrait screen; buffer y/depth v = along = right → left; `TravelDirection.bufferSign`; speeds + = travel
   direction; zones n = row·6 + column via `ZoneGrid`. Reuse these helpers instead of re-deriving mappings.
+- Direction: screens hold a `DirectionSetting` (Auto default); the pipelines detect while no recording runs and fix the
+  direction per recording (design §6.16). Code that needs "the" direction takes the recording's `direction`, never the
+  screen setting.
 - Formatting: user text via `Units` (m + ft-in, m² + ft²) and `SpeedText` (mm/s, m/min, ft/min); file numbers via
   `String(format:)` (never localized). CSV through `CSV.make` (escaping, LF, trailing newline); large CSVs through
   `TextFileWriter`. JSON through `JSONEncoder.pretty` / `JSONDecoder.iso`. Write metadata with `.atomic`.
