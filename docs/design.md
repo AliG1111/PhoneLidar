@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Document | Architecture, module design, data flow, concurrency, algorithms, on-disk formats, technology choices, risks |
-| Describes | `main` at `4fa93c7` (PR #9, CI build #61): build #23 plus the P8 changes (unit tests, CI hardening, M1 review fixes of cycles 1–3, the final review and the re-reviews). |
-| Date | 2026-11-10 |
+| Describes | `main` at `4fa93c7` (PR #9, CI build #61): build #23 plus the P8 changes (unit tests, CI hardening, M1 review fixes of cycles 1–3, the final review and the re-reviews); plus the remote link (P11: §3.9, §6.15, §7.20, §10.10), added 2026-11-12. |
+| Date | 2026-11-12 |
 | Related | [requirements.md](requirements.md), [implementation-plan.md](implementation-plan.md), [../CLAUDE.md](../CLAUDE.md) |
 
 Source paths are relative to `PhoneLidar/` unless they start with `Support/`, `.github/` or `project.yml`. Review IDs (`A-1`, `B-4`, `C-2`, `P-1`, `F-6`, …) refer to the M1 review ([reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md)). This document describes the code after the M1 fixes (cycles 1–3, final review and re-reviews); where it says "was" it names the behaviour of build #23. The user guide is [`../README.md`](../README.md).
@@ -13,7 +13,7 @@ Source paths are relative to `PhoneLidar/` unless they start with `Support/`, `.
 
 ## 1. Scope
 
-The app has four capture modes and shared library functions. Room, Equipment and Object capture are thin wrappers around Apple frameworks plus exporters. Line scan is the bulk of the code (more than two thirds of the Swift code): a real-time capture pipeline, a speed estimator, a calibration model, a streaming recorder with custom binary formats and crash recovery, a playback screen, a map builder with statistics, and a SceneKit replay. `Tests/PhoneLidarTests` covers the pure-logic files in a host-less XCTest bundle.
+The app has four capture modes and shared library functions. Room, Equipment and Object capture are thin wrappers around Apple frameworks plus exporters. Line scan is the bulk of the code (more than two thirds of the Swift code): a real-time capture pipeline, a speed estimator, a calibration model, a streaming recorder with custom binary formats and crash recovery, a playback screen, a map builder with statistics, and a SceneKit replay. `Tests/PhoneLidarTests` covers the pure-logic files in a host-less XCTest bundle. The remote link (`Remote/`, P11) lets a second phone control a mounted Line scan phone over direct phone-to-phone Wi-Fi.
 
 ## 2. Architecture overview
 
@@ -162,6 +162,24 @@ flowchart LR
 | `TopoReplayScene.swift` | SceneKit content: orthographic sheared camera, surface strip with walls, tolerance planes, newest-line bar, axes and billboard labels. |
 | `TopoReplayView.swift` | Replay screen: loading (builds the grid if missing), landscape/portrait layouts, `ReplaySceneView` (SCNView + gestures), `AlongChart`, `AcrossPanel`, `ColorBar`, `ReplaySettingsView`, `ActivityView`. |
 
+### 3.9 Remote (`Remote/`)
+
+Phone-to-phone remote control of Line scan (FR-RMT). Both phones run the same app; one is the **scanner**, the other the **remote**.
+
+| File | Responsibility |
+|---|---|
+| `RemoteProtocol.swift` | Pure, tested. Constants (`RemoteLinkConstants`), `RemoteStatus`, `RemotePhase`, `RemoteHeat`, `RemoteAction`, `RemoteScanInfo`, `RemoteScanList` (list cut to one frame), `RemoteCommandRules` (command refusals), `RemoteStatusText` (remote screen texts), `RemoteFileInfo`, `RemoteFileRequest`, `RemoteFileProblem`, `RemoteMessage` (JSON), `RemoteRecord` (record = message or file chunk), `RemoteFrame` / `RemoteFrameDecoder` (length-prefixed frames with a size limit), `RemoteLinkError`. Foundation only. |
+| `RemoteCrypto.swift` | Pure, tested. `PairingCode` (random 6 digits, input normalization, display), `PairingWindow` (5 min, 2 s pause after a wrong code, 5 wrong codes → new code), `RemotePairing`, `ScannerSecrets` (locked pairing state, one pairing attempt at a time), `HandshakeMessage`, `RemoteHandshake` (transcript, X25519 + HKDF key schedule, confirmation MACs), `SecureChannel` (ChaChaPoly with counter nonces). CryptoKit only. |
+| `RemoteTransfer.swift` | Pure, tested. `RemoteFiles` (plain-name check, folder listing for the scanner, resume offset, change detection, scan acceptance), `RemoteCopyPhase`/`RemoteCopyState`/`RemoteCopyRow` (copy states and what a row offers), `RemoteStaging` (staging manifest, reconcile), `TransferProgress` (bytes, smoothed rate, time left, text), `RemoteImport` (the `ScanRecord` of a copied scan). |
+| `RemoteKeychain.swift` | Stores `RemotePairing` (peer ID, name, 32-byte key, date) in the Keychain, one item per role. |
+| `RemoteConnection.swift` | `RemoteConnection`: one `NWConnection`, its handshake (scanner or remote side), framing, `SecureChannel`, liveness (ping, 8 s timeout, 10 s handshake limit), the file sender (scanner, with an `fstat` check of the opened file) and file receiver (remote), `RemoteCloseReason`. Queue-confined to `phonelidar.remote.link`; reports to the main actor. Compiled by the test target (loopback tests). |
+| `RemoteDiscovery.swift` | `RemoteListener` (`NWListener`, Bonjour advertising, Local Network probe browser), `RemoteBrowser` (`NWBrowser`, results grouped by ID with every name seen), `FoundScanner`, `AcceptedConnection`. |
+| `RemoteLink.swift` | `RemoteLink` (`@MainActor @Observable`, created by `PhoneLidarApp`, in the environment): role (off / scanner / remote, persisted), device identity, scene-phase start/stop. Scanner side: listener with restart, pairing window, one active remote, status loop (4 Hz), commands to the Line scan screen through `RemoteScannerTarget`, scan list, file serving with validation, pause of transfers while busy. Remote side: browser, connect and reconnect with back-off, pairing, status, commands with a 5 s answer limit, scan list, copy queue with staging, resume and import into `ScanStore`. |
+| `RemoteControlView.swift` | Remote screen: link state, pairing (nearby scanners, code entry), Start/Stop, readouts, warnings, scans on the scanner with copy progress, pause, resume, discard and open. Keeps the screen awake. |
+| `RemoteLinkViews.swift` | Scanner sheet on the Line scan screen (allow remote control, pairing code, paired and connected remote, forget), the status chip on the Line scan screen, and the Home **Remote link** section. |
+
+`LineScanModel` conforms to `RemoteScannerTarget` (`remoteLineStatus()`, `remoteStart()`, `remoteStop()`): remote commands call the same `startRecording` / `stop(reason:)` paths as the buttons, after `RemoteCommandRules` (refused once Close was tapped). `onRecordingStart` tells the link that a recording starts. With the scanner role on, `keepOpenAfterSave` keeps the Line scan screen open after a save (camera restarted, Ready) instead of calling `onSaved` (FR-RMT-09).
+
 ## 4. Data flow
 
 ### 4.1 Line scan: capture → recording files → map → replay
@@ -295,6 +313,7 @@ Swift 5 language mode (`SWIFT_VERSION: "5.0"`), so strict concurrency checking i
 | Detached tasks (`.userInitiated`, recovery `.utility`) | `TopoMapBuilder.build` (after Stop, on Rebuild, on replay open) including the `TopoMap.png` composite (after Stop, on Rebuild and on replay open), `LineRecordingRepair.loadInfo`, `TopoGridFile.load` + `TopoReplaySource.make` + `TopoDisplayGrid.make` (replay open and block-size changes), `PlaybackModel.prepare`, map-screen file loads, `ViewerModel.loadScene`, Room export, Mesh export (`MeshExporter.write`), `LineRecordingRecovery.scan`, probe sampling (`DispatchQueue.concurrentPerform` over frames). |
 | Main run loop, `.common` mode | `CADisplayLink` replay clock and playback frame-time clock (preferred 60 / 30 Hz, range 30–60, through `DisplayLinkProxy`); `AVPlayer` periodic time observer (1/30 s, main queue); the AVCapture notification observers (delivered on any queue). |
 | SceneKit render thread | Renders `SCNView`s; geometry is replaced from the main actor. |
+| `phonelidar.remote.link` (serial, `.userInitiated`) | Every `NWListener`, `NWBrowser` and `NWConnection` handler; `RemoteConnection` state (handshake, `SecureChannel` counters, frame decoder, liveness timer, file sender reads, file receiver writes and acknowledgements). Results reach the main actor as values through `DispatchQueue.main.async` + `MainActor.assumeIsolated`, which keeps their order (open before messages before close). `ScannerSecrets` is locked (read here during handshakes, changed on the main actor). |
 
 How frames cross threads:
 - AVFoundation delivers a `CMSampleBuffer` and `AVDepthData` on the data queue. The depth map is copied into a `[Float]` of millimetres there; the video buffer is read in place (luma pyramid) and passed directly to `AVAssetWriterInput.append` on the same queue — no hand-off.
@@ -302,8 +321,10 @@ How frames cross threads:
 - Calibration frames (`[[Float]]`) are copied into a `CalibrationCapture` value (marked `@unchecked Sendable`) and handed to a global queue.
 - Commands from the UI (`setDirection`, `setBaseline`, `captureBaseline`, `cancelCalibration`, `startRecording`, `stopRecording`) are `dataQueue.async` blocks, so they serialize with frame handling; recorder creation happens at the next frame. `stopRecording` sets the recorder to nil on the data queue before `finish`, so after that the recorder is used only by its finish queue.
 - `Baseline` and `DepthFileReader` are immutable after `init` and marked `@unchecked Sendable` so they can be read from several threads. `SharedFloats` lets `concurrentPerform` write disjoint elements of one buffer. `ActiveFolderSet` is `@unchecked Sendable` and locks every access (the recovery task reads it off the main thread). `LineRecorder` is `@unchecked Sendable`: confined to the data queue until `finish`, then to its finish queue.
-- `LineCapturePipeline` is `@unchecked Sendable`; its `device`, `onUpdate` and `onEvent` are set on the main thread before the session starts and read on the queues afterwards (ordering by program flow, not by synchronization). `CMMotionManager` is confined to the data queue. Eight `@unchecked Sendable` types in total (`ActiveFolderSet`, `Baseline`, `DepthFileReader`, `LineRecorder`, `CalibrationCapture`, `LineCapturePipeline`, `SharedFloats`, `LoadedModel`), each with the reason in a comment.
+- `LineCapturePipeline` is `@unchecked Sendable`; its `device`, `onUpdate` and `onEvent` are set on the main thread before the session starts and read on the queues afterwards (ordering by program flow, not by synchronization). `CMMotionManager` is confined to the data queue. Fourteen `@unchecked Sendable` types in total (`ActiveFolderSet`, `Baseline`, `DepthFileReader`, `LineRecorder`, `CalibrationCapture`, `LineCapturePipeline`, `SharedFloats`, `LoadedModel`, and for the remote link `ScannerSecrets`, `RemoteConnection`, `RemoteListener`, `RemoteBrowser`, `AcceptedConnection`, `FoundScanner`), each with the reason in a comment.
 - Library recovery never runs next to a recording: `recoverLineRecordings()` returns (and asks for a re-run) while `activeLineFolders` is non-empty or a pass runs, the pass stops as soon as a recording starts, and `endLineRecording` triggers the held-back pass.
+
+- Remote link: `RemoteConnection`, `RemoteListener` and `RemoteBrowser` are `@unchecked Sendable`, confined to `phonelidar.remote.link`; their main-actor callbacks are set before `start()` and only read on the queue afterwards (as `LineCapturePipeline`). `ScannerSecrets` locks every access. The link never touches the capture queues; the scanner reads files only while no recording, save or map build runs (NFR-REL-07).
 
 Rules for new code: keep per-frame state on the data queue; never touch UI or `@Observable` state from it; hand results to the main actor as values; heavy post-processing in detached tasks returning `Result` values; no blocking work inside the display-link tick.
 
@@ -458,6 +479,39 @@ Recovery (`LineRecordingRecovery.scan`, off the main thread):
 4. Back on the main actor, `addRecovered` saves a `ScanRecord` ("Line <date> (recovered)", kind `line`) for each, clears the marker only after the save succeeded, merges failures into `recoveryFailures` (a save failure stays marked and is retried), reloads the library and sets `recoveryNotice` (one message for the recovered recordings, one for failures not reported before). A call during a pass, or while recording, schedules one more pass (`recoveryRerunRequested`); a `deferred` outcome schedules up to 4 retries 32 s apart.
 
 Not recoverable: the video after the last complete 5 s fragment, the tail of `Recording.json` and the CSVs that was still in the 64 kB write buffers, and the depth frames beyond the last frame line (the map uses min(frames, depth frames)). `Frames.csv` and `ZoneSpeeds.csv` of a recovered recording are not repaired and can end with a cut line.
+
+### 6.15 Remote link protocol
+
+**Discovery and transport.** The scanner runs an `NWListener` with `includePeerToPeer = true` and TCP (keep-alive 2 s idle, 1 s interval, 3 probes; no delay), advertising Bonjour `_phonelidar._tcp` with its display name (`<UIDevice name> <first 4 hex digits of its ID>`) and a TXT record `id=<device UUID>`, `v=1`. The remote runs an `NWBrowser` (`bonjourWithTXTRecord`, peer-to-peer) and connects to the endpoint whose TXT `id` matches the scanner it wants. A failed listener is restarted after 2 s. A listener can stay ready while Local Network access is off, so the scanner also runs a browse probe for the same service type: `waiting` with DNS error −65570 (policy denied) on the probe or the listener is reported as "Local Network access is off" and the probe's `ready` clears it. The remote's browser reports the same way. Browse results are grouped by TXT `id` with every service name seen; more than one name for an ID, or another ID with the same name (compared without Bonjour's " (n)" rename suffix, `RemoteServiceName`), blocks pairing (NFR-SEC-06).
+
+**Frames.** Every frame is a 4-byte big-endian length followed by that many bytes. Limit 4,096 bytes during the handshake and 1,049,600 bytes (1 MiB + 1 KiB) afterwards; a larger length closes the connection before the bytes are read.
+
+**Handshake** (plain JSON frames, `HandshakeMessage`; Data fields are base64):
+1. Remote → scanner `clientHello` {version 1, mode `pair` | `resume`, deviceID, deviceName, publicKey (X25519, 32 B), nonce (32 random bytes)}.
+2. Scanner: version must be 1 (else `refused` `version`). Secret *s*: `pair` needs an open pairing window, *s* = UTF-8 `"code:"` + the 6 digits (else `refused` `notPairing`; within 2 s of a wrong code `refused` `busy`); `resume` needs a stored pairing with that device ID, *s* = the 32-byte pairing key (else `refused` `notPaired`). Reply `serverHello` {version, deviceID, deviceName, publicKey, nonce}. The remote checks that deviceID is the scanner it chose.
+3. Both compute transcript *T* = SHA-256(`"PhoneLidar remote link v1"` ‖ len(C) ‖ C ‖ len(S) ‖ S), with C and S the exact hello bytes and len a 4-byte big-endian count; IKM = X25519(own private, peer public) ‖ *s*; five keys = HKDF-SHA256(IKM, salt *T*, info = `remote confirm`, `scanner confirm`, `remote to scanner`, `scanner to remote`, `pairing key`), 32 bytes each.
+4. Remote → `confirm` {mac = HMAC-SHA256(remote-confirm key, *T*)}. The scanner checks it in constant time; a wrong MAC in `pair` mode counts a wrong code (`refused` `wrongCode`; after 5 a new code is shown; the window's closing time never moves), in `resume` mode `refused` `authentication`.
+5. Scanner → `confirm` {mac = HMAC-SHA256(scanner-confirm key, *T*)}; the remote checks it. In `pair` mode both phones store the pairing key with the peer's ID and name (Keychain, §7.20); the scanner closes the pairing window and a previously paired remote can no longer connect.
+
+A fresh X25519 key pair per connection gives every session new keys. A refused handshake sends `refused` {refusal} and closes.
+
+**Secure records.** After the handshake every frame is ChaChaPoly(ciphertext ‖ 16-byte tag) under the direction's key, nonce = 4 zero bytes ‖ 64-bit big-endian counter, starting at 0 per direction and connection. The receiver uses its own counter, so a replayed, dropped, reordered or altered frame fails authentication and closes the connection. Plaintext byte 0 selects the record: `1` = JSON `RemoteMessage`; `2` = file chunk: transfer ID (UInt32 BE), offset (UInt64 BE), data. A JSON message this build cannot decode is ignored.
+
+**Messages** (`RemoteMessage`): `ping`; `status(RemoteStatus)` scanner → remote every 0.25 s; `command(id, action)` (`startRecording`, `stopRecording`) and `commandResult(id, accepted, message)`; `listScans` and `scans([RemoteScanInfo])` (saved Line scans not being recorded or built, newest 200, files listed by `RemoteFiles.list`, cut to the newest scans whose record fits one frame by `RemoteScanList.fitting`; only the newest request's list is sent, so lists arrive in order; the remote keeps only scans that pass `RemoteFiles.isAcceptable`: plain unique names, sizes 0–1 TB, finite times, total ≤ 1 TB); `fileRequest(transferID, scanID, name, offset, size, modified)`; file chunks; `chunkAck(transferID, received)`; `fileEnd(transferID, size)`; `fileError(transferID, reason, message)` with reason `busy` | `changed` | `missing` | `failed`; `cancelTransfer(transferID)`. Non-finite numbers in a status are sent as absent, and the remote bounds every received status again (`RemoteStatus.sanitized`: elapsed time 0…10⁹ s, frame count ≥ 0).
+
+**Liveness.** Each side sends `ping` when it has sent nothing for 1 s; a connection with no frame received for 8 s, or a handshake not finished within 10 s, is closed. The scanner keeps one active remote: an authenticated new connection replaces the old one (a remote that reconnects before the scanner noticed the drop). At most 4 handshakes are pending; a fifth connection replaces the oldest pending connection that has not sent a hello, or is closed when every pending connection has sent one (no refusal is sent: a reconnecting remote retries, a pairing attempt fails and the user tries again); a pairing whose handshake finishes on a connection closed meanwhile is still stored; and an accepted connection that sends no hello within 3 s, or no confirm within 3 s of the server hello, is closed. Only one `pair` handshake runs at a time (`ScannerSecrets` reserves it at the hello and releases it at the confirm or the close; an abandoned attempt is not counted as a wrong code).
+
+**Reconnection.** The scanner never closes its listener because of a lost link. The remote, while paired, retries 1, 2, 4, then every 5 s after a loss, whenever the scanner is in the browse results (rotating through its endpoints), and restarts the browser after every third failed attempt. A `notPaired` refusal is shown ("Pair again") but never removes the remote's pairing: refusals come before authentication, and any phone in range could send one.
+
+**Commands.** The scanner runs `remoteStart` / `remoteStop` on the Line scan screen's model and answers with its outcome (accepted; or refused with the reason, e.g. the screen's notice text). No Line scan screen open → refused "Line scan is not open on the scanner". The remote gives up waiting after 5 s.
+
+**File copy** (remote pulls, one file at a time, smallest first so map and statistics files come before `Depth.bin` and `Video.mov`):
+1. The remote checks free space (remaining bytes + 500 MB), creates the staging folder and manifest (§7.20), and for the first incomplete file sends `fileRequest` with offset = `RemoteFiles.resumeOffset` (staged size rounded down to a 256 KiB chunk, minus one chunk, so a torn tail is re-sent; 0 when the staged file is larger than expected; the full size when complete). The staged file is truncated to that offset.
+2. The scanner opens the file and checks the opened file's size and modification time (`fstat`) against the request, so a file replaced after the path check is refused as `changed`. It refuses with `busy` while the Line scan screen records, saves or builds a map, with `missing` when the scan or file is not offered (unknown ID, not a Line scan, being recorded, not a plain name, not a regular file), with `changed` when size or modification time differ from the request. Otherwise it streams 256 KiB chunks from the offset, keeping at most 2 MiB unacknowledged, then `fileEnd`. When a recording starts (record button or remote) `LineScanModel.onRecordingStart` stops any send with `busy` at once.
+3. The remote accepts a chunk only at its expected offset, appends it, acknowledges, and reports progress (≤ 4 Hz). At `fileEnd` the received size must equal the requested size; the file is synchronized to disk and the next file starts.
+4. When every file has its full size, the files are moved into a new `line_<date>` folder (`ScanStore.newFolder`) and a `ScanRecord` is saved with the scanner's ID, name, date and summary plus "Copied from <scanner> on <date>." (`RemoteImport.record`). If the save fails, the files are moved back to staging and the copy can be retried; a file that cannot be moved back stays in the new folder, which is then kept (listed under Incomplete scans) instead of removed. After a successful import the staging folder is removed. Staging folders of scans the scanner does not offer (deleted, other scanner, list cut) are listed as **Partly copied scans** with Discard (`RemoteStaging.partials`). Scan lists are de-duplicated by ID on both phones (a folder duplicated in the Files app keeps its ID; the newest is kept).
+
+`busy` pauses the copy until a status received after the refusal shows the scanner idle; copies also pause while the remote phone's own Line scan screen is busy (`recordingStarts` stops the running file at once); a scan-list request that arrives while the scanner records is answered when it is idle; `changed` deletes that staged file and refreshes the list; a lost link pauses and the copy continues after reconnect; after an app restart the list shows the partial copy with **Resume**. When a new list arrives, staged files whose size or modification time no longer match are deleted (`RemoteStaging.filesToDiscard`).
 
 ## 7. On-disk formats
 
@@ -629,12 +683,16 @@ Row 1: `across_mm \ along_mm` followed by each column centre (c + 0.5)·cell as 
 - `TopoReplay_<t>s.png` — name `String(format: "TopoReplay_%07.2fs.png", playhead)`, e.g. `TopoReplay_0012.34s.png`; the header readouts are refreshed to the playhead right before the snapshot, so name, header and picture show the same time (B-18); SCNView snapshot centred under a 64 pt header (title, time and statistics) and above a 76 pt footer (colour bar with five labels and caption); width max(snapshot, 900) pt at the screen scale.
 
 ### 7.18 Preferences
-`UserDefaults.standard`: `lineLevelZeroed` (Bool), `lineLevelZeroX`, `lineLevelZeroY` (Double, degrees).
+`UserDefaults.standard`: `lineLevelZeroed` (Bool), `lineLevelZeroX`, `lineLevelZeroY` (Double, degrees); `remoteLinkMode` (String: `off`, `scanner`, `remote`); `remoteDeviceID` (UUID string, created on first use).
 
 ### 7.19 Recording marker and temporary files
 - `.recording-in-progress` — empty hidden file in a `line_` folder, created by `LineRecorder.init` before any other file. It is removed when the saved recording has been read back successfully (`LineRecordingRepair.clearMarker` after `loadInfo` in the map step) or after a recovery has added the folder to the library. A folder that still has it (and a `Recording.json`) is an interrupted recording (§6.14).
 - `.pending-scan.json` — hidden sidecar in a `line_` folder: pretty JSON `{"created": ISO-8601, "name": text, "summary": [text]}`, every key optional. Written (best effort) by Line scan just before the first `scan.json` save at Stop; removed when that save succeeds, by recovery after it saves the recovered record, or by a recovery pass that finds it next to an existing `scan.json`. Not listed, shared or counted as a scan file.
 - `.<name>.partial` — hidden temporary file of the map outputs (`TopoMapGrid.png`, `TopoMap.csv`, `TopoGrid.bin`, `TopoStats.csv`, `TopoStats.json`, `TopoProfiles.json`, `AcrossProfile.csv`, `AlongProfile.csv`, `TopoMap.png` when staged), renamed over the final name after all of them were written, removed on failure. A leftover (the app was killed during a build) is overwritten by the next build.
+
+### 7.20 Remote link staging and pairing data
+- Staging (remote phone): `Library/Application Support/RemoteIncoming/<scan UUID>/` holds the files being copied under their own names and a hidden manifest `.transfer.json` (pretty JSON: `scan` = the `RemoteScanInfo` the copy started from (id, name, created, summary, files with name, size in bytes and modification time in seconds since 1970), `scannerName`, `started` ISO 8601). Not visible in the Files app and not part of the library; removed after the import or by **Discard**.
+- Pairing: one Keychain generic-password item per role, service `ca.gervais.phonelidar.remote-link`, account `scanner` (the scanner's paired remote) or `remote` (the remote's paired scanner), accessibility `AfterFirstUnlockThisDeviceOnly`, data = JSON `RemotePairing` {peerID, peerName, key (base64, 32 bytes), created}. Not backed up to other devices.
 
 ## 8. Storage layout
 
@@ -649,6 +707,8 @@ Row 1: `across_mm \ along_mm` followed by each column centre (c + 0.5)·cell as 
 │                                     TopoGrid.bin, TopoStats.csv, TopoStats.json, TopoProfiles.json,
 │                                     AcrossProfile.csv, AlongProfile.csv, TopoReplay_*.png
 └── Calibration/                      Baseline.bin, Baseline.json (current calibration)
+<app container>/Library/Application Support/
+└── RemoteIncoming/<scan UUID>/       remote phone only: files of a copy in progress + .transfer.json (§7.20)
 ```
 
 Lifecycle:
@@ -685,6 +745,11 @@ Error types: `ScanError` (`noData`, `noMesh`, `unsupported`, `cancelled`) and `L
 | Object: capture or reconstruction failure, or Stop | Message; the photos are kept; "Retry reconstruction" is offered. The record is written before reconstruction; if only the final `scan.json` rewrite fails, "Try saving again" rewrites the record (`modelNotRecorded`); Close there tries once more, and a complete model is later recorded via "Add the finished model", never rebuilt (G-3). If no record exists at all, the screen says the photos are in the scan folder (G-7). |
 | Viewer: model cannot be opened | "Could not open <file>: …" over an empty scene. |
 | Library: undecodable `scan.json` | Folder listed under Incomplete scans (§8); missing fields get neutral values, a missing id comes from the folder name. |
+| Remote link: Local Network permission off | Scanner sheet and Remote screen: "Local Network access is off for Phone LiDAR. Turn it on in Settings › Privacy & Security › Local Network." |
+| Remote link: wrong pairing code / not paired / version | Remote: "Pairing failed: wrong code."; "Link lost (this phone is not paired with the scanner any more. Pair again). Reconnecting…" (the pairing is kept; Forget removes it); "… update both phones to the same app build …". |
+| Remote link lost | Both phones show the reason and "reconnecting"; the scanner keeps recording; a pending command reports "The link was lost before the scanner answered"; copies pause and continue after reconnect. |
+| Remote command refused | Remote shows "Refused: <scanner's reason>"; no answer within 5 s: "No answer from the scanner". |
+| Remote copy problems | Not enough storage (refused before starting), file write error (copy stopped, partial data kept, Retry), file missing on the scanner (copy failed), scan changed (file restarted), import failed (files back in staging, Retry). |
 
 ## 10. Technology recommendations
 
@@ -739,6 +804,11 @@ Current hot paths are scalar Swift: depth Float32 → mm conversion, luma pyrami
 - LZFSE for depth: fast on device; Windows readers need the open-source `lzfse` library (Python: `pyliblzfse` or similar).
 - Swift Charts for profile charts; `Canvas` for lightweight sparklines, timelines and replay charts.
 
+### 10.10 Remote link: transport and security
+- **Transport: Network framework with peer-to-peer Wi-Fi** (owner's decision, 2026-11-12). No router or shared network; fast enough for status, commands and file copies; no special entitlement, so the GitHub build and Sideloadly install are unchanged. Alternatives: Multipeer Connectivity (same radio, lower throughput, less control over framing and reconnection); Wi-Fi Aware (iOS 26 only, managed entitlement, paid program); Bluetooth LE (too slow for files); a travel router or Ethernet at the mount (longer range; possible later without protocol changes, since the link is plain TCP over Bonjour).
+- **Security: CryptoKit at the application layer** instead of TLS-PSK in the Network framework. The handshake, key schedule and channel are pure Swift, so the simulator unit tests cover them (no device needed); TLS-PSK needs C cipher-suite APIs whose deprecation status in the iOS 26 SDK could break the warning-free build. A 6-digit code alone cannot stop an attacker who is active during the pairing moment; CryptoKit has no password-authenticated key exchange (PAKE). The pairing key used afterwards is 256-bit random-equivalent, so later sessions are not open to offline guessing (NFR-SEC-06).
+- **Pull-based copy with acknowledgements**: the remote decides what to copy and from which offset (resume after drops and restarts); the 2 MiB window bounds the data queued behind status messages.
+
 ## 11. Known limitations and design risks
 
 | ID | Limitation / risk | Consequence | Status / tracking |
@@ -760,6 +830,9 @@ Current hot paths are scalar Swift: depth Float32 → mm conversion, luma pyrami
 | R-15 | Storage grows without quota. | Phone storage fills over time. Recording is refused below 1.0 GB free and stops and saves below 300 MB; orphan folders are listed under Incomplete scans and can be shared or deleted. Other modes do not check free space. | Partly resolved (A-2, C-12) |
 | R-16 | Public repository: plant imagery, recordings and the replay look reference must not be committed. | Data exposure. | CLAUDE.md rule |
 | R-17 | Map, playback and replay read `Recording.json` frame fields; formats are coupled. | Format changes must keep old fields readable (optional new fields, version bump for binary changes). | CLAUDE.md rule |
+| R-18 | Peer-to-peer Wi-Fi range is not published; steel, the mount, the phone's orientation (camera down) and VFD noise reduce it; a phone joined to a Wi-Fi network on another channel shares airtime with the peer-to-peer link. | Status or copies drop at the forming line. The scanner is unaffected (FR-RMT-05); range measured in P9 V12; a travel router at the line is the fallback. | P9 V12 |
+| R-19 | Pairing with a 6-digit code: the remote's confirmation lets a phone posing as the scanner recover the code offline from one attempt (no PAKE in CryptoKit). | A deliberate attacker present while pairing can pair in the user's place. Mitigated by refusing to pair while two services claim the scanner's ID or name (compared without Bonjour's " (n)" rename suffix, `RemoteServiceName`) and by showing the paired phone's name on both phones (a weak check: the remote's name and ID are sent unencrypted in its hello); not closed. | Open, owner decision (NFR-SEC-06) |
+| R-20 | The remote link adds radio and encryption load on the scanner during recording (status only; no files while busy). | Heat on a hot mount. Status is small (≈ 1 kB at 4 Hz); P9 V13 checks frame intervals with the remote connected. | P9 V13 |
 
 ## 12. Guide vs code discrepancies
 

@@ -26,8 +26,14 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_phonelidar._tcp</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Phone LiDAR uses the camera and LiDAR scanner to build 3D scans of rooms, equipment and objects.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Phone LiDAR connects directly to your other iPhone running Phone LiDAR, so one phone can start and stop a Line scan on the other and copy its scans.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Phone LiDAR saves a scan image or video to your Photos only when you choose Save Image or Save Video in the share sheet.</string>
 	<key>UIApplicationSceneManifest</key>
