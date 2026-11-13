@@ -308,12 +308,16 @@ final class LaserScanModel {
         guard phase == .ready, !calibrating, rate != frameRate else { return }
         frameRate = rate
         savePreferences()
-        pipeline.stop()
+        // The old session must have stopped before the new one takes the camera.
+        let old = pipeline
         pipeline = LaserCapturePipeline()
         pipelineID += 1
         format = nil
         live = nil
-        openCamera()
+        phase = .starting
+        old.stopAndWait {
+            Task { @MainActor in self.openCamera() }
+        }
     }
 
     func setShutter(_ limit: Double) {
