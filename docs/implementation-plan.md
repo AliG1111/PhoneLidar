@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | P11 remote link merged (PR #12, `cf7fbbc`, build #83; milestone M2, [reviews/2026-11-12-M2.md](reviews/2026-11-12-M2.md)). P12 flake topography (single-reading LiDAR map, laser line scan) and P13 side-wall calibration merged (PR #13, `df07d43`, build #85; milestone M3, [reviews/2026-11-12-M3.md](reviews/2026-11-12-M3.md)). Both review cycles ran until a review yielded no new findings. Next: P9 on-device validation (V1–V17). |
+| State | P11 remote link merged (PR #12, `cf7fbbc`, build #83; milestone M2, [reviews/2026-11-12-M2.md](reviews/2026-11-12-M2.md)). P12 flake topography (single-reading LiDAR map, laser line scan) and P13 side-wall calibration merged (PR #13, `df07d43`, build #85; milestone M3, [reviews/2026-11-12-M3.md](reviews/2026-11-12-M3.md)). Both review cycles ran until a review yielded no new findings. P14 automatic travel direction and free replay rotation merged (PR #15, `447f2a6`, build #91; review [reviews/2026-11-13-P14.md](reviews/2026-11-13-P14.md), no new findings at the end). Next: P9 on-device validation (V1–V18). |
 | Date | 2026-11-13 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
@@ -29,7 +29,7 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P11 | Remote link: second phone controls a Line scan phone over direct phone-to-phone Wi-Fi (start/stop, status, auto-reconnect, copy scans for review) | Done (PR #12, build #83) |
 | P12 | Flake topography: single-frame LiDAR map and laser line scan (milestone M3) | Done (PR #13, build #85) |
 | P13 | Laser side-wall calibration and wall re-zero | Done (PR #13, build #85) |
-| P14 | Automatic travel direction with manual override; unlimited rotation of the replay's 3D strip | In review (branch `auto-direction-free-rotation`) |
+| P14 | Automatic travel direction with manual override; unlimited rotation of the replay's 3D strip | Done (PR #15, build #91) |
 
 Build numbers are GitHub Actions run numbers of the `Build iOS app` workflow on `main` (artifact `PhoneLidar-unsigned-ipa-<n>`).
 
@@ -310,7 +310,7 @@ Owner's request: rotate the topographic map in all orientations without limits; 
 - [x] P14.6 CI green: app build and unit tests, 0 warnings (Sonnet 5.5 / medium for compile-error triage) — branch run 43441265753, PR run 43443688002
 - [x] P14.7 Change review of the PR diff and its callers (fresh Opus 5.5 / high), fixes, re-reviews until no new findings; record in [reviews/2026-11-13-P14.md](reviews/2026-11-13-P14.md)
 - [x] P14.8 Build guide (`README.md`), `CLAUDE.md` repo map (Sonnet 5.5 / medium; written by the orchestrator with the code)
-- [ ] P14.9 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator)
+- [x] P14.9 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator)
 
 P9 addition:
 - [ ] **V18 Direction detection and free rotation** — Line scan and Laser line scan with Direction Auto: open the screen with the line stopped (readout "Detecting…", Record refused), start the line (time to "detected"), run both directions if the conveyor can reverse, and a blank surface (stays undetected; manual override records). Replay: turn the strip through full turns in every direction, view from below, twist, double-tap reset. Pass: detection ≤ 1 s after textured material moves; never the wrong direction over 10 starts per direction; rotation never stops at a limit (Sonnet 5.5 / high)
@@ -321,6 +321,7 @@ Newest first. Build = run number of the `Build iOS app` workflow on `main` after
 
 | Date | Build | PR / commit | Summary |
 |---|---|---|---|
+| 2026-11-13 | #91 | PR #15 `auto-direction-free-rotation` (`447f2a6`; PR runs 43443688002, 43445162943, branch run 43441265753) | P14: Direction Auto (default) / Right → Left / Left → Right on Line scan and Laser line scan — two-way main search while not recording, detection from 12 of the last 15 confident shifts, no speed until detected, Record refused until detected or when the detection just changed, direction fixed per recording, summary note; replay 3D strip rotates without limits (quaternion trackball, two-finger roll, tilt/turn/roll sliders, fixed scale, pivot at the window centre, light on the camera). Change review R1 (Medium) and R2 (Low) fixed; re-review: no new findings. 698 unit tests. |
 | 2026-11-13 | #85 | PR #13 `flake-topography` (`df07d43`; PR run 43433878330 on the merge of `main`) | P12/P13 (milestone M3): single-reading LiDAR map (one reading per cell, repeated frames skipped, `ScanLineProfiles.csv`, map-method picker and rebuild); new scan mode Laser line scan (camera sheet-of-light triangulation, `Profiles.bin`, `LaserRecording.json`, `LaserFrames.csv`, `LaserCalibration.json`, shim or angle scale, LiDAR camera height, ≈ 60 Hz speed tracking, map and replay); side-wall calibration with laser angle and camera tilt, per-frame wall re-zero, map cropped inside the walls, 5 mm error budget. Final review and 6 re-reviews until no new findings (M2-…–M2V- IDs). Numbered P12/P13/M3 after the remote link kept P11/M2; merged after #12 (owner's decision). |
 | 2026-11-13 | #83 | PR #12 `remote-link` (`cf7fbbc`; PR run 43268590932) | P11 (milestone M2): remote link — a second iPhone pairs with a Line scan phone over peer-to-peer Wi-Fi, starts/stops recordings, shows status and copies scans; encrypted, authenticated link, reconnection, resumable copy. Review cycles until no new findings. Merged by the P12/P13 orchestrator at the owner's request. |
 | 2026-11-12 | — (docs only, no build) | PR #11 `token-efficiency` | Review scope and token budget (owner's decision): the "until no new findings" rule covers code, tests and the user guide; bookkeeping is checked by the orchestrator, not re-reviewed; one Opus 5.5 / high change review per PR on the diff and its callers; one Opus 5.5 / max final review per milestone; one session per task, at most two agents at a time, single CI watch, one-step local sync. Updated §2, §3, §5 and `CLAUDE.md`. |
