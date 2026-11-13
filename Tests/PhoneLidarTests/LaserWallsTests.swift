@@ -313,15 +313,29 @@ final class LaserWallsTests: XCTestCase {
         XCTAssertEqual(detection.right, Array(190...199))
     }
 
-    func testAnAngleScaleNeedsItsStoredTiltForTheEffectiveHeight() {
-        // M2T-2: a baseline that keeps an angle scale keeps its camera tilt; without it the effective height is H.
-        var c = makeLaserCalibration(width: 1920, height: 1080, cameraHeight: 3300, scale: 1400, baselineRow: 840,
-                                     fx: 1512, fy: 1512, cx: 960, cy: 540)
-        c.scaleSource = .angle
-        c.laserAngle = 45
-        XCTAssertEqual(c.effectiveHeight(column: 10), 3300)                    // no tilt stored
-        c.cameraTilt = 1
-        XCTAssertLessThan(c.effectiveHeight(column: 10), 3300 * 0.985)         // ≈ −2 % for 1°
+    func testANewBaselineKeepsTheAngleScaleWithItsTilt() {
+        // M2T-2: an empty-belt baseline that keeps an angle scale keeps the camera tilt K contains.
+        var old = makeLaserCalibration(width: 1920, height: 1080, cameraHeight: 3300, scale: 1400, baselineRow: 840,
+                                       fx: 1512, fy: 1512, cx: 960, cy: 540)
+        old.scaleSource = .angle
+        old.laserAngle = 45
+        old.cameraTilt = 1
+        old.shimThickness = 25
+        old.shimShift = 12
+        old.shimBaselineRow = 830
+        var fresh = makeLaserCalibration(width: 1920, height: 1080, cameraHeight: 3300, scale: nil, baselineRow: 845,
+                                         fx: 1512, fy: 1512, cx: 960, cy: 540)
+        XCTAssertEqual(fresh.effectiveHeight(column: 10), 3300)                 // no scale, no tilt
+        fresh = fresh.keepingScale(of: old)
+        XCTAssertEqual(fresh.scale, 1400)
+        XCTAssertEqual(fresh.scaleSource, .angle)
+        XCTAssertEqual(fresh.laserAngle, 45)
+        XCTAssertEqual(fresh.cameraTilt, 1)
+        XCTAssertEqual(fresh.shimThickness, 25)
+        XCTAssertEqual(fresh.shimShift, 12)
+        XCTAssertEqual(fresh.shimBaselineRow, 830)
+        XCTAssertEqual(fresh.baselineRows, Array(repeating: 845, count: fresh.columns.count))  // its own baseline
+        XCTAssertLessThan(fresh.effectiveHeight(column: 10), 3300 * 0.985)     // ≈ −2 % for 1°
     }
 
     // MARK: - Refit and persistence (M2S-2, M2S-9)

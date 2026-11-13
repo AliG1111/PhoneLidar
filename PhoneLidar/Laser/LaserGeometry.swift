@@ -126,6 +126,20 @@ struct LaserCalibration: Codable, Equatable, Sendable {
         shiftScales.filter { $0.isFinite }.max { abs($0) < abs($1) }
     }
 
+    /// This calibration with the scale of `old` (a new empty-belt baseline of the same format): K with its source,
+    /// the shim measurement, and the laser angle and camera tilt that an angle scale contains (M2T-2).
+    func keepingScale(of old: LaserCalibration) -> LaserCalibration {
+        var c = self
+        c.scale = old.scale
+        c.scaleSource = old.scaleSource
+        c.shimThickness = old.shimThickness
+        c.shimShift = old.shimShift
+        c.shimBaselineRow = old.shimBaselineRow
+        c.laserAngle = old.laserAngle
+        c.cameraTilt = old.cameraTilt
+        return c
+    }
+
     /// Everything a recording needs: camera height, baseline and a usable scale at the middle column.
     var isComplete: Bool {
         guard cameraHeight > 0, baselineRows.count == columns.count, !baselineRows.isEmpty else { return false }

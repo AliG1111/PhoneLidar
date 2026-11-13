@@ -447,13 +447,16 @@ final class LaserScanModel {
         setCameraHeight(H, source: .entered)
     }
 
-    private func setCameraHeight(_ H: Double, source: LaserCalibration.HeightSource) {
+    /// Applies a camera height; false when a side-wall calibration cannot be refitted for it (the previous height
+    /// stays in use and `notice` says why).
+    @discardableResult
+    private func setCameraHeight(_ H: Double, source: LaserCalibration.HeightSource) -> Bool {
         guard var c = calibration else {
             appliedCameraHeight = H
             cameraHeightSource = source
             cameraHeightText = String(format: "%.0f", H)
             pushSettings()
-            return
+            return true
         }
         if c.isSideWalls {
             // The wall fit depends on H: refit from the stored wall rows (same walls, K and wall height). The new
@@ -464,14 +467,14 @@ final class LaserScanModel {
                 appliedCameraHeight = c.cameraHeight
                 cameraHeightSource = c.cameraHeightSource
                 cameraHeightText = String(format: "%.0f", c.cameraHeight)
-                return
+                return false
             }
             refit.cameraHeightSource = source
             appliedCameraHeight = H
             cameraHeightSource = source
             cameraHeightText = String(format: "%.0f", H)
             saveCalibration(refit)
-            return
+            return true
         }
         appliedCameraHeight = H
         cameraHeightSource = source
@@ -484,6 +487,7 @@ final class LaserScanModel {
             c.scale = LaserGeometry.laserTerm(columnScale: a, baselineRow: c.shimBaselineRow ?? c.cy, cy: c.cy)
         }
         saveCalibration(c)
+        return true
     }
 
     // MARK: - Calibration
@@ -507,8 +511,11 @@ final class LaserScanModel {
         calibrationStep = nil
         switch result {
         case .success(let mm):
-            setCameraHeight(mm, source: .lidar)
-            notice = String(format: "LiDAR camera height: %.0f mm (check against a tape measure).", mm)
+            if setCameraHeight(mm, source: .lidar) {
+                notice = String(format: "LiDAR camera height: %.0f mm (check against a tape measure).", mm)
+            } else {
+                notice = String(format: "LiDAR camera height: %.0f mm. ", mm) + (notice ?? "")
+            }
         case .failure(let error):
             notice = error.localizedDescription
         }
@@ -567,13 +574,7 @@ final class LaserScanModel {
         if let old = calibration, old.matches(width: current.width, height: current.height, columns: columns,
                                               fx: current.fx, fy: current.fy, cx: current.cx, cy: current.cy,
                                               binned: current.binned) {
-            c.scale = old.scale
-            c.scaleSource = old.scaleSource
-            c.shimThickness = old.shimThickness
-            c.shimShift = old.shimShift
-            c.shimBaselineRow = old.shimBaselineRow
-            c.laserAngle = old.laserAngle
-            c.cameraTilt = old.cameraTilt       // K contains the tilt; the effective height needs it too (M2T-2)
+            c = c.keepingScale(of: old)
         }
         saveCalibration(c)
         notice = String(format: "Baseline calibrated: %.0f %% of the line measured. ", result.coverage)
