@@ -62,10 +62,13 @@ struct HomeView: View {
                     newScanRow(.line,
                                detail: "Phone fixed above moving material (portrait, travel right → left). Records LiDAR depth + video, measures speed, plays back, and builds a topographic map with variance statistics.",
                                supported: LineCapturePipeline.isSupported)
+                    newScanRow(.laser,
+                               detail: "Line laser + main camera at up to 240 fps for strand-level height of the mat surface (one reading per cell, no averaging). Phone fixed above the belt, laser line across it.",
+                               supported: LaserCapturePipeline.isSupported)
                 } header: {
                     Text("New scan")
                 } footer: {
-                    Text("Requires an iPhone with LiDAR (12 Pro / Pro Max or a newer Pro model).")
+                    Text("Room, equipment, object and line scans require an iPhone with LiDAR (12 Pro / Pro Max or a newer Pro model). The laser line scan needs a line laser and the main camera; the LiDAR is optional (camera height).")
                 }
 
                 Section("Saved scans") {
@@ -135,6 +138,8 @@ struct HomeView: View {
                         ObjectScanView(onFinish: finished)
                     case .line:
                         LineScanView(onFinish: finished)
+                    case .laser:
+                        LaserScanView(onFinish: finished)
                     case .unknown:
                         EmptyView()
                     }

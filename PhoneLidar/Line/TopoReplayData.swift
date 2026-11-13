@@ -215,7 +215,7 @@ struct TopoReplaySource: Sendable {
         // Speed for the run-out: travel over the last second, else over the whole recording.
         var measured = 0.0
         if let lastTime = times.last, let lastTravel = travel.last {
-            let startIndex = LineMath.frameIndex(for: lastTime - 1.0, in: times)
+            let startIndex = LineMath.frameIndex(for: lastTime - 1.0, inTimes: times)
             if lastTime - times[startIndex] > 0.2 {
                 measured = (lastTravel - travel[startIndex]) / (lastTime - times[startIndex])
             }

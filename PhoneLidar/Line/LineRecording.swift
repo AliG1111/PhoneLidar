@@ -271,7 +271,7 @@ enum LineMath {
     }
 
     /// Last index whose time is ≤ `time` (0 when all are later). `times` must be non-decreasing.
-    static func frameIndex(for time: Double, in times: [Double]) -> Int {
+    static func frameIndex(for time: Double, inTimes times: [Double]) -> Int {
         guard !times.isEmpty else { return 0 }
         var lo = 0
         var hi = times.count - 1
