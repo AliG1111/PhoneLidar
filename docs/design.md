@@ -666,6 +666,7 @@ Header key order is not defined. Frames are not sorted-key and contain no newlin
 | `surfaceTiltX`, `surfaceTiltY` | double, optional | LiDAR plane-fit tilt, degrees (last computed value). |
 | `tileSpeeds` | [double or null], optional | 24 raw zone speeds, mm/s, index n = r·6 + c. |
 | `fastestSpeed`, `fastestTile` | double / int, optional | Zone with the largest absolute raw speed. |
+| `videoSkipped` | bool, optional | P16: `true` when the frame's picture did not go into `Video.mov` (encoder busy, failed or not started); absent = written. |
 
 Readers must treat every optional key as possibly absent (older recordings).
 
@@ -958,7 +959,7 @@ Readings go into `MapCells(method: .cameraParallax)` (single-reading semantics: 
 σ_h ≈ Z²·σ_d / (f·B) = Z·σ_d / (f·0.317) with σ_d the matching error: 0.2–0.6 mm at 1 m, 0.3–0.9 mm at 1.5 m, 0.6–1.8 mm at 2.9 m (σ_d = 0.1–0.3 px). Lateral resolution ≈ the 16 px patch (11 mm at 1 m, 31 mm at 2.9 m). Absolute level: LiDAR (§16.5).
 
 ### 15.7 Video decoding (`ParallaxMapBuilder`)
-`AVURLAsset.loadTracks` (async), `AVAssetReaderTrackOutput` in 420 8-bit full range, luma plane in buffer orientation (the writer's portrait transform is metadata only). Sample time = PTS (movie time starts at the first frame; a source-clock timeline, PTS > 1 s at the first sample, is shifted to it); the nearest recording frame within 25 ms is used, each once. Frames skipped by the encoder simply have no partner. Progress (0…1) every 15 frames. `MapRebuild.build` is async for this reason; Line scan's map step and both map screens await it.
+`AVURLAsset.loadTracks` (async), `AVAssetReaderTrackOutput` in 420 8-bit full range, luma plane in buffer orientation (the writer's portrait transform is metadata only). Sample time = PTS: movie time starts at the session start, which is the first recorded frame even when that frame's picture was not written, and the nearest recording frame within 25 ms is used, each once. On a source-clock timeline (PTS > 1 s at the first sample) the n-th sample is paired with the n-th frame whose picture was written (frames with `videoSkipped`, P16, have none; older recordings are assumed complete). Frames skipped by the encoder simply have no partner. One autorelease pool per decoded frame. One build per folder at a time (`MapBuildRegistry`; a second is refused). Progress (0…1) every 15 frames. `MapRebuild.build` is async for this reason; Line scan's map step and both map screens await it.
 
 ### 15.8 Risks
 | ID | Risk | Mitigation |

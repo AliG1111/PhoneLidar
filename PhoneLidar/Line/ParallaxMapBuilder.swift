@@ -93,10 +93,13 @@ enum ParallaxMapBuilder {
         }
 
         let times = frames.map(\.time)
+        let videoFrames = ParallaxGeometry.videoFrameIndices(frames)
         var lastIndex = -1
-        try await decode(videoURL: videoURL, width: videoWidth, height: videoHeight, frameTimes: times) {
-            time, luma, bytesPerRow in
-            guard let index = nearestFrame(time: time, times: times), index > lastIndex else { return }
+        try await decode(videoURL: videoURL, width: videoWidth, height: videoHeight) { time, sample, luma, bytesPerRow in
+            // Movie time: the nearest frame by time. Source-clock time: the sample's place in the written frames.
+            let found = time.map { nearestFrame(time: $0, times: times) }
+                ?? (sample < videoFrames.count ? videoFrames[sample] : nil)
+            guard let index = found, index > lastIndex else { return }
             lastIndex = index
             let f = frames[index]
             let camera = ParallaxCamera(frame: f, videoWidth: videoWidth, videoHeight: videoHeight,
@@ -157,10 +160,10 @@ enum ParallaxMapBuilder {
         return abs(times[best] - time) <= 0.025 ? best : nil
     }
 
-    /// Decodes Video.mov in order and hands each frame's luma plane (buffer orientation) to `body` with its time
-    /// from the start of the recording (seconds).
-    private static func decode(videoURL: URL, width: Int, height: Int, frameTimes: [Double],
-                               body: (Double, UnsafeBufferPointer<UInt8>, Int) throws -> Void) async throws {
+    /// Decodes Video.mov in order and hands each frame's luma plane (buffer orientation) to `body` with its time from
+    /// the start of the recording (seconds; nil on a source-clock timeline) and its sample number (0, 1, …).
+    private static func decode(videoURL: URL, width: Int, height: Int,
+                               body: (Double?, Int, UnsafeBufferPointer<UInt8>, Int) throws -> Void) async throws {
         let asset = AVURLAsset(url: videoURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw LineError.configuration("Video.mov has no video track.")
@@ -176,10 +179,11 @@ enum ParallaxMapBuilder {
             throw LineError.configuration("Video.mov cannot be read (\(assetReader.error?.localizedDescription ?? "unknown error")).")
         }
         defer { if assetReader.status == .reading { assetReader.cancelReading() } }
-        // Movie time starts at the first recorded frame (offset 0). A source-clock timeline (first sample > 1 s) is
-        // aligned from its first three samples, which are skipped (P16-6).
-        var offset: Double?
-        var firstTimes: [Double] = []
+        // Movie time starts at the session start = the first recorded frame, also when that frame's picture was not
+        // written. A source-clock timeline (first sample > 1 s) gives no time; samples are then paired in order with
+        // the frames whose picture was written (P16-6).
+        var movieTime: Bool?
+        var sampleNumber = 0
         var finished = false
         while !finished {
             // One pool per frame: AVFoundation's per-sample objects are released as the decode goes (P16-5).
@@ -191,19 +195,9 @@ enum ParallaxMapBuilder {
                 guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else { return }
                 let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
                 guard pts.isFinite else { return }
-                if offset == nil {
-                    if firstTimes.isEmpty && pts <= 1 {
-                        offset = 0
-                    } else {
-                        firstTimes.append(pts)
-                        if firstTimes.count >= 3 {
-                            offset = ParallaxGeometry.timelineOffset(firstTimes: firstTimes, frameTimes: frameTimes)
-                                ?? firstTimes[0]
-                        }
-                        return
-                    }
-                }
-                let time = pts - (offset ?? 0)
+                if movieTime == nil { movieTime = pts <= 1 }
+                let number = sampleNumber
+                sampleNumber += 1
                 CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
                 defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
                 guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 1,
@@ -216,7 +210,7 @@ enum ParallaxMapBuilder {
                 let bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
                 let luma = UnsafeBufferPointer(start: base.assumingMemoryBound(to: UInt8.self),
                                                count: bytesPerRow * height)
-                try body(time, luma, bytesPerRow)
+                try body(movieTime == true ? pts : nil, number, luma, bytesPerRow)
             }
         }
         if assetReader.status == .failed {

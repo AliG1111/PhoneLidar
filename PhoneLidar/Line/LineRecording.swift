@@ -62,6 +62,8 @@ struct LineFrameInfo: Codable {
     /// Fastest zone this frame (mm/s, signed) and its index.
     var fastestSpeed: Double? = nil
     var fastestTile: Int? = nil
+    /// True when this frame's picture did not go into Video.mov (encoder busy or stopped); absent = written (P16).
+    var videoSkipped: Bool? = nil
 }
 
 /// Saved as Recording.json next to Video.mov and Depth.bin.
@@ -663,11 +665,16 @@ final class LineRecorder: @unchecked Sendable {
         }
         guard let start = startTime else { return }
         // Depth and frame data are kept even if the video encoder fails.
+        var videoWritten = false
         switch writer.status {
         case .writing:
             if videoInput.isReadyForMoreMediaData {
-                if !videoInput.append(sampleBuffer) {
-                    if writer.status == .failed { noteVideoProblem("the video encoder stopped") } else { videoDropped += 1 }
+                if videoInput.append(sampleBuffer) {
+                    videoWritten = true
+                } else if writer.status == .failed {
+                    noteVideoProblem("the video encoder stopped")
+                } else {
+                    videoDropped += 1
                 }
             } else {
                 videoDropped += 1
@@ -682,6 +689,8 @@ final class LineRecorder: @unchecked Sendable {
         frame.index = frameCount
         frame.time = (pts - start).seconds
         frame.travel = info.travel - travelOffset
+        // Lets a reader pair the video's samples with these frames in order (camera-parallax map, P16-6).
+        frame.videoSkipped = videoWritten ? nil : true
         frame = frame.sanitized()
         do {
             try depthWriter.append(millimetres: depthMillimetres)

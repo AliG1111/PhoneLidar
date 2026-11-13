@@ -103,13 +103,12 @@ final class ParallaxGeometryTests: XCTestCase {
         XCTAssertNil(camera.project(SIMD3<Double>(0, 0, -1)))
     }
 
-    func testTimelineOffsetSkipsAMissingFirstFrame() throws {
-        let frames = (0..<20).map { Double($0) / 30 }
-        // Source clock: the video starts at frame 1 (frame 0 was not encoded).
-        let samples = [1000 + frames[1], 1000 + frames[2], 1000 + frames[3]]
-        let offset = try XCTUnwrap(ParallaxGeometry.timelineOffset(firstTimes: samples, frameTimes: frames))
-        XCTAssertEqual(samples[0] - offset, frames[1], accuracy: 1e-9)
-        XCTAssertNil(ParallaxGeometry.timelineOffset(firstTimes: [], frameTimes: frames))
+    func testVideoFramesSkipTheFramesWithoutAPicture() {
+        var frames = (0..<5).map { makeFrame(index: $0) }
+        frames[0].videoSkipped = true
+        frames[3].videoSkipped = true
+        XCTAssertEqual(ParallaxGeometry.videoFrameIndices(frames), [1, 2, 4])
+        XCTAssertEqual(ParallaxGeometry.videoFrameIndices((0..<3).map { makeFrame(index: $0) }), [0, 1, 2])
     }
 
     func testParabolicPeak() {
