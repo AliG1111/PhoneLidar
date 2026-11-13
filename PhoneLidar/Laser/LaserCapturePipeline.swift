@@ -517,9 +517,10 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 width: active.bufferWidth, height: active.bufferHeight)
             if let reason = LaserCaptureWatch.stallReason(progress) {
                 if progress.sinceLastFrame >= LaserCaptureWatch.frameGap {
-                    // The camera stopped sending frames: restart it, so the next attempt can work.
+                    // The camera stopped sending frames: restart it (once per stalled capture), so the next attempt
+                    // can work.
                     restartAfterStall()
-                    cancelCollectionOnDataQueue(reason: reason + "; the camera was restarted")
+                    cancelCollectionOnDataQueue(reason: reason + "; the camera is being restarted")
                 } else {
                     cancelCollectionOnDataQueue(reason: reason)
                 }
