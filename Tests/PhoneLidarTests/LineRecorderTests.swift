@@ -4,8 +4,8 @@ import CoreVideo
 import XCTest
 
 /// LineRecorder from the first appended frame to `finish` (Z-9), with synthetic camera buffers: frame index, time,
-/// travel offset, counts, notes, sanitizing and the files it leaves. The video track is not checked (the simulator's
-/// encoder may skip frames); depth and frame data never depend on it.
+/// travel offset, counts, notes, sanitizing and the files it leaves. Depth and frame data never depend on the video;
+/// the video's samples are checked only against the frames' `videoSkipped` marks.
 final class LineRecorderTests: XCTestCase {
     private let depthWidth = 16
     private let depthHeight = 12
@@ -160,21 +160,32 @@ final class LineRecorderTests: XCTestCase {
         await fulfillment(of: [done], timeout: 30)
         let frames = try LineRecordingRepair.loadInfo(folder: folder).info.frames
         XCTAssertEqual(frames.count, 20)
-        let written = ParallaxGeometry.videoFrameIndices(frames).count
-        var decoded = 0
-        if written > 0 {
-            let asset = AVURLAsset(url: folder.appendingPathComponent("Video.mov"))
-            let track = try await asset.loadTracks(withMediaType: .video).first
-            let videoTrack = try XCTUnwrap(track)
-            let reader = try AVAssetReader(asset: asset)
-            let output = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
-            reader.add(output)
-            XCTAssertTrue(reader.startReading())
-            while let sample = output.copyNextSampleBuffer() {
-                if CMSampleBufferGetNumSamples(sample) > 0 { decoded += 1 }
+        let written = ParallaxGeometry.videoFrameIndices(frames)
+        guard let first = written.first else { return }      // no picture written: nothing to pair
+        let asset = AVURLAsset(url: folder.appendingPathComponent("Video.mov"))
+        let track = try await asset.loadTracks(withMediaType: .video).first
+        let videoTrack = try XCTUnwrap(track)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
+        reader.add(output)
+        XCTAssertTrue(reader.startReading())
+        var times: [Double] = []
+        while let sample = output.copyNextSampleBuffer() {
+            if CMSampleBufferGetNumSamples(sample) > 0 {
+                times.append(CMSampleBufferGetPresentationTimeStamp(sample).seconds)
             }
         }
-        XCTAssertEqual(decoded, written)
+        // As the parallax builder pairs them: the first sample is the first written frame, and every sample lies
+        // within 25 ms of a written frame's time from there (an encoder may still drop a sample it accepted).
+        XCTAssertFalse(times.isEmpty)
+        XCTAssertLessThanOrEqual(times.count, written.count)
+        let anchor = frames[first].time
+        let writtenTimes = written.map { frames[$0].time - anchor }
+        for t in times {
+            let relative = t - (times.first ?? 0)
+            let nearest = writtenTimes.map { abs($0 - relative) }.min() ?? .infinity
+            XCTAssertLessThanOrEqual(nearest, 0.025, "sample at \(relative) s has no written frame")
+        }
     }
 
     func testNonFiniteNumbersNeverReachTheFiles() throws {

@@ -189,11 +189,12 @@ enum ParallaxMapBuilder {
                     finished = true
                     return
                 }
-                guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else { return }
+                // The anchor comes from the first buffer that carries a frame, before any image check (T1).
                 let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-                guard pts.isFinite else { return }
+                guard pts.isFinite, CMSampleBufferGetNumSamples(sample) > 0 else { return }
                 if offset == nil { offset = pts <= 1 ? 0 : pts - firstSampleTime }
                 let time = pts - (offset ?? 0)
+                guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else { return }
                 CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
                 defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
                 guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 1,
