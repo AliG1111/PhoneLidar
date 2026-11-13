@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | P8 process alignment merged to `main` (PR #9, `4fa93c7`, build #61): docs, CLAUDE.md, unit tests in CI, CI hardening and the M1 review fixes. The M1 reviews ran until a review yielded no new findings ([reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md)). Next: P9 on-device validation. P11 remote link (owner's request, 2026-11-12) in progress on branch `remote-link`. |
-| Date | 2026-11-12 |
+| State | P11 remote link merged (PR #12, `cf7fbbc`, build #83; milestone M2, [reviews/2026-11-12-M2.md](reviews/2026-11-12-M2.md)). P12 flake topography (single-reading LiDAR map, laser line scan) and P13 side-wall calibration merged (PR #13, `df07d43`, build #85; milestone M3, [reviews/2026-11-12-M3.md](reviews/2026-11-12-M3.md)). Both review cycles ran until a review yielded no new findings. Next: P9 on-device validation (V1–V17). |
+| Date | 2026-11-13 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
 Agents keep this file current: tick a task when its PR is merged, add a change-log entry for every merged PR or revision, and add newly found work to P10.
@@ -26,9 +26,9 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P8 | Process alignment: docs, CLAUDE.md, unit tests in CI, milestone M1 reviews and fixes, final review | Done (PR #9, build #61) |
 | P9 | On-device validation on the iPhone 17 Pro Max | Not started |
 | P10 | Backlog | Open |
-| P11 | Remote link: second phone controls a Line scan phone over direct phone-to-phone Wi-Fi (start/stop, status, auto-reconnect, copy scans for review) | In progress (branch `remote-link`) |
-| P12 | Flake topography: single-frame LiDAR map and laser line scan (milestone M3) | In progress (branch `flake-topography`) |
-| P13 | Laser side-wall calibration and wall re-zero | In progress (branch `flake-topography`) |
+| P11 | Remote link: second phone controls a Line scan phone over direct phone-to-phone Wi-Fi (start/stop, status, auto-reconnect, copy scans for review) | Done (PR #12, build #83) |
+| P12 | Flake topography: single-frame LiDAR map and laser line scan (milestone M3) | Done (PR #13, build #85) |
+| P13 | Laser side-wall calibration and wall re-zero | Done (PR #13, build #85) |
 
 Build numbers are GitHub Actions run numbers of the `Build iOS app` workflow on `main` (artifact `PhoneLidar-unsigned-ipa-<n>`).
 
@@ -259,7 +259,7 @@ Owner's decisions: direct phone-to-phone Wi-Fi; Line scan only; the scanning pho
 - [x] P11.8 CI green (build + unit tests, 0 warnings) (Sonnet 5.5 / medium)
 - [x] P11.9 Change review of the PR (area-split first review for a new subsystem: networking/crypto and integration/UI), fixes, re-reviews until no new findings (Opus 5.5 / high)
 - [x] P11.10 Milestone M2 final review of the remote link and its integration (Opus 5.5 / max); code findings re-reviewed at Opus 5.5 / high
-- [ ] P11.11 README (user guide), requirements traceability, CLAUDE.md, change log; `REVISIONS.md` and the owner's local folder (Sonnet 5.5 / medium; orchestrator)
+- [x] P11.11 README (user guide), requirements traceability, CLAUDE.md, change log; `REVISIONS.md` and the owner's local folder (Sonnet 5.5 / medium; orchestrator)
 
 ### P12 — Flake topography: single-frame LiDAR map and laser line scan (milestone M3)
 
@@ -277,7 +277,7 @@ Review plan for M3 (token budget): P12 is a new subsystem, so its first review i
 - [x] P12.8 CI green: app build and unit tests, 0 warnings (Sonnet 5.5 / medium for compile-error triage)
 - [x] P12.9 M3 final review of the P12 diff (Opus 5.5 / max), fixes, re-reviews of the fix diffs until no new findings (Opus 5.5 / high); record in `docs/reviews/2026-11-12-M3.md`
 - [x] P12.10 Build guide (`README.md`) sections for both modes, `CLAUDE.md` repo map, requirements statuses (Sonnet 5.5 / medium; written by the orchestrator, Opus 5.5, with the code to avoid a cold-start agent)
-- [ ] P12.11 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator; local sync Haiku 5.5 / low)
+- [x] P12.11 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator; local sync Haiku 5.5 / low)
 
 P9 additions (owner runs on the device; analysis assignment in brackets):
 - [ ] **V14 Laser height on shims** — camera at 0.5 m and 1.0 m; shim-calibrate with a 10 mm gauge; then gauges of 0.5, 1, 2, 5 mm (calliper-measured) on the belt, stationary 5 s and moving at 100 and 1000 mm/s. Pass (*proposed*, NFR-ACC-08): single readings within ±0.2 mm at 0.5 m and ±0.3 mm at 1 m (Opus 5.5 / high)
@@ -303,6 +303,8 @@ Newest first. Build = run number of the `Build iOS app` workflow on `main` after
 
 | Date | Build | PR / commit | Summary |
 |---|---|---|---|
+| 2026-11-13 | #85 | PR #13 `flake-topography` (`df07d43`; PR run 43433878330 on the merge of `main`) | P12/P13 (milestone M3): single-reading LiDAR map (one reading per cell, repeated frames skipped, `ScanLineProfiles.csv`, map-method picker and rebuild); new scan mode Laser line scan (camera sheet-of-light triangulation, `Profiles.bin`, `LaserRecording.json`, `LaserFrames.csv`, `LaserCalibration.json`, shim or angle scale, LiDAR camera height, ≈ 60 Hz speed tracking, map and replay); side-wall calibration with laser angle and camera tilt, per-frame wall re-zero, map cropped inside the walls, 5 mm error budget. Final review and 6 re-reviews until no new findings (M2-…–M2V- IDs). Numbered P12/P13/M3 after the remote link kept P11/M2; merged after #12 (owner's decision). |
+| 2026-11-13 | #83 | PR #12 `remote-link` (`cf7fbbc`; PR run 43268590932) | P11 (milestone M2): remote link — a second iPhone pairs with a Line scan phone over peer-to-peer Wi-Fi, starts/stops recordings, shows status and copies scans; encrypted, authenticated link, reconnection, resumable copy. Review cycles until no new findings. Merged by the P12/P13 orchestrator at the owner's request. |
 | 2026-11-12 | — (docs only, no build) | PR #11 `token-efficiency` | Review scope and token budget (owner's decision): the "until no new findings" rule covers code, tests and the user guide; bookkeeping is checked by the orchestrator, not re-reviewed; one Opus 5.5 / high change review per PR on the diff and its callers; one Opus 5.5 / max final review per milestone; one session per task, at most two agents at a time, single CI watch, one-step local sync. Updated §2, §3, §5 and `CLAUDE.md`. |
 | 2026-11-11 | #61 | PR #9 `process-alignment` (`4fa93c7`; PR run #60, branch run #59) | Process alignment (P8): requirements, design and implementation plan, `CLAUDE.md`, README rewritten as the user guide; host-less `PhoneLidarTests` unit tests (392) and a `unit-tests` CI job on pull requests; CI hardening (read-only token, pinned actions and XcodeGen, hash-locked TestFlight tools, warnings as errors with a log gate, TestFlight after build and tests); M1 review cycles 1–3, the final review and its re-reviews: every finding fixed or deferred to P10 with a reason (totals in the review record): recordings stream to disk and survive interruptions, kills and low storage, with recovery from the library; map cell size, trimmed coverage/length/width, tolerant `scan.json`, Incomplete scans, Object photos kept and a finished model never rebuilt, speed/travel maths extracted and tested, held speed at Record limited to 2 s. Not yet verified on a device (P9). |
 | 2026-11-09 | #23 | PR #8 `topo-replay` (`1cf693e`; branch runs #20–#22) | Real-time topographic replay: scrolling 3D strip (newest line right, walls, tolerance planes, marker), Map view, along/across profiles, colour bar target ± 2 tolerances, transport and 0.1×–20× speed, gestures, settings, Save image; `TopoGrid.bin`; landscape on the replay screen only; auto-play; file-list refresh. Xcode 26.6, 0 warnings. |
