@@ -146,6 +146,37 @@ final class LineRecorderTests: XCTestCase {
         XCTAssertTrue(zones[1].hasPrefix("0,0.0000,120.0,120.0,120.0,120.0,120.0,,120.0"), zones[1])
     }
 
+    /// The camera-parallax builder pairs video samples with frames using these marks (design §15.7, S2).
+    func testVideoSkippedMarksMatchTheSamplesInVideoMov() async throws {
+        let folder = try makeTempFolder()
+        let recorder = try makeRecorder(in: folder, travelOffset: 0)
+        let depth = [Float](repeating: 1000, count: depthWidth * depthHeight)
+        for i in 0..<20 {
+            recorder.append(sampleBuffer: try sampleBuffer(at: 10 + Double(i) / 30), depthMillimetres: depth,
+                            info: info(speed: 150, travel: Double(i)))
+        }
+        let done = expectation(description: "finish")
+        recorder.finish { _ in done.fulfill() }
+        await fulfillment(of: [done], timeout: 30)
+        let frames = try LineRecordingRepair.loadInfo(folder: folder).info.frames
+        XCTAssertEqual(frames.count, 20)
+        let written = ParallaxGeometry.videoFrameIndices(frames).count
+        var decoded = 0
+        if written > 0 {
+            let asset = AVURLAsset(url: folder.appendingPathComponent("Video.mov"))
+            let track = try await asset.loadTracks(withMediaType: .video).first
+            let videoTrack = try XCTUnwrap(track)
+            let reader = try AVAssetReader(asset: asset)
+            let output = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
+            reader.add(output)
+            XCTAssertTrue(reader.startReading())
+            while let sample = output.copyNextSampleBuffer() {
+                if CMSampleBufferGetNumSamples(sample) > 0 { decoded += 1 }
+            }
+        }
+        XCTAssertEqual(decoded, written)
+    }
+
     func testNonFiniteNumbersNeverReachTheFiles() throws {
         let folder = try makeTempFolder()
         let recorder = try makeRecorder(in: folder, travelOffset: 0)

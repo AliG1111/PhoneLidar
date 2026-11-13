@@ -163,8 +163,8 @@ enum ParallaxGeometry {
         return HeightMath.median(ratios) ?? 0
     }
 
-    /// Recording frames whose picture is in Video.mov, in order: the n-th decoded video sample is the n-th of these
-    /// (frames marked `videoSkipped` have no sample; recordings before P16 have no marks).
+    /// Recording frames whose picture is in Video.mov, in order (frames marked `videoSkipped` have no sample;
+    /// recordings before P16 have no marks). The first one anchors a source-clock video timeline.
     static func videoFrameIndices(_ frames: [LineFrameInfo]) -> [Int] {
         frames.indices.filter { frames[$0].videoSkipped != true }
     }
