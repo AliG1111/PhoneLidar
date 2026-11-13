@@ -234,15 +234,22 @@ enum TopoMapBuilder {
         }
         let samples = scanRows
         scanRows = []
-        return try finish(cells: cells, heightMode: heightMode, sensor: .lidar, speeds: frames.map(\.speed),
-                          frameCount: frames.count, duration: frames.last?.time ?? 0,
-                          travel: Self.travelRange(frames), extraLines: extraLines, folder: folder,
-                          composite: composite) { geometry in
+        let output = try finish(cells: cells, heightMode: heightMode, sensor: .lidar, speeds: frames.map(\.speed),
+                                frameCount: frames.count, duration: frames.last?.time ?? 0,
+                                travel: Self.travelRange(frames), extraLines: extraLines, folder: folder,
+                                composite: composite) { geometry in
             guard single else { return [] }
             return [(ScanLineProfiles.fileName, { url in
                 try ScanLineProfiles.write(samples, geometry: geometry, to: url)
             })]
         }
+        if !single {
+            // A profile file from an earlier single-reading build no longer matches this map. It is derived data
+            // (rebuilt from Depth.bin by a single-reading rebuild), so removing it loses no measurement.
+            let stale = folder.appendingPathComponent(ScanLineProfiles.fileName)
+            if FileManager.default.fileExists(atPath: stale.path) { try? FileManager.default.removeItem(at: stale) }
+        }
+        return output
     }
 
     /// The trimmed grid a map was written with (for files that need its rows or columns).

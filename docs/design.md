@@ -812,7 +812,7 @@ For each frame after the first: n_both = pixels with z > 0 in this and the previ
 
 ### 13.5 `ScanLineProfiles.csv`
 
-Written with the other map files (staged, renamed together) for single-reading builds only. Header: `frame,time_s,travel_mm,repeated,` then one column per map row: its centre `x_min + (r + 0.5)·cell` as `%.0f` mm. Each frame row: `frame` (index in `Recording.json`), `time_s` (`%.4f`), `travel_mm` (`%.2f`), `repeated` (0/1), then for each map row the value (height or distance, `%.1f`) of the scan-row pixel whose x = (u − c_x)·z/f_x is nearest the row centre, when within half a cell; blank otherwise. Rows are the trimmed map's rows (same as `TopoMap.csv`).
+Written with the other map files (staged, renamed together) for single-reading builds only; an averaged rebuild removes a stale copy. Header: `frame,time_s,travel_mm,repeated,` then one column per map row: its centre `x_min + (r + 0.5)·cell` as `%.0f` mm. Each frame row: `frame` (index in `Recording.json`), `time_s` (`%.4f`), `travel_mm` (`%.2f`), `repeated` (0/1), then for each map row the value (height or distance, `%.1f`) of the scan-row pixel whose x = (u − c_x)·z/f_x is nearest the row centre, when within half a cell; blank otherwise. Rows are the trimmed map's rows (same as `TopoMap.csv`).
 
 ### 13.6 Statistics and summary
 
@@ -845,7 +845,7 @@ Added in P11 (FR-LAS). Sheet-of-light triangulation: a line laser projects a lin
 
 ### 14.3 Line detection (`LaserLineDetector`)
 
-Columns u = first + k·stride (stride 2, first = 1), rows v in the band [v_lo, v_hi). Pass 1 (row-major, cache-friendly): per column the maximum value and its row. Pass 2 per column: background b = minimum within ±12 rows of the peak (inside the band); valid when peak − b ≥ minContrast (30). Threshold t = b + (peak − b)/2. Walk up and down from the peak while I > t (max 10 rows each way); centre = Σ v·(I − t) / Σ (I − t) over those rows (a saturated plateau gives its middle). Output: row (Float, NaN = none) per column and the fraction detected.
+Columns u = first + k·stride (stride 2, first = 1), rows v in the band [v_lo, v_hi). Pass 1 (row-major, cache-friendly): per column the maximum value and its row. Pass 2 per column: background b = minimum within ±12 rows of the peak (inside the band); valid when peak − b ≥ minContrast (30). Threshold t = b + (peak − b)/2. Walk up and down from the peak while I > t (max 10 rows each way); centre = Σ v·(I − t) / Σ (I − t) over those rows (a saturated plateau gives its middle). Output: row (Float, NaN = none) per column and the fraction detected. Bias of the half-height centroid on an ideal Gaussian line: ≤ 0.08 px at σ = 1.5 px, ≤ 0.05 px at σ = 2, ≤ 0.03 px at σ = 2.5 (below the speckle limit, L-03).
 
 Band: with a baseline, [min(y₀) − m, max(y₀) + m] where m = shift of the maximum height setting (`LaserGeometry.shift(height:)`, at least 8 px), clamped to the frame. Without one, the full frame on every 4th frame.
 
