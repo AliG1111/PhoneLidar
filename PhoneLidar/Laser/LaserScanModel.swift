@@ -70,6 +70,8 @@ final class LaserScanModel {
     @ObservationIgnored private var stopReason: String?
     @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored private var probe: LidarDistanceProbe?
+    /// Counts calibration starts and cancellations: a result from a cancelled calibration is ignored.
+    @ObservationIgnored private var calibrationToken = 0
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private let motion = CMMotionManager()
     @ObservationIgnored private var levelZeroX = 0.0
@@ -82,12 +84,18 @@ final class LaserScanModel {
         return Double(format.height) / Double(format.width)
     }
 
+    /// Close is unavailable while recording, saving or building. It stays available while calibrating and cancels
+    /// the calibration (a stalled camera must not lock the screen).
     var isBusy: Bool {
         switch phase {
         case .arming, .recording, .saving, .building: return true
-        default: return calibrating
+        default: return false
         }
     }
+
+    /// A camera capture (baseline, shim or side walls) can be cancelled; the LiDAR height probe ends by itself
+    /// within 5 s.
+    var canCancelCalibration: Bool { calibrating && probe == nil }
 
     var lidarAvailable: Bool { LidarDistanceProbe.isSupported }
 
@@ -130,7 +138,11 @@ final class LaserScanModel {
     var statusText: String {
         switch phase {
         case .starting: return "Starting…"
-        case .ready: return calibrating ? (calibrationStep ?? "Calibrating…") : "Ready"
+        case .ready:
+            guard calibrating else { return "Ready" }
+            let step = calibrationStep ?? "Calibrating…"
+            guard let progress = live?.calibrationProgress, progress.isFinite else { return step }
+            return step + String(format: " %.0f %%", 100 * min(1, max(0, progress)))
         case .arming: return "Starting recording…"
         case .recording:
             return String(format: "REC %.1f s · %ld", live?.recordingElapsed ?? 0, live?.recordedFrames ?? 0)
@@ -296,6 +308,7 @@ final class LaserScanModel {
         guard !closed else { return }
         closed = true
         if phase == .recording || phase == .arming { stop(reason: "the Laser line scan screen was closed") }
+        if canCancelCalibration { cancelCalibration() }
         pipeline.cancelCollection()
         if phase != .saving && phase != .building { pipeline.stop() }
         if motion.isDeviceMotionActive { motion.stopDeviceMotionUpdates() }
@@ -509,6 +522,33 @@ final class LaserScanModel {
 
     // MARK: - Calibration
 
+    /// Starts a camera calibration step; returns its token (results carrying another token are ignored).
+    private func beginCalibration(step: String) -> Int {
+        calibrationToken += 1
+        calibrating = true
+        calibrationStep = step
+        notice = nil
+        return calibrationToken
+    }
+
+    /// Cancel button and Close: ends a baseline, shim or side-wall capture now. A result that still arrives is
+    /// ignored; the focus stays locked, as after any calibration attempt.
+    func cancelCalibration() {
+        guard canCancelCalibration else { return }
+        calibrationToken += 1
+        calibrating = false
+        calibrationStep = nil
+        pipeline.cancelCollection()
+        pushSettings()
+        notice = "Calibration cancelled."
+    }
+
+    /// Notice for a capture that ended without frames: the stop reason when the camera stalled or was interrupted.
+    private static func stoppedNotice(_ capture: LaserRowCapture, what: String, cancelled: String) -> String {
+        guard let reason = capture.stopReason else { return cancelled }
+        return "\(what) stopped: \(reason). Try again; if it stops again, close this screen and open it again."
+    }
+
     func measureCameraHeight() {
         guard phase == .ready, !calibrating else { return }
         calibrating = true
@@ -533,7 +573,11 @@ final class LaserScanModel {
         case .failure(let error):
             notice = error.localizedDescription
         }
-        if !closed { pipeline.start() }
+        if !closed {
+            // The probe used the same camera: restart, then restore the calibration's focus (or autofocus).
+            pipeline.start()
+            pipeline.setLens(position: calibration?.lensPosition)
+        }
     }
 
     func calibrateBaseline() {
@@ -542,9 +586,7 @@ final class LaserScanModel {
             notice = "Enter the camera height (lens to belt, 100–5000 mm) and tap Set first."
             return
         }
-        calibrating = true
-        calibrationStep = "Locking focus…"
-        notice = nil
+        let token = beginCalibration(step: "Locking focus…")
         // Full-frame search while the baseline is captured.
         pipeline.setSettings(LaserProcessingSettings(calibration: nil, cameraHeight: H, maxHeight: maxHeight,
                                                      direction: directionSetting,
@@ -552,21 +594,28 @@ final class LaserScanModel {
         let pipeline = self.pipeline
         pipeline.lockFocusAndWhiteBalance { lens in
             Task { @MainActor in
+                guard token == self.calibrationToken else { return }
                 self.calibrationStep = "Calibrating baseline (keep the belt empty)…"
                 // 60 frames spread over about 1 s at any frame rate.
                 let every = max(1, Int((format.activeFrameRate / 60).rounded()))
-                pipeline.collectRows(frames: 60, every: every) { frames in
-                    Task { @MainActor in self.baselineCollected(frames, format: format, cameraHeight: H, lens: lens) }
+                pipeline.collectRows(frames: 60, every: every) { capture in
+                    Task { @MainActor in
+                        self.baselineCollected(capture, token: token, format: format, cameraHeight: H, lens: lens)
+                    }
                 }
             }
         }
     }
 
-    private func baselineCollected(_ frames: [[Float]], format: LaserFormatInfo, cameraHeight H: Double, lens: Float?) {
+    private func baselineCollected(_ capture: LaserRowCapture, token: Int, format: LaserFormatInfo,
+                                   cameraHeight H: Double, lens: Float?) {
+        guard token == calibrationToken else { return }
         calibrating = false
         calibrationStep = nil
+        let frames = capture.frames
         guard !frames.isEmpty else {
-            notice = "Calibration cancelled. Tap Calibrate again when the phone is steady."
+            notice = Self.stoppedNotice(capture, what: "Calibration",
+                                        cancelled: "Calibration cancelled. Tap Calibrate again when the phone is steady.")
             pushSettings()
             return
         }
@@ -610,23 +659,23 @@ final class LaserScanModel {
             notice = "Enter the shim thickness in mm (measured with a calliper)."
             return
         }
-        calibrating = true
-        calibrationStep = "Measuring the shim…"
-        notice = nil
+        let token = beginCalibration(step: "Measuring the shim…")
         // The band must reach the shim even before a scale exists.
         pipeline.setSettings(LaserProcessingSettings(calibration: c, cameraHeight: c.cameraHeight,
                                                      maxHeight: max(maxHeight, t * 3), direction: directionSetting,
                                                      directionGeneration: directionGeneration))
-        pipeline.collectRows(frames: 30, every: 1) { frames in
-            Task { @MainActor in self.shimCollected(frames, thickness: t) }
+        pipeline.collectRows(frames: 30, every: 1) { capture in
+            Task { @MainActor in self.shimCollected(capture, token: token, thickness: t) }
         }
     }
 
-    private func shimCollected(_ frames: [[Float]], thickness t: Double) {
+    private func shimCollected(_ capture: LaserRowCapture, token: Int, thickness t: Double) {
+        guard token == calibrationToken else { return }
         calibrating = false
         calibrationStep = nil
+        let frames = capture.frames
         guard var c = activeCalibration, !frames.isEmpty else {
-            notice = "Shim measurement cancelled."
+            notice = Self.stoppedNotice(capture, what: "Shim measurement", cancelled: "Shim measurement cancelled.")
             pushSettings()
             return
         }
@@ -700,9 +749,7 @@ final class LaserScanModel {
             notice = "The laser angle to the camera axis is under 1° or the camera tilt is over 10°: check both."
             return
         }
-        calibrating = true
-        calibrationStep = "Locking focus…"
-        notice = nil
+        let token = beginCalibration(step: "Locking focus…")
         // Full-frame search, band large enough for the walls.
         pipeline.setSettings(LaserProcessingSettings(calibration: nil, cameraHeight: H, maxHeight: max(maxHeight, hw + 20),
                                                      direction: directionSetting,
@@ -711,24 +758,28 @@ final class LaserScanModel {
         let side = laserSide
         pipeline.lockFocusAndWhiteBalance { lens in
             Task { @MainActor in
+                guard token == self.calibrationToken else { return }
                 self.calibrationStep = "Finding the side walls…"
                 let every = max(1, Int((format.activeFrameRate / 60).rounded()))
-                pipeline.collectRows(frames: 60, every: every) { frames in
+                pipeline.collectRows(frames: 60, every: every) { capture in
                     Task { @MainActor in
-                        self.wallsCollected(frames, cameraHeight: H, wallHeight: hw, angle: theta, side: side,
-                                            tilt: tilt, laserTerm: k, lens: lens)
+                        self.wallsCollected(capture, token: token, cameraHeight: H, wallHeight: hw, angle: theta,
+                                            side: side, tilt: tilt, laserTerm: k, lens: lens)
                     }
                 }
             }
         }
     }
 
-    private func wallsCollected(_ frames: [[Float]], cameraHeight H: Double, wallHeight hw: Double, angle: Double,
-                                side: LaserSide, tilt: Double, laserTerm k: Double, lens: Float?) {
+    private func wallsCollected(_ capture: LaserRowCapture, token: Int, cameraHeight H: Double, wallHeight hw: Double,
+                                angle: Double, side: LaserSide, tilt: Double, laserTerm k: Double, lens: Float?) {
+        guard token == calibrationToken else { return }
         calibrating = false
         calibrationStep = nil
+        let frames = capture.frames
         guard !frames.isEmpty, let current = format else {
-            notice = "Calibration cancelled. Tap Calibrate again when the phone is steady."
+            notice = Self.stoppedNotice(capture, what: "Calibration",
+                                        cancelled: "Calibration cancelled. Tap Calibrate again when the phone is steady.")
             pushSettings()
             return
         }

@@ -57,6 +57,15 @@ enum LaserCaptureEvent: Sendable {
     case pressure(LinePressure)
 }
 
+/// Outcome of a calibration capture (`LaserCapturePipeline.collectRows`).
+struct LaserRowCapture: Sendable {
+    /// Detected rows (buffer px, NaN = none) of each collected frame; empty when cancelled or stopped.
+    var frames: [[Float]]
+    /// Why the capture stopped before it had its frames (camera stalled or interrupted); nil when it completed or
+    /// was cancelled.
+    var stopReason: String?
+}
+
 /// What a finished laser recording produced.
 struct LaserRecordingResult: Sendable {
     var folder: URL
@@ -109,6 +118,9 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     static let maxErrorRestarts = 3
     private var shutterLimit = 1.0 / 1000
     private var exposureBias: Float = 0
+    /// Format and frame rate chosen in `configure` (written there before the first `start`, read on the session queue).
+    private var chosenFormat: AVCaptureDevice.Format?
+    private var chosenRate = 0.0
 
     // Data-queue state
     private var settings = LaserProcessingSettings(calibration: nil, cameraHeight: 0, maxHeight: 100,
@@ -129,6 +141,7 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private var lastUpdateTime = -Double.infinity
     private var lastFrameTime: Double?
     private var collection: RowCollection?
+    private var collectionToken = 0
     private var recorder: LaserRecorder?
     private var pending: PendingRecording?
     private var pendingToken = 0
@@ -148,12 +161,31 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
         var direction: TravelDirection
     }
 
-    /// Rows collected for a calibration (baseline: full frame; shim: band).
+    /// Rows collected for a calibration (baseline: full frame; shim: band), with the camera progress the
+    /// watchdog checks (`LaserCaptureWatch`).
     private struct RowCollection {
         var target: Int
         var frames: [[Float]] = []
         var everyFrames: Int
-        var completion: @Sendable ([[Float]]) -> Void
+        var token: Int
+        /// Uptime (ns) at the start and at the last camera frame.
+        var startedAt: UInt64
+        var lastFrameAt: UInt64?
+        /// Camera frames delivered since the start; the drop counter at the start.
+        var delivered = 0
+        var droppedAtStart: Int
+        /// Seconds the capture takes at the format's frame rate.
+        var expectedDuration: Double
+        /// Size (px) of the last camera buffer.
+        var bufferWidth = 0
+        var bufferHeight = 0
+        var completion: @Sendable (LaserRowCapture) -> Void
+    }
+
+    private static func uptime() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    private static func seconds(from start: UInt64, to end: UInt64) -> Double {
+        end > start ? Double(end - start) / 1e9 : 0
     }
 
     deinit {
@@ -188,6 +220,8 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
         device.activeVideoMaxFrameDuration = duration
         if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
         device.unlockForConfiguration()
+        chosenFormat = chosen
+        chosenRate = rate
 
         guard session.canAddOutput(videoOutput) else { throw LineError.configuration("Cannot read video frames.") }
         session.addOutput(videoOutput)
@@ -241,8 +275,28 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     func start() {
         sessionQueue.async { [self] in
             wantsRunning = true
+            restoreFormat()
             if !session.isRunning { session.startRunning() }
             applyExposure()
+        }
+    }
+
+    /// The LiDAR height probe runs its own session on the same camera hardware and can leave this camera in
+    /// another format or frame rate; restore the chosen ones before running again. Session queue.
+    private func restoreFormat() {
+        guard let device, let chosen = chosenFormat, chosenRate > 0 else { return }
+        let duration = CMTime(value: 1, timescale: CMTimeScale(max(1, chosenRate.rounded())))
+        guard device.activeFormat != chosen
+            || CMTimeCompare(device.activeVideoMinFrameDuration, duration) != 0
+            || CMTimeCompare(device.activeVideoMaxFrameDuration, duration) != 0 else { return }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            if device.activeFormat != chosen { device.activeFormat = chosen }
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
+        } catch {
+            // Keep the current format: a different picture size or intrinsics shows as a calibration mismatch.
         }
     }
 
@@ -362,7 +416,7 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private func interrupted(_ text: String) {
         dataQueue.async { [self] in
             awaitingResume = true
-            cancelCollectionOnDataQueue()
+            cancelCollectionOnDataQueue(reason: text)
             requestAutoStop(text)
             onEvent?(.cameraInterrupted(text))
         }
@@ -375,7 +429,7 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
         let reset = error?.code == .mediaServicesWereReset
         dataQueue.async { [self] in
             awaitingResume = true
-            cancelCollectionOnDataQueue()
+            cancelCollectionOnDataQueue(reason: "the camera stopped with an error (\(message))")
             requestAutoStop("the camera stopped with an error (\(message))")
         }
         sessionQueue.async { [self] in
@@ -410,11 +464,20 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     }
 
     /// Collects the detected rows of the next `frames` processed frames (every `every`-th camera frame). Full-frame
-    /// search when no calibration is set. `completion` runs on the data queue (empty on cancellation).
-    func collectRows(frames: Int, every: Int, completion: @escaping @Sendable ([[Float]]) -> Void) {
+    /// search when no calibration is set. `completion` runs on the data queue: no frames on cancellation, and a stop
+    /// reason when the camera stalls, runs far too slowly (`LaserCaptureWatch`) or is interrupted.
+    func collectRows(frames: Int, every: Int, completion: @escaping @Sendable (LaserRowCapture) -> Void) {
         dataQueue.async { [self] in
-            collection?.completion([])
-            collection = RowCollection(target: max(1, frames), everyFrames: max(1, every), completion: completion)
+            cancelCollectionOnDataQueue()
+            collectionToken += 1
+            let target = max(1, frames)
+            let step = max(1, every)
+            let rate = format?.activeFrameRate ?? 0
+            collection = RowCollection(target: target, everyFrames: step, token: collectionToken,
+                                       startedAt: Self.uptime(), droppedAtStart: dropped,
+                                       expectedDuration: Double(target * step) / max(1, rate),
+                                       completion: completion)
+            scheduleCollectionCheck(token: collectionToken)
         }
     }
 
@@ -422,10 +485,30 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
         dataQueue.async { [self] in cancelCollectionOnDataQueue() }
     }
 
-    private func cancelCollectionOnDataQueue() {
+    /// Ends the active collection without frames; `reason` (camera interrupted or failed) reaches the screen.
+    private func cancelCollectionOnDataQueue(reason: String? = nil) {
         guard let active = collection else { return }
         collection = nil
-        active.completion([])
+        active.completion(LaserRowCapture(frames: [], stopReason: reason))
+    }
+
+    /// Watchdog of collection `token`: stops it with a reason when the camera stalls or is far too slow.
+    private func scheduleCollectionCheck(token: Int) {
+        dataQueue.asyncAfter(deadline: .now() + LaserCaptureWatch.checkInterval) { [self] in
+            guard let active = collection, active.token == token else { return }
+            let now = Self.uptime()
+            let progress = LaserCaptureWatch.Progress(
+                elapsed: Self.seconds(from: active.startedAt, to: now),
+                sinceLastFrame: Self.seconds(from: active.lastFrameAt ?? active.startedAt, to: now),
+                delivered: active.delivered, dropped: max(0, dropped - active.droppedAtStart),
+                collected: active.frames.count, target: active.target, expectedDuration: active.expectedDuration,
+                width: active.bufferWidth, height: active.bufferHeight)
+            if let reason = LaserCaptureWatch.stallReason(progress) {
+                cancelCollectionOnDataQueue(reason: reason)
+            } else {
+                scheduleCollectionCheck(token: token)
+            }
+        }
     }
 
     // MARK: - Recording
@@ -489,6 +572,12 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
             sessionQueue.async { [self] in errorRestarts = 0 }
         }
         frameIndex += 1
+        if collection != nil {
+            collection?.delivered += 1
+            collection?.lastFrameAt = Self.uptime()
+            collection?.bufferWidth = CVPixelBufferGetWidth(pixelBuffer)
+            collection?.bufferHeight = CVPixelBufferGetHeight(pixelBuffer)
+        }
         if let previous = lastFrameTime, time - previous > 0.5 { fpsWindow.removeAll() }   // after a pause
         lastFrameTime = time
         fpsWindow.append(time)
@@ -557,7 +646,7 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
             active.frames.append(detection.rows)
             if active.frames.count >= active.target {
                 collection = nil
-                active.completion(active.frames)
+                active.completion(LaserRowCapture(frames: active.frames, stopReason: nil))
             } else {
                 collection = active
             }

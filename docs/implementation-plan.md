@@ -315,6 +315,16 @@ Owner's request: rotate the topographic map in all orientations without limits; 
 P9 addition:
 - [ ] **V18 Direction detection and free rotation** — Line scan and Laser line scan with Direction Auto: open the screen with the line stopped (readout "Detecting…", Record refused), start the line (time to "detected"), run both directions if the conveyor can reverse, and a blank surface (stays undetected; manual override records). Replay: turn the strip through full turns in every direction, view from below, twist, double-tap reset. Pass: detection ≤ 1 s after textured material moves; never the wrong direction over 10 starts per direction; rotation never stops at a limit (Sonnet 5.5 / high)
 
+### P15 — Laser calibration watchdog (first on-device test, 2026-11-13)
+
+The owner's first Laser line scan test stayed on "Calibrating baseline (keep the belt empty)…" with every control and Close disabled. With frames arriving the capture always ends in ≈ 1 s, so the camera had stopped delivering frames and nothing ended the capture.
+
+- [x] P15.1 `LaserCaptureWatch` (pure: 2 s frame gap, max(5 s, 4 × expected) limit, reasons with frame counts, fps, size, drops); `collectRows` returns `LaserRowCapture`, interruptions and errors pass their text; `restoreFormat()` in `start()` (Opus 5.5 / high)
+- [x] P15.2 Screen: calibration token, **Cancel calibration**, Close available while calibrating, progress % in the status, stop-reason notices, lens restored after the LiDAR probe (Opus 5.5 / high)
+- [x] P15.3 Unit tests `LaserCaptureWatchTests` (written with the code)
+- [ ] P15.4 CI green, 0 warnings; change review (fresh Opus 5.5 / high); PR into `main`; change-log row at merge
+- [ ] P15.5 On device: repeat the baseline calibration; if it stops, the message names the cause (no frames / slow camera / interruption)
+
 ## 7. Change log
 
 Newest first. Build = run number of the `Build iOS app` workflow on `main` after the merge.

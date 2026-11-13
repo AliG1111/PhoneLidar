@@ -294,6 +294,7 @@ Laser-line triangulation with the phone's main camera for strand-level topograph
 | FR-LAS-13 | Wall re-zero (side walls, on by default, switchable): per frame, per side the median of (row − calibration wall row) over its wall columns with a detection (≥ 2); both sides → straight-line shift of the baseline, one side → offset, none → last value held. Applied live and in every map build. Summary line "Wall re-zero: N % of frames measured, line shift a…b px (mean c px)". | A synthetic 3 px picture shift reads 0 mm with re-zero and 7.4 mm without (unit test). |
 | FR-LAS-14 | With side walls the map keeps readings strictly between the walls' inner faces (10 mm margin), and the live median and maximum use the columns between the feet of the faces. | Map width excludes the walls (unit test). |
 | FR-LAS-15 | Accuracy budget (flat belt, one wall height per side; analysis in design §14.9): worst case over 0–200 mm ≤ 2.5 mm with θ ±0.1°, H ±5 mm, h_w ±1 mm; ≤ 5.0 mm with θ ±0.2°, H ±10 mm, h_w ±2 mm (owner's tolerance 5 mm). | Unit test reproduces the 5.0 mm case; P9 V17 on the line. |
+| FR-LAS-16 | A calibration capture (baseline, shim, side walls) never waits for ever: it stops with the reason when no camera frame arrives for 2 s, when it takes longer than max(5 s, 4 × its expected time) (the reason gives frames collected, camera frames, fps, picture size and drops), or when the camera is interrupted or fails. The status shows the share collected; **Cancel calibration** and **Close** stop it. After a LiDAR height measurement the camera format, frame rate and the calibration's focus are restored. | Watchdog unit tests; P9 on device. |
 
 ### 5.16 Automatic travel direction (FR-DIR)
 
@@ -570,6 +571,7 @@ Paths are relative to `PhoneLidar/`. Status legend in §4. Review IDs name the M
 | FR-LAS-13 | Laser/LaserWalls.swift (`shift`); Laser/LaserMapBuilder.swift; Laser/LaserCapturePipeline.swift | Implemented |
 | FR-LAS-14 | Laser/LaserWalls.swift (`isInsideWalls`, `matColumns`); Laser/LaserMapBuilder.swift; Laser/LaserCapturePipeline.swift | Implemented |
 | FR-LAS-15 | Tests/PhoneLidarTests/LaserWallsTests.swift (`testFiveMillimetreBudget`) | Analysis verified; not verified on device |
+| FR-LAS-16 | Laser/LaserGeometry.swift (`LaserCaptureWatch`, unit tests); Laser/LaserCapturePipeline.swift (`collectRows`, `restoreFormat`); Laser/LaserScanModel.swift (`cancelCalibration`) | Implemented – not verified on device |
 | FR-DIR-01 | Line/TravelDirectionDetector.swift (`DirectionSetting`; unit tests); Line/LineScanView.swift; Laser/LaserScanModel.swift; Laser/LaserScanView.swift | Implemented – not verified on device |
 | FR-DIR-02 | Line/TravelDirectionDetector.swift (`TravelDirectionDetector`; unit tests); Line/SpeedEstimator.swift (`searchesBothWays`; unit tests); Line/LineCapturePipeline.swift; Laser/LaserCapturePipeline.swift | Implemented – not verified on device |
 | FR-DIR-03 | Line/TravelDirectionDetector.swift (unit tests); Line/LineCapturePipeline.swift (`applyTravelSign`); Laser/LaserCapturePipeline.swift; Line/LineScanView.swift (sparkline) | Implemented – not verified on device |
@@ -581,6 +583,7 @@ Paths are relative to `PhoneLidar/`. Status legend in §4. Review IDs name the M
 
 | Date | Change |
 |---|---|
+| 2026-11-13 | P15: calibration capture watchdog, cancel and format restore after the LiDAR probe (FR-LAS-16), from the first on-device test (baseline calibration did not finish). |
 | 2026-11-12 | P13: side-wall calibration and wall re-zero (FR-LAS-11…15). |
 | 2026-11-12 | P12: single-frame LiDAR map (FR-SFM-01…06), laser line scan (FR-LAS-01…10), NFR-PERF-09, NFR-ACC-08/09. |
 | 2026-11-12 | Remote link (P11): §5.13 FR-RMT-01…12, UC-10, scope, NFR-PERF-08, NFR-REL-07, NFR-SEC-06; NFR-SEC-01/02 updated for the Local Network permission and the local peer-to-peer link. Owner's decisions: direct phone-to-phone Wi-Fi, Line scan only, the scanner keeps running and reconnects by itself, the remote starts/stops scans and copies scan files for review. |
