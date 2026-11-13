@@ -238,6 +238,25 @@ extension TopoMapBuilderTests {
         }
     }
 
+    func testAnAveragedRebuildRemovesAStaleScanLineProfilesFile() throws {
+        let info = try writeRecording(surface: rampSurface)
+        _ = try TopoMapBuilder.build(folder: folder, info: info, method: .singleReading)
+        XCTAssertTrue(exists(ScanLineProfiles.fileName))
+        _ = try TopoMapBuilder.build(folder: folder, info: info, method: .averaged)
+        XCTAssertFalse(exists(ScanLineProfiles.fileName))
+    }
+
+    func testFractionalCellsGetDistinctLabelsInTopoMapCSV() throws {
+        let grid = TopoGridFile(columns: 4, rows: 2, cell: 0.7, qMin: 0, xMin: -0.7, heightMode: true,
+                                values: [1, 2, 3, 4, 5, 6, 7, 8])
+        let url = folder.appendingPathComponent("TopoMap.csv")
+        try TopoMapBuilder.writeGridCSV(grid, to: url)
+        let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines[0], "across_mm \\ along_mm,0.35,1.05,1.75,2.45")
+        XCTAssertTrue(lines[1].hasPrefix("-0.35,"), lines[1])
+        XCTAssertTrue(lines[2].hasPrefix("0.35,"), lines[2])
+    }
+
     func testOnlySingleReadingBuildsWriteTheScanLineProfiles() throws {
         let info = try writeRecording(surface: rampSurface)
         _ = try TopoMapBuilder.build(folder: folder, info: info, method: .averaged)

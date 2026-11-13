@@ -85,7 +85,7 @@ final class LaserScanModel {
     /// The typed value differs from the one in use (Set not tapped yet).
     var cameraHeightPending: Bool {
         guard let typed = typedCameraHeight else { return true }
-        return appliedCameraHeight.map { abs($0 - typed) >= 0.5 } ?? true
+        return appliedCameraHeight.map { abs($0 - typed) > 0.5 } ?? true     // text is written with %.0f
     }
 
     /// Calibration usable for the active format (size, columns, intrinsics and binning, M2-4).
@@ -131,6 +131,8 @@ final class LaserScanModel {
         }
         if phase == .ready, typedCameraHeight != nil, cameraHeightPending {
             lines.append("Tap Set to use the camera height you typed.")
+        } else if phase == .ready, typedCameraHeight == nil {
+            lines.append("Enter a camera height of 100–5000 mm (lens to belt) and tap Set.")
         }
         if let format, format.activeFrameRate + 0.5 < format.requestedFrameRate {
             lines.append(String(format: "%.0f fps is not available; using %.0f fps.", format.requestedFrameRate,

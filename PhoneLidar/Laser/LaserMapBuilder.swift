@@ -9,6 +9,8 @@ enum LaserMapBuilder {
 
     static let calibrationMismatch = LineError.configuration(
         "The laser calibration in LaserRecording.json does not match Profiles.bin (column layout or camera size).")
+    static let intrinsicsMissing = LineError.configuration(
+        "LaserRecording.json has no camera focal length (fx, fy).")
     static let calibrationIncomplete = LineError.configuration(
         "The laser calibration in LaserRecording.json has no camera height or height scale.")
     static let lineNotFound = LineError.configuration(
@@ -48,9 +50,10 @@ enum LaserMapBuilder {
         let columns = info.columns
         let calibration = info.calibration
         guard reader.columns == columns, calibration.columns == columns,
-              calibration.baselineRows.count == columns.count, info.fx > 0, info.fy > 0 else {
+              calibration.baselineRows.count == columns.count else {
             throw calibrationMismatch
         }
+        guard info.fx > 0, info.fy > 0, info.fx.isFinite, info.fy.isFinite else { throw intrinsicsMissing }
         guard calibration.isComplete else { throw calibrationIncomplete }
         guard reader.frameCount >= 2 else { throw LineError.notEnoughData }
         let H = calibration.cameraHeight
@@ -134,7 +137,7 @@ enum LaserMapBuilder {
     }
 
     /// Cell (mm): max(across column spacing, 90th-percentile travel step, `minimumCell`), rounded up to 0.1 mm,
-    /// ×1.25 until the grid has at most `TopoGridFile.maxCells` cells.
+    /// ×1.25 (rounded up to 0.1 mm) until the grid has at most `TopoGridFile.maxCells` cells.
     static func cellSize(acrossSpacing: Double, steps: [Double], length: Double, width: Double) -> Double {
         let sorted = steps.filter { $0.isFinite && $0 > 0 }.sorted()
         let p90 = sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int((Double(sorted.count - 1) * 0.9).rounded()))]
@@ -143,7 +146,8 @@ enum LaserMapBuilder {
         func cells(_ c: Double) -> Double {
             (((max(0, length) + c) / c).rounded(.up) + 1) * (((max(0, width) + c) / c).rounded(.up) + 1)
         }
-        while cells(cell) > Double(TopoGridFile.maxCells) { cell *= 1.25 }
+        // Each step stays a multiple of 0.1 mm, so every display of the cell size is exact (M2R-1).
+        while cells(cell) > Double(TopoGridFile.maxCells) { cell = ((cell * 1.25 * 10) - 1e-6).rounded(.up) / 10 }
         return cell
     }
 
@@ -163,7 +167,7 @@ enum LaserMapBuilder {
                       + "camera height %.0f mm", frames, info.activeFrameRate, detectedPercent, scale, c.cameraHeight)
     }
 
-    /// Replay inputs (design §14.7): tracked frames (≈ 30 Hz; every frame if none is flagged), revealing the
+    /// Replay inputs (design §14.7): tracked frames (≈ 60 Hz; every frame if none is flagged), revealing the
     /// material at the laser line.
     static func replayFrames(folder: URL, info: LaserRecordingInfo) throws -> ReplayFrames {
         let reader = try ProfilesFileReader(url: folder.appendingPathComponent(ProfilesFile.fileName))

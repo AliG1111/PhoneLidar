@@ -325,6 +325,21 @@ final class ScanLineProfilesTests: XCTestCase {
         XCTAssertEqual(profile[3], 4)       // 20 mm and −20.0001 mm are outside, NaN is skipped
     }
 
+    func testSamplesOnOrOutsideTheGridEdgeAreIgnored() {
+        // 20 mm is the upper edge (outside: floor((20 + 20) / 10) = 4); −20.0001 mm is below xMin.
+        let sample = ScanRowSample(frame: 0, time: 0, travel: 0, repeated: false, across: [20, -20.0001],
+                                   values: [5, 6])
+        XCTAssertEqual(ScanLineProfiles.profile(sample, geometry: geometry), [nil, nil, nil, nil])
+    }
+
+    func testFractionalCellsGetHundredthLabels() {
+        // 0.7 mm laser cells: whole-mm labels would repeat (M2-5).
+        let fine = TopoMapBuilder.Geometry(columns: 4, rows: 3, cell: 0.7, qMin: 0, xMin: 0)
+        XCTAssertEqual(ScanLineProfiles.header(geometry: fine), ["frame", "time_s", "travel_mm", "repeated",
+                                                                "0.35", "1.05", "1.75"])
+        XCTAssertEqual(ScanLineProfiles.header(geometry: geometry).suffix(4), ["-15", "-5", "5", "15"])
+    }
+
     func testEqualDistancesKeepTheFirstSample() {
         let sample = ScanRowSample(frame: 0, time: 0, travel: 0, repeated: false,
                                    across: [-14, -16], values: [1, 2])

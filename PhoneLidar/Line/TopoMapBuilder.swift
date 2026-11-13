@@ -795,7 +795,7 @@ enum TopoMapBuilder {
 
     /// Rows = across (top → bottom of the screen, mm from the image centre line), columns = along (left → right,
     /// mm from the left edge of the map). Blank = no data. Same cells as TopoGrid.bin.
-    private static func writeGridCSV(_ grid: TopoGridFile, to url: URL) throws {
+    static func writeGridCSV(_ grid: TopoGridFile, to url: URL) throws {
         let rows = grid.rows
         let cols = grid.columns
         let writer = try TextFileWriter(url: url)

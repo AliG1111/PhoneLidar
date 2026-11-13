@@ -116,8 +116,16 @@ struct LaserCalibration: Codable, Equatable, Sendable {
     }
 
     static func loadStandard() -> LaserCalibration? {
-        guard let data = try? Data(contentsOf: standardURL) else { return nil }
-        return try? JSONDecoder.iso.decode(LaserCalibration.self, from: data)
+        guard let data = try? Data(contentsOf: standardURL),
+              var c = try? JSONDecoder.iso.decode(LaserCalibration.self, from: data) else { return nil }
+        // Written by a test build before `scale` meant K (no `binned` key then): its scale is not usable (M2R-8).
+        if c.binned == nil {
+            c.scale = nil
+            c.scaleSource = nil
+            c.shimShift = nil
+            c.shimBaselineRow = nil
+        }
+        return c
     }
 
     func saveStandard() throws {

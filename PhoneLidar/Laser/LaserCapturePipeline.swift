@@ -638,7 +638,8 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 recordedFrames: recorder?.frameCount ?? 0, recordingElapsed: recorder?.elapsed ?? 0,
                 videoWidth: info.width, videoHeight: info.height,
                 calibrationProgress: collection.map { Double($0.frames.count) / Double($0.target) },
-                trackingAvailable: trackingAvailable)
+                // Before a baseline the band comes from raw detections, so no tracking notice yet (M2R-4).
+                trackingAvailable: baselineReady ? trackingAvailable : true)
             onUpdate?(update)
         }
     }

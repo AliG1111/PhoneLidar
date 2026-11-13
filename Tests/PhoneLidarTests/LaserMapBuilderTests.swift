@@ -5,7 +5,7 @@ import XCTest
 /// real `LaserRecordingInfo.save` and `ProfilesFileWriter`.
 ///
 /// Geometry of the synthetic camera: 400 × 300 video buffer, 200 profile columns (u = 1, 3 … 399), fx = fy = 1000 px,
-/// principal point (200, 150), camera 500 mm above the belt, scale A = 200 px, laser line on the empty belt at row 150
+/// principal point (200, 150), camera 500 mm above the belt, laser term K = 200 px (A_k = K with the baseline at c_y), laser line on the empty belt at row 150
 /// (the principal row, so the belt has along position 0). One map cell is 1 mm (the across spacing of the columns at
 /// the belt: 2 · 500 / 1000 mm).
 final class LaserMapBuilderTests: XCTestCase {
@@ -42,8 +42,9 @@ final class LaserMapBuilderTests: XCTestCase {
     /// Belt at the baseline row; frames 100…200 show a `blockHeight`-mm block over the columns u = 120 … 279.
     private func writeBlockRecording(_ info: LaserRecordingInfo) throws {
         let calibration = info.calibration
+        // Baseline row = c_y here, so every column's A_k equals K; use the column scale as the builder does.
         let shift = Float(LaserGeometry.shift(height: blockHeight, cameraHeight: calibration.cameraHeight,
-                                              scale: calibration.scale ?? 0))
+                                              scale: calibration.shiftScale(column: 0) ?? 0))
         try writeRecording(info, frameCount: 300, trackedEvery: 8) { i, k in
             (100...200).contains(i) && (120..<280).contains(calibration.columns.u(k)) ? 150 + shift : 150
         }
@@ -272,7 +273,7 @@ final class LaserMapBuilderTests: XCTestCase {
         try writeRecording(info, frameCount: 60) { _, _ in 150 }
         info.fx = 0
         XCTAssertThrowsError(try LaserMapBuilder.build(folder: folder, info: info)) {
-            assertLineError($0, LaserMapBuilder.calibrationMismatch)
+            assertLineError($0, LaserMapBuilder.intrinsicsMissing)
         }
     }
 

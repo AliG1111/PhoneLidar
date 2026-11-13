@@ -62,7 +62,7 @@ final class LaserLineDetectorTests: XCTestCase {
 
     // MARK: - Sub-pixel centre
 
-    func testGaussianLinesAreFoundWithinAFiftiethOfAPixel() {
+    func testGaussianLinesAreFoundWithinATwentiethOfAPixel() {
         let image = makeImage(center: subPixelCenter)
         let result = LaserLineDetector.detect(pixels: image, width: width, height: height, columns: columns)
         XCTAssertEqual(result.rows.count, columns.count)

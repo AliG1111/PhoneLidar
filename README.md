@@ -243,7 +243,7 @@ A line laser draws a thin line across the belt at an angle; the phone's main cam
 - Phone in **portrait**, camera pointing straight down (level it with a bubble level), on USB-C power.
 - Laser line **across** the belt, from the left or right side of the screen at about 30–45° from vertical. A larger angle gives more height resolution and more shadowing behind tall strands.
 - Put the line near one side of the picture (not the middle): the speed is measured from the rest of the picture.
-- Height: 0.5 m gives 0.33 mm per camera pixel and 0.64 m of width; 1 m gives 0.66 mm per pixel and 1.27 m of width. The line is read on every 2nd pixel column, so a profile point every 0.66 mm across at 0.5 m and every 1.3 mm at 1 m (the smallest map cell).
+- Height: 0.5 m gives 0.33 mm per camera pixel and 0.64 m of width; 1 m gives 0.66 mm per pixel and 1.27 m of width. The line is read on every 2nd pixel column, so a profile point every 0.66 mm across at 0.5 m and every 1.3 mm at 1 m; the smallest map cell is that spacing rounded up to 0.1 mm (0.7 mm and 1.4 mm).
 
 **Calibration (once per mount; the app keeps it)**
 1. **Camera height**: lens to belt in mm. Type it and tap **Set**, or tap **LiDAR** to measure it (check against a tape measure). Recording is not offered while a typed height has not been set.

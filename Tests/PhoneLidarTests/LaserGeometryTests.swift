@@ -360,8 +360,23 @@ final class LaserGeometryTests: XCTestCase {
         c.shimShift = 2.5
         c.filledColumns = 3
         c.coverage = 98.5
+        c.shimBaselineRow = 151.5
+        c.binned = true
         let data = try JSONEncoder.pretty.encode(c)
         let back = try JSONDecoder.iso.decode(LaserCalibration.self, from: data)
+        XCTAssertEqual(back, c)
+    }
+
+    func testCalibrationWithoutTheNewOptionalKeysStillDecodes() throws {
+        var c = makeLaserCalibration()
+        c.shimBaselineRow = nil
+        c.binned = nil
+        let json = String(decoding: try JSONEncoder.pretty.encode(c), as: UTF8.self)
+        XCTAssertFalse(json.contains("binned"))
+        XCTAssertFalse(json.contains("shimBaselineRow"))
+        let back = try JSONDecoder.iso.decode(LaserCalibration.self, from: Data(json.utf8))
+        XCTAssertNil(back.binned)
+        XCTAssertNil(back.shimBaselineRow)
         XCTAssertEqual(back, c)
     }
 
