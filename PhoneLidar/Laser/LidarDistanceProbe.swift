@@ -14,12 +14,18 @@ final class LidarDistanceProbe: NSObject, AVCaptureDepthDataOutputDelegate, @unc
     private var samples: [Double] = []
     private var completion: (@Sendable (Result<Double, Error>) -> Void)?
     private var frames = 0
+    /// Set by `cancel`; a measurement that has not started yet then does not start.
+    private var cancelled = false
     static let frameCount = 30
 
     /// Measures and calls `completion` once (on a background queue). Fails after 5 s without enough readings.
     func measure(completion: @escaping @Sendable (Result<Double, Error>) -> Void) {
         queue.async { [self] in
             self.completion = completion
+            guard !cancelled else {
+                finish(.failure(LineError.configuration("The LiDAR measurement was cancelled.")))
+                return
+            }
             do {
                 try configure()
             } catch {
@@ -31,6 +37,14 @@ final class LidarDistanceProbe: NSObject, AVCaptureDepthDataOutputDelegate, @unc
                 finish(.failure(LineError.configuration("The LiDAR gave too few readings. Check that the belt is "
                                                         + "in view, 0.3–4 m away.")))
             }
+        }
+    }
+
+    /// Ends the measurement now (screen closed): the session stops and the completion gets a failure.
+    func cancel() {
+        queue.async { [self] in
+            cancelled = true
+            finish(.failure(LineError.configuration("The LiDAR measurement was cancelled.")))
         }
     }
 

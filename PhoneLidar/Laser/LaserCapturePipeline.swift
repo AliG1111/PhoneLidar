@@ -281,6 +281,18 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
         }
     }
 
+    /// Stops and starts the session after the camera stopped sending frames during a calibration capture (only while
+    /// the screen wants it running).
+    private func restartAfterStall() {
+        sessionQueue.async { [self] in
+            guard wantsRunning else { return }
+            if session.isRunning { session.stopRunning() }
+            restoreFormat()
+            session.startRunning()
+            applyExposure()
+        }
+    }
+
     /// The LiDAR height probe runs its own session on the same camera hardware and can leave this camera in
     /// another format or frame rate; restore the chosen ones before running again. Session queue.
     private func restoreFormat() {
@@ -504,7 +516,13 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 collected: active.frames.count, target: active.target, expectedDuration: active.expectedDuration,
                 width: active.bufferWidth, height: active.bufferHeight)
             if let reason = LaserCaptureWatch.stallReason(progress) {
-                cancelCollectionOnDataQueue(reason: reason)
+                if progress.sinceLastFrame >= LaserCaptureWatch.frameGap {
+                    // The camera stopped sending frames: restart it, so the next attempt can work.
+                    restartAfterStall()
+                    cancelCollectionOnDataQueue(reason: reason + "; the camera was restarted")
+                } else {
+                    cancelCollectionOnDataQueue(reason: reason)
+                }
             } else {
                 scheduleCollectionCheck(token: token)
             }

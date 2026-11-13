@@ -414,7 +414,7 @@ struct LaserTravel {
     }
 }
 
-/// Progress check of a calibration capture (`LaserCapturePipeline.collectRows`, design §14.6): instead of waiting
+/// Progress check of a calibration capture (`LaserCapturePipeline.collectRows`, design §14.2, FR-LAS-16): instead of waiting
 /// for ever, a capture stops with a reason when the camera stops sending frames or runs far slower than its format.
 /// Pure; the pipeline calls it on the data queue every `checkInterval`.
 enum LaserCaptureWatch {

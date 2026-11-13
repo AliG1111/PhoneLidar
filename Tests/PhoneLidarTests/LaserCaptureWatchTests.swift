@@ -1,7 +1,7 @@
 import XCTest
 
 /// Watchdog of the laser calibration capture: a capture stops with a reason when the camera stalls or runs far
-/// slower than its format, instead of waiting for ever (design §14.2, FR-LAS-04).
+/// slower than its format, instead of waiting for ever (design §14.2, FR-LAS-16).
 final class LaserCaptureWatchTests: XCTestCase {
     private func progress(elapsed: Double, sinceLastFrame: Double, delivered: Int, dropped: Int = 0,
                           collected: Int, target: Int = 60, expected: Double = 1,
