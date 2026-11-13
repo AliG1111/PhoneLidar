@@ -307,8 +307,8 @@ Owner's request: rotate the topographic map in all orientations without limits; 
 - [x] P14.3 Line and laser pipelines: detection while not recording, direction fixed per recording, generation echo; screens: picker, readout, Record refusal, summary line (capture + UI → Opus 5.5 / high)
 - [x] P14.4 `ReplayOrientation` (quaternion trackball, twist, angles); scene camera with fixed scale, pivot at the window centre, light on the camera; gestures and settings sliders (Opus 5.5 / high)
 - [x] P14.5 Unit tests: detector, two-way search, orientation (Sonnet 5.5 / high; written with the code by the orchestrator)
-- [ ] P14.6 CI green: app build and unit tests, 0 warnings (Sonnet 5.5 / medium for compile-error triage)
-- [ ] P14.7 Change review of the PR diff and its callers (fresh Opus 5.5 / high), fixes, re-reviews until no new findings; record in `docs/reviews/2026-11-13-P14.md`
+- [x] P14.6 CI green: app build and unit tests, 0 warnings (Sonnet 5.5 / medium for compile-error triage) — branch run 43441265753, PR run 43443688002
+- [x] P14.7 Change review of the PR diff and its callers (fresh Opus 5.5 / high), fixes, re-reviews until no new findings; record in [reviews/2026-11-13-P14.md](reviews/2026-11-13-P14.md)
 - [x] P14.8 Build guide (`README.md`), `CLAUDE.md` repo map (Sonnet 5.5 / medium; written by the orchestrator with the code)
 - [ ] P14.9 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator)
 

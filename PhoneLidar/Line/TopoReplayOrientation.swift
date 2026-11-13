@@ -52,7 +52,6 @@ struct ReplayOrientation: Equatable {
         return (turn, tilt, roll)
     }
 
-
     /// Trackball drag: the strip turns the way the finger moves, about the screen's axes, by `radiansPerPoint` per
     /// point of finger travel (`dx` + = right, `dy` + = down, as in UIKit). Unlimited and the same in every
     /// orientation.
