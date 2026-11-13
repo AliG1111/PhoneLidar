@@ -247,7 +247,7 @@ A line laser draws a thin line across the belt at an angle; the phone's main cam
 
 **Calibration (once per mount; the app keeps it)**
 1. **Camera height**: lens to belt in mm. Type it and tap **Set**, or tap **LiDAR** to measure it (check against a tape measure). Recording is not offered while a typed height has not been set.
-2. **Calibrate baseline** with the belt empty and the laser on: 60 frames over about 1 s; focus and white balance are locked. The line must be found on at least half of the width.
+2. **Calibrate baseline** with the belt empty and the laser on: 60 frames over about 1 s; focus and white balance are locked. The line must be found on at least half of the width. A new baseline keeps the earlier height scale of the same camera format, with its laser side, angle and tilt; to change the side, tap **Use** or measure a shim again.
 3. **Measure shim**: put the shim on the belt under part of the line (at least a tenth of the width), type its thickness, tap **Measure shim**, then remove it. This sets the height scale. If you cannot use a shim, type the laser angle from vertical, pick its side and tap **Use** (less accurate: the angle is hard to measure exactly). Either way the app corrects each column for the line's distance from the picture centre. With **Use**, the camera tilt along the travel (read from the phone, see the level zero below) is taken into account.
 - Recalibrate after moving the phone, the laser or the focus. A calibration made with another camera format (picture size, crop or binning, which can differ between frame rates) is not used; the screen says so.
 

@@ -127,9 +127,12 @@ struct LaserCalibration: Codable, Equatable, Sendable {
     }
 
     /// This calibration with the scale of `old` (a new empty-belt baseline of the same format): K with its source,
-    /// the shim measurement, and the laser angle and camera tilt that an angle scale contains (M2T-2).
+    /// the shim measurement, and the laser angle, camera tilt (M2T-2) and laser side (M2V-1) that K contains. Without
+    /// a scale in `old`, nothing changes.
     func keepingScale(of old: LaserCalibration) -> LaserCalibration {
+        guard old.scale != nil else { return self }
         var c = self
+        c.laserSide = old.laserSide
         c.scale = old.scale
         c.scaleSource = old.scaleSource
         c.shimThickness = old.shimThickness

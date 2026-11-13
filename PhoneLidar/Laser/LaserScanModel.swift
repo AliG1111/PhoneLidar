@@ -447,34 +447,35 @@ final class LaserScanModel {
         setCameraHeight(H, source: .entered)
     }
 
-    /// Applies a camera height; false when a side-wall calibration cannot be refitted for it (the previous height
-    /// stays in use and `notice` says why).
-    @discardableResult
-    private func setCameraHeight(_ H: Double, source: LaserCalibration.HeightSource) -> Bool {
+    /// Applies a camera height; `message` becomes the notice, followed by the reason when a side-wall calibration
+    /// cannot be refitted for it (the previous height then stays in use) or the calibration cannot be saved.
+    private func setCameraHeight(_ H: Double, source: LaserCalibration.HeightSource, message: String? = nil) {
         guard var c = calibration else {
             appliedCameraHeight = H
             cameraHeightSource = source
             cameraHeightText = String(format: "%.0f", H)
+            if let message { notice = message }
             pushSettings()
-            return true
+            return
         }
         if c.isSideWalls {
             // The wall fit depends on H: refit from the stored wall rows (same walls, K and wall height). The new
             // height is applied only when the refit works (M2T-4).
             guard var refit = LaserWalls.refit(c, cameraHeight: H) else {
-                notice = "The wall calibration could not be refitted for this camera height (it must be well above the "
+                notice = (message.map { $0 + " " } ?? "")
+                    + "The wall calibration could not be refitted for this camera height (it must be well above the "
                     + "wall tops): the previous height stays in use. Check it, or calibrate on the side walls again."
                 appliedCameraHeight = c.cameraHeight
                 cameraHeightSource = c.cameraHeightSource
                 cameraHeightText = String(format: "%.0f", c.cameraHeight)
-                return false
+                return
             }
             refit.cameraHeightSource = source
             appliedCameraHeight = H
             cameraHeightSource = source
             cameraHeightText = String(format: "%.0f", H)
-            saveCalibration(refit)
-            return true
+            saveCalibration(refit, message: message)
+            return
         }
         appliedCameraHeight = H
         cameraHeightSource = source
@@ -486,8 +487,7 @@ final class LaserScanModel {
            let a = LaserGeometry.scaleFromShim(shift: d, thickness: t, cameraHeight: H) {
             c.scale = LaserGeometry.laserTerm(columnScale: a, baselineRow: c.shimBaselineRow ?? c.cy, cy: c.cy)
         }
-        saveCalibration(c)
-        return true
+        saveCalibration(c, message: message)
     }
 
     // MARK: - Calibration
@@ -511,11 +511,8 @@ final class LaserScanModel {
         calibrationStep = nil
         switch result {
         case .success(let mm):
-            if setCameraHeight(mm, source: .lidar) {
-                notice = String(format: "LiDAR camera height: %.0f mm (check against a tape measure).", mm)
-            } else {
-                notice = String(format: "LiDAR camera height: %.0f mm. ", mm) + (notice ?? "")
-            }
+            setCameraHeight(mm, source: .lidar,
+                            message: String(format: "LiDAR camera height: %.0f mm (check against a tape measure).", mm))
         case .failure(let error):
             notice = error.localizedDescription
         }
@@ -576,9 +573,13 @@ final class LaserScanModel {
                                               binned: current.binned) {
             c = c.keepingScale(of: old)
         }
-        saveCalibration(c)
-        notice = String(format: "Baseline calibrated: %.0f %% of the line measured. ", result.coverage)
-            + (c.scale == nil ? "Now measure a shim." : "Re-measure the shim if the laser or camera moved.")
+        // A kept scale keeps its laser side (M2V-1): K and the effective height depend on it.
+        let sideKept = c.laserSide != laserSide ? " The laser side stays with the earlier scale; tap Use or measure "
+            + "a shim to change it." : ""
+        laserSide = c.laserSide
+        let next = c.scale == nil ? "Now measure a shim." : "Re-measure the shim if the laser or camera moved."
+        saveCalibration(c, message: String(format: "Baseline calibrated: %.0f %% of the line measured. ",
+                                           result.coverage) + next + sideKept)
     }
 
     func measureShim() {
@@ -628,9 +629,8 @@ final class LaserScanModel {
         c.laserAngle = nil
         c.laserSide = k > 0 ? .left : .right
         laserSide = c.laserSide
-        saveCalibration(c)
-        notice = String(format: "Height scale set: the %.1f mm shim moved the line %.1f px. Remove the shim.", t,
-                        shim.shift)
+        saveCalibration(c, message: String(format: "Height scale set: the %.1f mm shim moved the line %.1f px. "
+                                           + "Remove the shim.", t, shim.shift))
     }
 
     func useAngle() {
@@ -654,8 +654,7 @@ final class LaserScanModel {
         c.shimThickness = nil
         c.shimShift = nil
         c.shimBaselineRow = nil
-        saveCalibration(c)
-        notice = "Height scale set from the laser angle. A shim measurement is more accurate."
+        saveCalibration(c, message: "Height scale set from the laser angle. A shim measurement is more accurate.")
     }
 
     /// Side-wall calibration (design §14.9): no need to clear the belt. Needs the camera height (Set), the wall-top
@@ -747,9 +746,9 @@ final class LaserScanModel {
                                  binned: current.binned, method: .sideWalls, wallHeight: hw,
                                  wallColumns: fit.wallColumns, wallRows: fit.wallRows, wallInnerX: fit.innerX,
                                  wallTracking: true, cameraTilt: tilt)
-        saveCalibration(c)
-        notice = String(format: "Calibrated on the side walls: %ld + %ld wall columns, fit residual %.2f px.",
-                        detection.left.count, detection.right.count, fit.residual)
+        saveCalibration(c, message: String(format: "Calibrated on the side walls: %ld + %ld wall columns, fit "
+                                           + "residual %.2f px.", detection.left.count, detection.right.count,
+                                           fit.residual))
     }
 
     func setWallTracking(_ on: Bool) {
@@ -777,12 +776,16 @@ final class LaserScanModel {
         pipeline.setLens(position: nil)
     }
 
-    private func saveCalibration(_ c: LaserCalibration) {
+    /// Uses and stores a calibration. `message` becomes the notice; a save error is added to it, not replaced by it
+    /// (M2V-2).
+    private func saveCalibration(_ c: LaserCalibration, message: String? = nil) {
         calibration = c
+        if let message { notice = message }
         do {
             try c.saveStandard()
         } catch {
-            notice = "The calibration is used now but could not be saved: \(error.localizedDescription)"
+            notice = (message.map { $0 + " " } ?? "")
+                + "The calibration is used now but could not be saved: \(error.localizedDescription)"
         }
         pushSettings()
     }

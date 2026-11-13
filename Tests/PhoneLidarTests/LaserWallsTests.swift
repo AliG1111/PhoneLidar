@@ -314,7 +314,7 @@ final class LaserWallsTests: XCTestCase {
     }
 
     func testANewBaselineKeepsTheAngleScaleWithItsTilt() {
-        // M2T-2: an empty-belt baseline that keeps an angle scale keeps the camera tilt K contains.
+        // M2T-2, M2V-1: an empty-belt baseline that keeps an angle scale keeps the camera tilt and side K contains.
         var old = makeLaserCalibration(width: 1920, height: 1080, cameraHeight: 3300, scale: 1400, baselineRow: 840,
                                        fx: 1512, fy: 1512, cx: 960, cy: 540)
         old.scaleSource = .angle
@@ -324,9 +324,11 @@ final class LaserWallsTests: XCTestCase {
         old.shimShift = 12
         old.shimBaselineRow = 830
         var fresh = makeLaserCalibration(width: 1920, height: 1080, cameraHeight: 3300, scale: nil, baselineRow: 845,
-                                         fx: 1512, fy: 1512, cx: 960, cy: 540)
+                                         side: .right, fx: 1512, fy: 1512, cx: 960, cy: 540)
         XCTAssertEqual(fresh.effectiveHeight(column: 10), 3300)                 // no scale, no tilt
+        XCTAssertEqual(fresh.keepingScale(of: fresh), fresh)                    // nothing to keep
         fresh = fresh.keepingScale(of: old)
+        XCTAssertEqual(fresh.laserSide, .left)                                  // the side K belongs to (M2V-1)
         XCTAssertEqual(fresh.scale, 1400)
         XCTAssertEqual(fresh.scaleSource, .angle)
         XCTAssertEqual(fresh.laserAngle, 45)
