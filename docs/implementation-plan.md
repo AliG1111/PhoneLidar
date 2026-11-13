@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | P8 process alignment merged to `main` (PR #9, `4fa93c7`, build #61): docs, CLAUDE.md, unit tests in CI, CI hardening and the M1 review fixes. The M1 reviews ran until a review yielded no new findings ([reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md)). Next: P9 on-device validation. |
-| Date | 2026-11-10 |
+| State | P8 process alignment merged to `main` (PR #9, `4fa93c7`, build #61): docs, CLAUDE.md, unit tests in CI, CI hardening and the M1 review fixes. The M1 reviews ran until a review yielded no new findings ([reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md)). Next: P9 on-device validation. P11 remote link (owner's request, 2026-11-12) in progress on branch `remote-link`. |
+| Date | 2026-11-12 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
 Agents keep this file current: tick a task when its PR is merged, add a change-log entry for every merged PR or revision, and add newly found work to P10.
@@ -26,6 +26,7 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P8 | Process alignment: docs, CLAUDE.md, unit tests in CI, milestone M1 reviews and fixes, final review | Done (PR #9, build #61) |
 | P9 | On-device validation on the iPhone 17 Pro Max | Not started |
 | P10 | Backlog | Open |
+| P11 | Remote link: second phone controls a Line scan phone over direct phone-to-phone Wi-Fi (start/stop, status, auto-reconnect, copy scans for review) | In progress (branch `remote-link`) |
 | P12 | Flake topography: single-frame LiDAR map and laser line scan (milestone M3) | In progress (branch `flake-topography`) |
 | P13 | Laser side-wall calibration and wall re-zero | In progress (branch `flake-topography`) |
 
@@ -39,7 +40,7 @@ Build numbers are GitHub Actions run numbers of the `Build iOS app` workflow on 
 | Milestone final review: whole codebase, tests and user guide, once at the end of a milestone | Opus 5.5 | max |
 | Change review: the PR diff plus the code it calls or is called by (correctness, defects, security, performance, concurrency); also re-reviews of fixes | Opus 5.5 | high |
 | Wording-only follow-ups after the milestone final review | Sonnet 5.5 | medium |
-| Implementation in capture / signal-processing / concurrency / file-format code (`PhoneLidar/Line/*` pipeline, `SpeedEstimator`, `Baseline`, `TopoMapBuilder`, `TopoGridFile`, `TopoReplayData/Model`, `LineRecording`) | Opus 5.5 | high |
+| Implementation in capture / signal-processing / concurrency / file-format code (`PhoneLidar/Line/*` pipeline, `SpeedEstimator`, `Baseline`, `TopoMapBuilder`, `TopoGridFile`, `TopoReplayData/Model`, `LineRecording`) and the remote link's networking, cryptography and transfer code (`PhoneLidar/Remote/*` except the views) | Opus 5.5 | high |
 | Implementation of UI and routine features (SwiftUI views, settings, sharing, wiring, Room/Mesh/Object screens) | Sonnet 5.5 | high |
 | Unit tests | Sonnet 5.5 | high |
 | CI log triage and compile-error fixes | Sonnet 5.5 | medium |
@@ -81,7 +82,7 @@ Run before every commit that completes a unit of work. Record anything deliberat
 - [ ] **Memory and resources** — no unbounded growth during capture; per-frame allocations kept small; file handles closed; `CVPixelBuffer` locks balanced; large data processed off the main thread.
 - [ ] **Data integrity** — atomic writes for metadata; captured data is never deleted on failure; on-disk formats stay backward compatible (new `Codable` fields optional; binary format changes bump the version and keep the old reader); frame counts stay in lock-step.
 - [ ] **Error handling** — failures reach the user with a clear message; no `try?` on paths that write or read measurement data unless the fallback is documented.
-- [ ] **Security and privacy** — no secrets, Apple IDs, keys, personal data, plant imagery or scan data committed; no network code; new permissions have purpose strings; workflow changes keep least privilege.
+- [ ] **Security and privacy** — no secrets, Apple IDs, keys, personal data, plant imagery or scan data committed; network code only in `Remote/` and only to the paired phone (authenticated, encrypted; names and sizes from the peer validated; frame limits); new permissions have purpose strings; workflow changes keep least privilege.
 - [ ] **Build hygiene** — 0 warnings in the CI summary; no force unwraps on file or device data; no debug `print`.
 - [ ] **Tests** — unit tests added or updated for changed pure logic; CI `unit-tests` job green.
 - [ ] **UI** — portrait (replay excepted), readable on dark panels, touch targets usable with gloves, accessibility labels on icon buttons.
@@ -208,7 +209,57 @@ Common setup for line-scan tests: phone in the mount at about 1.0 m (record the 
 - [ ] **V8 Room dimensions against tape** — scan a rectangular room with clear walls; tape (or laser-measure) every wall length, the ceiling height and the floor length × width. Compare `RoomReport.csv` wall `width_m`, the maximum wall `height_m` and the summary floor area. Pass (*proposed*, NFR-ACC-04): each wall within ±2 % or ±5 cm (whichever is larger); height within ±3 cm; floor area within ±4 %. — owner runs; analysis (Sonnet 5.5 / high)
 - [ ] **V9 Mesh point-to-point against tape** — on a machine or frame, choose five pairs of sharp features 0.3–3 m apart; tape each distance; measure each live with Set start/end point, then again in the 3D viewer on the saved mesh. Pass (*proposed*, NFR-ACC-05): every live and viewer measurement within ±1 cm or ±1 % (whichever is larger) of the tape value. — owner runs; analysis (Sonnet 5.5 / high)
 - [ ] **V10 Zone speed uniformity** — from the V2 runs, the mean of each `ZoneSpeeds.csv` column over the steady part. Pass (*proposed*): every zone with ≥ 80 % readings within ±2 % of the main mean speed (FR-SPD-04); report zones that fail (edge zones point to lens distortion, R-01). — analysis only (Opus 5.5 / high)
+- [ ] **V12 Remote link range and throughput** — scanner mounted at its forming-line position, remote paired. Walk away from the mount in steps of 2 m (line of sight, then behind steel); at each step note the link state, the status age (readouts updating), Start → "Recording started" answer time, and the copy rate of a 60 s recording (MB/s on the Remote screen). Note where copies stall and where the link drops; walk back and time the automatic reconnect. Pass (*proposed*, NFR-PERF-08): status latency ≤ 1 s and copy ≥ 5 MB/s at 5 m line of sight; reconnect ≤ 15 s after returning into range (FR-RMT-06). — owner runs; analysis (Sonnet 5.5 / high)
+- [ ] **V13 Remote control functional test** — with the remote connected: two recordings in a row started and stopped from the remote (FR-RMT-07, FR-RMT-09); during the second, walk out of range for 30 s and back (the recording continues and saves, FR-RMT-05); copy both scans, breaking the link once mid-copy (FR-RMT-11); open the map, replay and playback of a copy on the remote (FR-RMT-10); wrong pairing code ×5 shows a new code (FR-RMT-03). From the scanner's `Recording.json`: frame intervals as V1 with the remote connected (R-20). Compare file names and sizes of each copy with the scanner's folder. Pass: every step behaves as stated; V1 interval criteria still met. — owner runs; analysis (Sonnet 5.5 / high)
 - [ ] V11 Record the results, update NFR statuses in [requirements.md](requirements.md) §6 and the expected-performance section of the build guide (Sonnet 5.5 / medium)
+
+### P10 — Backlog
+
+Gaps between the requirements and the code that the M1 fixes do not cover, plus known limitations ([design §11](design.md#11-known-limitations-and-design-risks)).
+
+- [ ] Speed/travel scale correction: per-mount factor entered from V2/V3, applied to speed and travel, stored as an optional field in `Recording.json` (FR-SPD-08, GC-10) (Opus 5.5 / high)
+- [ ] Lens-distortion correction for speed scaling and map projection using `AVCameraCalibrationData.lensDistortionLookupTable` (R-01) (Opus 5.5 / high)
+- [ ] Travel policy during lock loss: mark untracked spans in `Frames.csv`; evaluate interpolation (R-02). The reset of the last valid speed on direction change is done (P-3) (Opus 5.5 / high)
+- [ ] Persist Line scan settings (raw depth, short shutter, direction) between visits (Sonnet 5.5 / high)
+- [ ] Glove-friendly secondary controls (≥ 44 pt for Zero here, Reset, Recalibrate, Clear, ✕) (NFR-USE-02) (Sonnet 5.5 / high)
+- [ ] Swift 6 language mode and strict concurrency: reduce the 8 `@unchecked Sendable` types, coalesce `LiveUpdate` delivery to the main actor (R-12, P-8). Single-queue `CMMotionManager` access is done (P-4) (Opus 5.5 / high)
+- [ ] Profile per-frame processing on the device; move measured hot spots to Accelerate/vImage with regression tests on fixed inputs ([design §10.8](design.md#108-accelerate--vimage)) (Opus 5.5 / high)
+- [ ] SceneKit → RealityKit migration design for the viewer and replay when the deployment target moves to iOS 18+ (R-11) (Opus 5.5 / max)
+- [ ] Windows reader script for `Depth.bin`, `TopoGrid.bin` and `Recording.json` (Python, `lzfse`) to support P9 analysis (R-14) (Sonnet 5.5 / high)
+- [ ] Storage use per scan and in total on the library screen; low-storage warning (R-15) (Sonnet 5.5 / high)
+- [ ] Optionally save viewer measurements with the scan (FR-LIB-04 note) (Sonnet 5.5 / high)
+
+#### Deferred review findings
+
+All Low, from [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md). Each needs no fix for correctness; the reason is why it waits.
+
+- [ ] P-8 One main-actor task per frame, no coalescing: performance only, no observed problem; revisit after on-device profiling (P9) (Opus 5.5 / high)
+- [ ] F-2 Playback decodes LZFSE and colours each frame on the main thread: performance only; needs on-device profiling first (Opus 5.5 / high)
+- [ ] F-5 Capture session is configured on the main thread: one-off at screen open; moving it risks session-ordering regressions without device testing (Opus 5.5 / high)
+- [ ] F-11 `store.save` then reload on main after Save image or a map build: infrequent, small folders (Sonnet 5.5 / high)
+- [ ] B-13r Replay `SCNGeometry` is still rebuilt per change: performance only; part of the SceneKit → RealityKit/Metal backlog item (Opus 5.5 / high)
+- [ ] Split `LineScanView.swift` (~1,070 lines) and `LinePlaybackView.swift` (~1,060 lines) below the ~800-line guideline; no behaviour change (Sonnet 5.5 / high)
+- [ ] Split `RemoteLink.swift` (~1,150 lines; scanner side, remote side, copy queue) below the ~800-line guideline: needs its private state opened to internal or a separate copy-queue type; no behaviour change, so it waits for the next change to the file (Opus 5.5 / high)
+- [ ] Pairing without the offline code-recovery limit (R-19, NFR-SEC-06): a comparison step on both screens or a PAKE; needs an owner decision on the extra pairing step (Opus 5.5 / max)
+- [ ] Move `ObjectPhotos.hasCompleteModel` and the Object resume decision into a Storage file so the test target can cover them (Sonnet 5.5 / high)
+- [ ] Update every pinned action in `ios-build.yml` to a release on Node 24 (GitHub reports the Node 20 runtime as deprecated) (Sonnet 5.5 / medium)
+- [ ] Check which unit-test class takes about 83 s on CI and whether it can be made faster (Sonnet 5.5 / medium)
+
+### P11 — Remote link (owner's request, 2026-11-12)
+
+Owner's decisions: direct phone-to-phone Wi-Fi; Line scan only; the scanning phone keeps running its scan when the link drops and reconnects by itself; the second phone starts and stops scans and copies the scan files to itself for review. Requirements FR-RMT-01…12, NFR-PERF-08, NFR-REL-07, NFR-SEC-06; design §3.9, §6.15, §7.20, §10.10. Branch `remote-link`, milestone **M2**, review record `docs/reviews/2026-11-12-M2.md`. Under the token budget this is one session: the orchestrator (Opus 5.5) writes the code; a task touching networking and UI takes the higher assignment.
+
+- [x] P11.1 Requirements, design, plan for the remote link (Opus 5.5 / max)
+- [x] P11.2 Pure logic: `RemoteProtocol`, `RemoteCrypto`, `RemoteTransfer` (Opus 5.5 / high)
+- [x] P11.3 Unit tests for framing, records, handshake and channel, pairing window, listing, resume offsets, staging reconcile, progress, import record (Sonnet 5.5 / high; written with P11.2 by the orchestrator)
+- [x] P11.4 Networking: `RemoteConnection` (handshake, channel, liveness, file sender/receiver), `RemoteListener`, `RemoteBrowser`, `ScannerSecrets`, `RemoteKeychain` (Opus 5.5 / high)
+- [x] P11.5 `RemoteLink` service: roles, scanner side, remote side, reconnection, copy queue and import (Opus 5.5 / high)
+- [x] P11.6 Line scan integration: `RemoteScannerTarget`, keep the screen open after a save, Remote button and chip (Opus 5.5 / high)
+- [x] P11.7 Views: Remote screen, scanner sheet, Home section; `Info.plist` Local Network keys; `project.yml` test sources (Opus 5.5 / high)
+- [x] P11.8 CI green (build + unit tests, 0 warnings) (Sonnet 5.5 / medium)
+- [x] P11.9 Change review of the PR (area-split first review for a new subsystem: networking/crypto and integration/UI), fixes, re-reviews until no new findings (Opus 5.5 / high)
+- [x] P11.10 Milestone M2 final review of the remote link and its integration (Opus 5.5 / max); code findings re-reviewed at Opus 5.5 / high
+- [ ] P11.11 README (user guide), requirements traceability, CLAUDE.md, change log; `REVISIONS.md` and the owner's local folder (Sonnet 5.5 / medium; orchestrator)
 
 ### P12 — Flake topography: single-frame LiDAR map and laser line scan (milestone M3)
 
@@ -245,36 +296,6 @@ Owner's request (2026-11-12): calibrate without clearing the belt, from the side
 
 P9 addition:
 - [ ] **V17 Side-wall calibration on the line** — measure h_w (±1 mm), H (tape, ±5 mm), the laser angle (digital gauge, ±0.1°), zero the level; calibrate on the walls with flakes on the belt; compare mat heights with an empty-belt shim calibration made at a shutdown, and with a known board on the belt. Pass: within ±5 mm (FR-LAS-15) (Opus 5.5 / high)
-
-### P10 — Backlog
-
-Gaps between the requirements and the code that the M1 fixes do not cover, plus known limitations ([design §11](design.md#11-known-limitations-and-design-risks)).
-
-- [ ] Speed/travel scale correction: per-mount factor entered from V2/V3, applied to speed and travel, stored as an optional field in `Recording.json` (FR-SPD-08, GC-10) (Opus 5.5 / high)
-- [ ] Lens-distortion correction for speed scaling and map projection using `AVCameraCalibrationData.lensDistortionLookupTable` (R-01) (Opus 5.5 / high)
-- [ ] Travel policy during lock loss: mark untracked spans in `Frames.csv`; evaluate interpolation (R-02). The reset of the last valid speed on direction change is done (P-3) (Opus 5.5 / high)
-- [ ] Persist Line scan settings (raw depth, short shutter, direction) between visits (Sonnet 5.5 / high)
-- [ ] Glove-friendly secondary controls (≥ 44 pt for Zero here, Reset, Recalibrate, Clear, ✕) (NFR-USE-02) (Sonnet 5.5 / high)
-- [ ] Swift 6 language mode and strict concurrency: reduce the 8 `@unchecked Sendable` types, coalesce `LiveUpdate` delivery to the main actor (R-12, P-8). Single-queue `CMMotionManager` access is done (P-4) (Opus 5.5 / high)
-- [ ] Profile per-frame processing on the device; move measured hot spots to Accelerate/vImage with regression tests on fixed inputs ([design §10.8](design.md#108-accelerate--vimage)) (Opus 5.5 / high)
-- [ ] SceneKit → RealityKit migration design for the viewer and replay when the deployment target moves to iOS 18+ (R-11) (Opus 5.5 / max)
-- [ ] Windows reader script for `Depth.bin`, `TopoGrid.bin` and `Recording.json` (Python, `lzfse`) to support P9 analysis (R-14) (Sonnet 5.5 / high)
-- [ ] Storage use per scan and in total on the library screen; low-storage warning (R-15) (Sonnet 5.5 / high)
-- [ ] Optionally save viewer measurements with the scan (FR-LIB-04 note) (Sonnet 5.5 / high)
-
-#### Deferred review findings
-
-All Low, from [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md). Each needs no fix for correctness; the reason is why it waits.
-
-- [ ] P-8 One main-actor task per frame, no coalescing: performance only, no observed problem; revisit after on-device profiling (P9) (Opus 5.5 / high)
-- [ ] F-2 Playback decodes LZFSE and colours each frame on the main thread: performance only; needs on-device profiling first (Opus 5.5 / high)
-- [ ] F-5 Capture session is configured on the main thread: one-off at screen open; moving it risks session-ordering regressions without device testing (Opus 5.5 / high)
-- [ ] F-11 `store.save` then reload on main after Save image or a map build: infrequent, small folders (Sonnet 5.5 / high)
-- [ ] B-13r Replay `SCNGeometry` is still rebuilt per change: performance only; part of the SceneKit → RealityKit/Metal backlog item (Opus 5.5 / high)
-- [ ] Split `LineScanView.swift` (~1,070 lines) and `LinePlaybackView.swift` (~1,060 lines) below the ~800-line guideline; no behaviour change (Sonnet 5.5 / high)
-- [ ] Move `ObjectPhotos.hasCompleteModel` and the Object resume decision into a Storage file so the test target can cover them (Sonnet 5.5 / high)
-- [ ] Update every pinned action in `ios-build.yml` to a release on Node 24 (GitHub reports the Node 20 runtime as deprecated) (Sonnet 5.5 / medium)
-- [ ] Check which unit-test class takes about 83 s on CI and whether it can be made faster (Sonnet 5.5 / medium)
 
 ## 7. Change log
 

@@ -5,7 +5,9 @@ import RealityKit
 
 struct HomeView: View {
     @Environment(ScanStore.self) private var store
+    @Environment(RemoteLink.self) private var link
     @Environment(\.scenePhase) private var scenePhase
+    @State private var showRemote = false
     @State private var path = NavigationPath()
     @State private var activeScan: ScanKind?
     @State private var pendingDelete: PendingDelete?
@@ -70,6 +72,8 @@ struct HomeView: View {
                 } footer: {
                     Text("Room, equipment, object and line scans require an iPhone with LiDAR (12 Pro / Pro Max or a newer Pro model). The laser line scan needs a line laser and the main camera; the LiDAR is optional (camera height).")
                 }
+
+                RemoteHomeSection(openRemote: { showRemote = true })
 
                 Section("Saved scans") {
                     if store.scans.isEmpty {
@@ -145,6 +149,7 @@ struct HomeView: View {
                     }
                 }
                 .environment(store)
+                .environment(link)
             }
             .alert("Could not delete", isPresented: $deleteFailed) {
                 Button("OK", role: .cancel) {}
@@ -169,6 +174,20 @@ struct HomeView: View {
                     store.recoverLineRecordings()
                 }
             }
+        }
+        .fullScreenCover(isPresented: $showRemote) {
+            RemoteControlView(onClose: { showRemote = false }, onOpenScan: openCopiedScan)
+                .environment(store)
+                .environment(link)
+        }
+    }
+
+    /// Closes the Remote screen and opens a copied scan.
+    private func openCopiedScan(_ id: UUID) {
+        showRemote = false
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            path.append(id)
         }
     }
 

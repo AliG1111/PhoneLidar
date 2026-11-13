@@ -3,6 +3,7 @@
 iPhone LiDAR scanner (SwiftUI, iOS 17+, iPhone only; target iPhone 17 Pro Max). Modes: Room (RoomPlan),
 Equipment mesh (ARKit), Object capture (RealityKit), and Line scan: a fixed phone above moving material (OSB mat or
 board) recording LiDAR depth + video, measuring speed, and building a topographic map, statistics and a real-time replay.
+Remote link (Line scan only): a second iPhone controls the scanner over direct peer-to-peer Wi-Fi and copies its scans.
 
 ## Hard constraints
 - No Mac and no local Swift toolchain. Never try to compile or run Swift here. GitHub Actions is the compiler.
@@ -33,7 +34,12 @@ PhoneLidar/Line/             Line scan: LineCapturePipeline, LineMotionMath (pur
                              TopoReplayData/Model/Scene/View, DepthColors, DisplayLinkProxy, MapCells (map method,
                              cell accumulator, single-frame helpers), MapRebuild (map/replay for both sensors)
 PhoneLidar/Laser/            Laser line scan (design §14): LaserCapturePipeline, LaserLineDetector, LaserGeometry,
-                             LaserRecording (Profiles.bin), LaserMapBuilder, LidarDistanceProbe, LaserScanView/Model
+                             LaserWalls (side walls), LaserRecording (Profiles.bin), LaserMapBuilder, LidarDistanceProbe,
+                             LaserScanView/Model
+PhoneLidar/Remote/           Remote link: RemoteProtocol/RemoteCrypto/RemoteTransfer (pure, tested), RemoteConnection
+                             (NWConnection, handshake, channel, file sender/receiver; loopback-tested), RemoteDiscovery
+                             (listener, permission probe, browser), RemoteKeychain, RemoteLink (@MainActor service in
+                             the environment), RemoteControlView, RemoteLinkViews
 Tests/PhoneLidarTests/       Host-less XCTest bundle (pure-logic tests, run in CI)
 README.md                    User guide (the build guide); kept in sync with the claude.ai project copy
 docs/                        requirements.md, design.md, implementation-plan.md, reviews/
@@ -75,7 +81,7 @@ Full matrix: docs/implementation-plan.md §2. Every plan task names its assignme
 |---|---|
 | Requirements, architecture, design, planning; milestone final review (once per milestone) | Opus 5.5 / max |
 | Change review (PR diff + callers) and re-reviews of fixes | Opus 5.5 / high |
-| Capture, signal processing, concurrency, file formats (`Line/` pipeline, `SpeedEstimator`, `Baseline`, `TopoMapBuilder`, `MapCells`, `TopoGridFile`, `TopoReplayData/Model`, `LineRecording`, `Laser/` pipeline, detector, geometry, recording, map builder) | Opus 5.5 / high |
+| Capture, signal processing, concurrency, file formats (`Line/` pipeline, `SpeedEstimator`, `Baseline`, `TopoMapBuilder`, `MapCells`, `TopoGridFile`, `TopoReplayData/Model`, `LineRecording`, `Laser/` pipeline, detector, geometry, recording, map builder); remote-link networking, crypto and transfer (`Remote/` except views) | Opus 5.5 / high |
 | SwiftUI views, settings, sharing, wiring, Room/Mesh/Object screens | Sonnet 5.5 / high |
 | Unit tests | Sonnet 5.5 / high |
 | CI log triage, compile-error fixes | Sonnet 5.5 / medium |
@@ -121,6 +127,10 @@ Full matrix: docs/implementation-plan.md §2. Every plan task names its assignme
   (map build, replay preparation, probe sampling) runs in `Task.detached` returning `Result`. Nothing blocking in the
   replay display-link tick. Tear down display links, observers and timers on disappear; check cancellation after
   `await` before starting work. Mark types `@unchecked Sendable` only when immutable or queue-confined, with a comment.
+- Remote link: Network framework handlers and `RemoteConnection` state live on `phonelidar.remote.link`; results reach the
+  main actor through `DispatchQueue.main.async` + `MainActor.assumeIsolated` (ordered). Values from the other phone are
+  untrusted: check sizes, offsets and plain file names; frame limits before reading; no traps on peer input. Network
+  code stays in `Remote/`, talks only to the paired phone and never runs file sends while the scanner is busy.
 - Errors: user-facing `LocalizedError` (`ScanError`, `LineError`); no `try?` on paths that write or read measurement
   data; never delete captured data on failure.
 - New scan mode: add a `ScanKind` case (title, SF Symbol), a Home row with a capability check, a full-screen capture
@@ -139,7 +149,7 @@ Claude-Session: https://claude.ai/code/session_014WLjMvrCLDLxVAm3jLG84p
 - docs/requirements.md — FR/NFR IDs, acceptance criteria, traceability and status.
 - docs/design.md — architecture, concurrency, algorithms, byte-exact file formats, technology choices, risks, guide
   vs code discrepancies.
-- docs/implementation-plan.md — model matrix, workflow, self-review checklist, phases P0–P10, change log.
+- docs/implementation-plan.md — model matrix, workflow, self-review checklist, phases P0–P11, change log.
 - docs/reviews/ — milestone review records.
 - User guide: `README.md` (repo), the same content as the project copy on claude.ai; the orchestrator syncs the copies,
   and the owner's local `phone-lidar-build-guide.md` is replaced from it. Update README for every user-visible change.

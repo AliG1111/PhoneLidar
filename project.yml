@@ -58,6 +58,10 @@ targets:
       - path: PhoneLidar/Laser/LaserMapBuilder.swift
       - path: PhoneLidar/Laser/LaserRecording.swift
       - path: PhoneLidar/Laser/LaserWalls.swift
+      - path: PhoneLidar/Remote/RemoteConnection.swift
+      - path: PhoneLidar/Remote/RemoteCrypto.swift
+      - path: PhoneLidar/Remote/RemoteProtocol.swift
+      - path: PhoneLidar/Remote/RemoteTransfer.swift
       - path: PhoneLidar/Storage/Formatting.swift
       - path: PhoneLidar/Storage/ScanStore.swift
     settings:
