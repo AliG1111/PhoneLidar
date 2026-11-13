@@ -216,15 +216,15 @@ Owner's request (2026-11-12): per-frame height of the passing strands instead of
 Review plan for M2 (token budget): P11 is a new subsystem, so its first review is the milestone final review: one fresh Opus 5.5 / max reviewer over the whole P11 diff and its callers (this counts as the PR's change review). Fixes are re-reviewed on the fix diff at Opus 5.5 / high until a review yields no new findings.
 
 - [x] P11.1 Requirements, design §13–§14, this phase (Opus 5.5 / max)
-- [ ] P11.2 `MapCells` + `MapMethod`; split `TopoMapBuilder.build` into accumulation and a shared `finish`; single-reading LiDAR build (scan-line score), repeated-frame detection, `ScanLineProfiles.csv`, `TopoStats.mapMethod`/`sensor`, summary line (Opus 5.5 / high)
-- [ ] P11.3 `mapMethod` in `Recording.json`; Map setting on the Line scan screen (forces raw depth); map-screen method picker and rebuild via `MapRebuild` (capture + UI → Opus 5.5 / high)
-- [ ] P11.4 Laser pure logic: `LaserLineDetector`, `LaserGeometry` (calibration, formulas, baseline, shim, `LaserTravel`), `LaserRecording` (`Profiles.bin`, JSON, CSV), `LaserMapBuilder`, `TopoReplaySource.make(grid:direction:frames:)`, `SpeedEstimator` row crop (Opus 5.5 / high)
-- [ ] P11.5 `LaserCapturePipeline` and `LidarDistanceProbe` (Opus 5.5 / high)
-- [ ] P11.6 `LaserScanView`, `ScanKind.laser`, Home row, scan-detail section, laser branch of the map screen and replay (capture + UI → Opus 5.5 / high)
-- [ ] P11.7 Unit tests for P11.2 and P11.4; add the new pure-logic files to the test target (Sonnet 5.5 / high)
-- [ ] P11.8 CI green: app build and unit tests, 0 warnings (Sonnet 5.5 / medium for compile-error triage)
+- [x] P11.2 `MapCells` + `MapMethod`; split `TopoMapBuilder.build` into accumulation and a shared `finish`; single-reading LiDAR build (scan-line score), repeated-frame detection, `ScanLineProfiles.csv`, `TopoStats.mapMethod`/`sensor`, summary line (Opus 5.5 / high)
+- [x] P11.3 `mapMethod` in `Recording.json`; Map setting on the Line scan screen (forces raw depth); map-screen method picker and rebuild via `MapRebuild` (capture + UI → Opus 5.5 / high)
+- [x] P11.4 Laser pure logic: `LaserLineDetector`, `LaserGeometry` (calibration, formulas, baseline, shim, `LaserTravel`), `LaserRecording` (`Profiles.bin`, JSON, CSV), `LaserMapBuilder`, `TopoReplaySource.make(grid:direction:frames:)`, `SpeedEstimator` row crop (Opus 5.5 / high)
+- [x] P11.5 `LaserCapturePipeline` and `LidarDistanceProbe` (Opus 5.5 / high)
+- [x] P11.6 `LaserScanView`, `ScanKind.laser`, Home row, scan-detail section, laser branch of the map screen and replay (capture + UI → Opus 5.5 / high)
+- [x] P11.7 Unit tests for P11.2 and P11.4; add the new pure-logic files to the test target (Sonnet 5.5 / high)
+- [x] P11.8 CI green: app build and unit tests, 0 warnings (Sonnet 5.5 / medium for compile-error triage)
 - [ ] P11.9 M2 final review of the P11 diff (Opus 5.5 / max), fixes, re-reviews of the fix diffs until no new findings (Opus 5.5 / high); record in `docs/reviews/2026-11-12-M2.md`
-- [ ] P11.10 Build guide (`README.md`) sections for both modes, `CLAUDE.md` repo map, requirements statuses (Sonnet 5.5 / medium)
+- [x] P11.10 Build guide (`README.md`) sections for both modes, `CLAUDE.md` repo map, requirements statuses (Sonnet 5.5 / medium; written by the orchestrator, Opus 5.5, with the code to avoid a cold-start agent)
 - [ ] P11.11 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator; local sync Haiku 5.5 / low)
 
 P9 additions (owner runs on the device; analysis assignment in brackets):
