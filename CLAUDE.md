@@ -30,7 +30,10 @@ PhoneLidar/Line/             Line scan: LineCapturePipeline, LineMotionMath (pur
                              SpeedEstimator, Baseline, LineRecording (formats, streaming recorder, repair),
                              LineRecordingRecovery (background recovery of killed recordings), LineScanView,
                              LinePlaybackView, TopoMapBuilder/Renderer/View, TopoGridFile,
-                             TopoReplayData/Model/Scene/View, DepthColors, DisplayLinkProxy
+                             TopoReplayData/Model/Scene/View, DepthColors, DisplayLinkProxy, MapCells (map method,
+                             cell accumulator, single-frame helpers), MapRebuild (map/replay for both sensors)
+PhoneLidar/Laser/            Laser line scan (design §14): LaserCapturePipeline, LaserLineDetector, LaserGeometry,
+                             LaserRecording (Profiles.bin), LaserMapBuilder, LidarDistanceProbe, LaserScanView/Model
 Tests/PhoneLidarTests/       Host-less XCTest bundle (pure-logic tests, run in CI)
 README.md                    User guide (the build guide); kept in sync with the claude.ai project copy
 docs/                        requirements.md, design.md, implementation-plan.md, reviews/
@@ -72,7 +75,7 @@ Full matrix: docs/implementation-plan.md §2. Every plan task names its assignme
 |---|---|
 | Requirements, architecture, design, planning; milestone final review (once per milestone) | Opus 5.5 / max |
 | Change review (PR diff + callers) and re-reviews of fixes | Opus 5.5 / high |
-| Capture, signal processing, concurrency, file formats (`Line/` pipeline, `SpeedEstimator`, `Baseline`, `TopoMapBuilder`, `TopoGridFile`, `TopoReplayData/Model`, `LineRecording`) | Opus 5.5 / high |
+| Capture, signal processing, concurrency, file formats (`Line/` pipeline, `SpeedEstimator`, `Baseline`, `TopoMapBuilder`, `MapCells`, `TopoGridFile`, `TopoReplayData/Model`, `LineRecording`, `Laser/` pipeline, detector, geometry, recording, map builder) | Opus 5.5 / high |
 | SwiftUI views, settings, sharing, wiring, Room/Mesh/Object screens | Sonnet 5.5 / high |
 | Unit tests | Sonnet 5.5 / high |
 | CI log triage, compile-error fixes | Sonnet 5.5 / medium |
