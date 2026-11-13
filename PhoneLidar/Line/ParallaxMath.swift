@@ -92,7 +92,7 @@ struct ParallaxCamera: Sendable {
 
     /// Ray (x_n, y_n, 1) through an image point, lens distortion removed.
     func ray(x: Double, y: Double) -> SIMD3<Double> {
-        let p = lens?.undistort(x: x, y: y, width: width, height: height) ?? (x, y)
+        let p: (x: Double, y: Double) = lens?.undistort(x: x, y: y, width: width, height: height) ?? (x: x, y: y)
         return SIMD3<Double>((p.x - cx) / fx, (p.y - cy) / fy, 1)
     }
 
@@ -101,7 +101,8 @@ struct ParallaxCamera: Sendable {
         guard point.z > 1e-6 else { return nil }
         let x = cx + fx * point.x / point.z
         let y = cy + fy * point.y / point.z
-        return lens?.distort(x: x, y: y, width: width, height: height) ?? (x, y)
+        guard let lens else { return (x: x, y: y) }
+        return lens.distort(x: x, y: y, width: width, height: height)
     }
 }
 

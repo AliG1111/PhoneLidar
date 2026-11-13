@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Document | Functional and non-functional requirements, constraints, acceptance criteria, traceability |
-| Describes | `main` at `4fa93c7` (PR #9, build #61): build #23 plus the P8 docs, unit tests, CI hardening and the M1 review fixes (cycles 1–3, the final review and the re-reviews), verified against the source code; plus the remote link (P11, §5.13), added 2026-11-12 |
-| Date | 2026-11-12 |
+| Describes | `main` at `4fa93c7` (PR #9, build #61): build #23 plus the P8 docs, unit tests, CI hardening and the M1 review fixes (cycles 1–3, the final review and the re-reviews), verified against the source code; plus the remote link (P11, §5.13), added 2026-11-12; P16 (camera parallax, height references, laser removed), 2026-11-13 |
+| Date | 2026-11-13 |
 | Companion documents | [design.md](design.md) (architecture, algorithms, file formats), [implementation-plan.md](implementation-plan.md) (phases, change log), [../CLAUDE.md](../CLAUDE.md) (agent rules), the user guide [`../README.md`](../README.md) |
 
 Requirements describe the system as built. Where the user guide (`README.md`) and the code disagree, the code is described here and the difference is listed in [design.md §12](design.md#12-guide-vs-code-discrepancies). Requirements that the code does not meet are kept with status **Not implemented** so they trace to the backlog and the review findings. Review IDs (`A-2`, `B-4`, `C-1`, `P-1`, `F-6`, …) refer to the M1 review ([reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md)); every requirement that cycle 1 and 2 found missing is now implemented and listed as *Implemented – not verified on device*. The user guide is `README.md`; the owner's local copy and the claude.ai project copy are synced by the orchestrator.
@@ -273,28 +273,9 @@ The owner wants the scanned height of each passing strand, not values averaged b
 | FR-SFM-05 | `TopoStats` records `mapMethod`. Single-frame maps: readings per cell = 1, repeat-reading noise blank in `TopoStats.csv` and "—" on screen; summary line "Map method: one reading per cell (no averaging) …" with frames used and repeated frames skipped. | Values in `TopoStats.csv`/`.json` and the summary. |
 | FR-SFM-06 | Map screen: **Map method** picker and **Rebuild map** build either method from the same recording. Default = method of the map on screen, else the recording's `mapMethod`. The replay uses the map last built. | Rebuilding as Averaged and back as Single frame changes `TopoStats.json` `mapMethod` and the map. |
 
-### 5.15 Laser line scan (FR-LAS)
+### 5.15 Laser line scan (FR-LAS) — removed
 
-Laser-line triangulation with the phone's main camera for strand-level topography. Algorithm and formats: [design §14](design.md#14-laser-line-scan).
-
-| ID | Requirement | Acceptance criteria |
-|---|---|---|
-| FR-LAS-01 | Home: new scan mode **Laser line scan (flake topography)**, available on any iPhone with a back wide camera. | Row on Home; opens the laser screen. |
-| FR-LAS-02 | Capture: back wide camera, 1920 × 1080 8-bit YUV (fallback 1280 × 720), frame rate 240 / 120 / 60 fps (default 240; the highest available when the requested one is not), video stabilisation off, auto-exposure with a shutter limit (1/1000 s default; 1/2000, 1/4000) and exposure bias, camera intrinsics per frame when available. Focus and white balance are locked when the baseline is calibrated; the locked lens position is saved and restored. | Readout shows the active fps and format; recorded `LaserRecording.json` holds them. |
-| FR-LAS-03 | Line detection on the luma plane, every 2nd column: per column the brightest row in the search band; valid when it is ≥ 30 grey levels above the darkest value within ±12 rows; sub-pixel centre = centre of gravity of the contiguous pixels above half-height (max ±10 rows). Search band = baseline rows ± the shift of the maximum height setting (default 100 mm); full frame on every 4th frame until a baseline exists. | Synthetic Gaussian lines are found to ≤ 0.05 px for σ ≥ 2 px and ≤ 0.1 px for σ = 1.5 px (the half-height centre of gravity is biased toward whole pixels for narrower lines; unit tests). |
-| FR-LAS-04 | Calibration: camera height H (lens to belt, mm; entered, or measured with the LiDAR); baseline on the empty belt (1 s; per-column median; ≥ 50 % of columns needed; gaps interpolated; coverage shown); height scale from a shim of known thickness under part of the line (preferred), else from the laser angle and side. Stored in *Calibration › LaserCalibration.json* and copied into every recording; used only with the same picture size, columns, intrinsics (f within 1 %, c within 3 px) and binning. | Calibration survives closing the screen; a recording holds its calibration. |
-| FR-LAS-05 | Geometry: shift d = row − baseline row (px); height h = H·d / (A_k + d) with the per-column scale A_k = K + (baseline row − c_y) (px) and the signed laser term K from the calibration (shim: K = d_shim·(H − t)/t − (shim baseline row − c_y); angle: K = ±f_y·tan θ, + when the laser is on the left of the portrait screen); across x = (u − c_x)(H − h)/f_x; along y = (v − c_y)(H − h)/f_y. Readings with |A_k + d| < 1 px or h outside [−0.5 H, 0.8 H] are dropped. | Formula unit tests; a shim reads its thickness. |
-| FR-LAS-06 | Speed and travel: `SpeedEstimator` on the rows of the frame away from the laser band (the larger side), every round(fps / 60)-th frame (≈ 60 Hz), only when that part has ≥ 216 rows (else a "No room for speed tracking" notice); mm per pixel from H minus the line's median height; travel at every frame = travel at the last tracked frame + held speed × elapsed time. Direction Auto (default, kept between visits) or set by hand as in FR-DIR-01…06. | Travel unit test; live speed readout. |
-| FR-LAS-07 | Recording: `scan.json` is written at Record (so a killed recording stays in the library), `LaserRecording.json` at Record and at Stop, `Profiles.bin` (raw sub-pixel line rows per frame) and `LaserFrames.csv` streamed. Stops and saves on background, camera interruption or error, critical heat, free storage < 300 MB or a write error; no start below 1 GB free. Captured data is never deleted on failure. | Files present after Stop; a stopped recording keeps its frames. |
-| FR-LAS-08 | Map: heights above the belt; **single reading per cell** by default (the reading nearest the cell centre), *Averaged* selectable; cell = max(across column spacing at the belt, 90th-percentile travel per frame, 0.2 mm) rounded up to 0.1 mm, ×1.25 until ≤ 3,000,000 cells; outputs and summary as FR-TOPO-04/07. | Map files after Stop and after Rebuild map. |
-| FR-LAS-09 | The map screen (statistics, method picker, rebuild) and the replay work for laser scans; the replay uses the tracked frames and reveals material at the laser line. | Both screens open a laser scan. |
-| FR-LAS-10 | Live view: detected line (green) and baseline (yellow) over the picture, across height profile, speed, % of columns detected, median and maximum height on the line, actual fps and dropped frames. | Visible while previewing and recording. |
-| FR-LAS-11 | Calibration method on the laser screen: **Empty belt** (baseline + shim or angle, FR-LAS-04) or **Side walls** (no clearing of the belt; design §14.9). | Picker; the stored calibration records `method`. |
-| FR-LAS-12 | Side-wall calibration inputs: camera height H (Set or LiDAR), wall-top height h_w above the belt, laser angle θ from vertical (digital angle gauge) and its side; camera tilt along the travel φ from the gravity sensor (its own level zero, made on a level surface). K = f_y·tan(side·θ − φ); heights of angle scales with a tilt use the effective camera height H_eff = H·cos θ·cos β₀ / (cos(β₀ − φ)·cos(side·θ − φ)) per column (exact for a tilted camera). Walls = per-column median of 60 frames over ≈ 1 s; on each side the widest run of columns raised ≥ 10 px above the median of the middle half that reaches into the outer quarter; selection on median rows with the line's roll removed (slope from the two halves of the middle half; fit on measured rows); its level = the most raised flat window of 3 adjacent columns (spread ≤ 1.5 px, which excludes spikes; the lower inner face is never the level); plateau within 1 % of the wall's rise of it, 0.5–2 px (gaps ≤ 2 columns bridged), ≥ 3 columns (wall tops ≥ ≈ 12 mm wide at 3.3 m). Belt row of each wall column v₀ = (v_w − (K − c_y)·r)/(1 + r), r = h_w/(H − h_w); least-squares straight line through both walls = baseline of every column (flat belt). Refused unless both walls are found; fit residual shown; wall points drawn in orange; a new camera height refits from the stored wall rows; shim and angle actions are refused on a side-wall calibration; a camera tilt across the belt over 0.5° is flagged. The empty-belt angle path also uses φ and H_eff. | Synthetic walls give the tilted belt line and the mat height exactly, also for a ray-traced camera tilted 1–2° (unit tests). |
-| FR-LAS-13 | Wall re-zero (side walls, on by default, switchable): per frame, per side the median of (row − calibration wall row) over its wall columns with a detection (≥ 2); both sides → straight-line shift of the baseline, one side → offset, none → last value held. Applied live and in every map build. Summary line "Wall re-zero: N % of frames measured, line shift a…b px (mean c px)". | A synthetic 3 px picture shift reads 0 mm with re-zero and 7.4 mm without (unit test). |
-| FR-LAS-14 | With side walls the map keeps readings strictly between the walls' inner faces (10 mm margin), and the live median and maximum use the columns between the feet of the faces. | Map width excludes the walls (unit test). |
-| FR-LAS-15 | Accuracy budget (flat belt, one wall height per side; analysis in design §14.9): worst case over 0–200 mm ≤ 2.5 mm with θ ±0.1°, H ±5 mm, h_w ±1 mm; ≤ 5.0 mm with θ ±0.2°, H ±10 mm, h_w ±2 mm (owner's tolerance 5 mm). | Unit test reproduces the 5.0 mm case; P9 V17 on the line. |
-| FR-LAS-16 | A calibration capture (baseline, shim, side walls) never waits for ever: it stops with the reason when no camera frame arrives for 2 s, when it takes longer than max(5 s, 4 × its expected time) (the reason gives frames collected, camera frames, fps, picture size and drops), or when the camera is interrupted or fails; after a 2 s frame gap the camera session is restarted. The status shows the share collected; **Cancel calibration** and **Close** stop it. After a LiDAR height measurement the camera format, frame rate and the calibration's focus are restored. | Watchdog unit tests; P9 on device. |
+Withdrawn in P16 (owner, 2026-11-13): no external line laser can be supplied, and the mode measures nothing without one. FR-LAS-01…16 no longer apply; the code (`PhoneLidar/Laser/`) and its tests were deleted. Scans made with it open as a scan of unknown kind (files can be shared and deleted); their `TopoStats.json` reads as a LiDAR map. Strand-level heights without added hardware come from the camera-parallax map (§5.17).
 
 ### 5.16 Automatic travel direction (FR-DIR)
 
@@ -302,12 +283,54 @@ Owner's request (2026-11-13): detect the direction of the scanned material autom
 
 | ID | Requirement | Acceptance criteria |
 |---|---|---|
-| FR-DIR-01 | Line scan and Laser line scan: **Direction** = Auto (default), Right → Left or Left → Right (manual override). Line scan starts at Auto on every visit; the laser screen keeps the setting between visits (`laserDirectionSetting`). A readout says "Material travel <d> (detected)", "… (set by hand)" or "Detecting the travel direction: needs moving material with visible texture". | Picker with three choices; the readout follows the state. |
+| FR-DIR-01 | Line scan: **Direction** = Auto (default), Right → Left or Left → Right (manual override). Line scan starts at Auto on every visit. A readout says "Material travel <d> (detected)", "… (set by hand)" or "Detecting the travel direction: needs moving material with visible texture". | Picker with three choices; the readout follows the state. |
 | FR-DIR-02 | Auto, while no recording runs: the main texture match searches equally far both ways (480 px per frame on the Line scan buffer); every shift with quality ≥ 0.15 and ≥ 1 px is a vote; the direction is detected when ≥ 12 of the last 15 votes agree. Frames without a vote change nothing, so the direction is kept while the material stops or the lock is lost. | Unit tests: 12 agreeing votes detect, 11 do not; weak, small or missing readings never vote; alternating noise never detects; fast movement against the sign is measured both ways. |
 | FR-DIR-03 | A clear reversal (≥ 12 of the last 15 votes the other way) replaces the detected direction; the tracking sign flips, the shifts of that frame, the held speed, zone smoothing and sparkline are cleared (FR-SPD-06). | Unit test for the reversal; after turning the material round the readout and the speed sign follow. |
 | FR-DIR-04 | Until a direction is known no speed, zone speed or travel is shown or integrated; the lock % still shows the texture match. | Speed shows "—" while detecting. |
 | FR-DIR-05 | Record (on the phone or from the remote) is refused while Auto has no direction: "Recording not started: the travel direction has not been detected yet…" with the advice to wait for movement or set the direction by hand. | Record before the material moves shows the message; no folder is left. |
-| FR-DIR-06 | A recording keeps the direction in use at Record and the one-way search until it ends; `Recording.json` / `LaserRecording.json` store it as before (formats unchanged). With Auto the scan summary adds "Travel direction <d> detected automatically from the material's movement." If the detection changed after the screen last read it (reversal just before Record), the start is refused: "Recording not started: the travel direction just changed to <d>. Tap Record again." | Summary line present; a map built from the recording is oriented by that direction. |
+| FR-DIR-06 | A recording keeps the direction in use at Record and the one-way search until it ends; `Recording.json` stores it as before (format unchanged). With Auto the scan summary adds "Travel direction <d> detected automatically from the material's movement." If the detection changed after the screen last read it (reversal just before Record), the start is refused: "Recording not started: the travel direction just changed to <d>. Tap Record again." | Summary line present; a map built from the recording is oriented by that direction. |
+| FR-PAR-01 | Line/MapCells.swift (`MapMethod.cameraParallax`); Line/LineScanView.swift (`setMapMethod`); Line/LineRecording.swift (`videoBitRate`); Line/TopoMapView.swift | Implemented – not verified on device |
+| FR-PAR-02 | Line/ParallaxMath.swift (`LensCalibration`); Line/LineCapturePipeline.swift (`lens`); Line/LineRecording.swift (`lens`) | Implemented – not verified on device |
+| FR-PAR-03 | Line/ParallaxMath.swift (`PatchMatcher`, `MatchTemplate`); Line/ParallaxProcessor.swift | Implemented |
+| FR-PAR-04 | Line/ParallaxMath.swift (`ParallaxGeometry`, `ScaleSmoother`); Line/ParallaxProcessor.swift | Implemented |
+| FR-PAR-05 | Line/ParallaxMapBuilder.swift; Line/MapRebuild.swift; Line/TopoMapView.swift | Implemented – not verified on device |
+| FR-PAR-06 | Line/ParallaxMapBuilder.swift (`noReadingsReason`) | Implemented – not verified on device |
+| FR-HREF-01 | Line/HeightReference.swift (`HeightReference`); Line/HeightReferenceSheet.swift | Implemented – not verified on device |
+| FR-HREF-02 | Line/HeightReference.swift (`HeightPlane`) | Implemented |
+| FR-HREF-03 | Line/HeightReference.swift (`WallCapture`, `HeightMath.closestCluster`); Line/LineCapturePipeline.swift (`captureWalls`); Line/HeightReferenceSheet.swift | Implemented |
+| FR-HREF-04 | Line/LineCapturePipeline.swift (`setHeightPlane`, `planeHeights`) | Implemented – not verified on device |
+| FR-HREF-05 | Line/HeightReferenceSheet.swift (`copyHeightReference`); Line/LineCapturePipeline.swift | Implemented – not verified on device |
+| FR-HREF-06 | Line/HeightReference.swift (`MapHeightModel`); Line/TopoMapBuilder.swift; Line/ParallaxMapBuilder.swift | Implemented |
+| FR-HREF-07 | Line/HeightReference.swift (`keptAcross`, `MapHeightModel.columns`) | Implemented |
+| FR-HREF-08 | — (analysis) | Not verified on device |
+
+### 5.17 Camera-parallax map (FR-PAR)
+
+Owner's decision (2026-11-13): strand-level heights without an external laser, from the Line scan's own video ("Method A"). Algorithm: [design §15](design.md#15-camera-parallax-map).
+
+| ID | Requirement | Acceptance criteria |
+|---|---|---|
+| FR-PAR-01 | Line scan **Map** setting gains *Camera parallax* (stored as `mapMethod` = `cameraParallax`; older builds read it as averaged). Choosing it turns the short shutter on. The recording's video is written at 40 Mbit/s (16 Mbit/s otherwise). The map screen's **Map method** picker offers it for any recording with `Video.mov`. | Setting stored; Rebuild map with Camera parallax builds from the video. |
+| FR-PAR-02 | `Recording.json` stores the video camera's lens distortion (`lens`: reference size, distortion centre, forward and inverse magnification tables) when AVFoundation reports it. Recordings without it build without distortion correction and say so in the summary. | Key present in new recordings; old recordings still build. |
+| FR-PAR-03 | Measurement: template bands (16 × 16 px patches every 8 px across, rows every 8 px over the material that arrived since the last band) half a baseline upstream of the principal row are matched in the first frame in which the material moved ≥ ⅓ of the picture (ZNCC: half-resolution search around the LiDAR-predicted position, full-resolution hill-climb, parabolic sub-pixel peak in both axes; patch SD ≥ 3 grey levels, coarse ZNCC ≥ 0.5, fine ≥ 0.75, peak not on the window edge). | Synthetic sub-pixel shifts found to ≤ 0.15 px (unit test). |
+| FR-PAR-04 | Triangulation with the known travel direction (parallel to the belt, normal from the zeroed tilt, else the LiDAR surface tilt, else gravity; across drift from the recording, refined from the matches): Z₁ = s·g per patch. Scale s per frame pair = median over patches of LiDAR distance ÷ g, smoothed as the median ratio to the recorded travel over ±15 pairs. | Synthetic ridge 50 mm above a belt the LiDAR sees flat reads 50 mm (±3 mm) from parallax alone, both directions (unit tests). |
+| FR-PAR-05 | Map: one reading per cell (the one nearest the cell centre), cell = patch spacing at the typical distance rounded up to 0.1 mm (×1.25 until ≤ 3,000,000 cells), heights from the recording's height reference (§5.18), outputs as FR-TOPO-04, `TopoStats.sensor` = `cameraParallax`. Summary line `Camera parallax: …` with pairs scaled, points, share of patches matched, median LiDAR scale and whether the lens was corrected. Progress is shown while building. | Map files after Stop and after Rebuild map; progress on the map screen. |
+| FR-PAR-06 | A recording without `Video.mov`, without movement of ⅓ picture, without texture or without LiDAR readings fails with a message naming the cause; captured data is never changed. | Messages per cause. |
+
+### 5.18 Height references (FR-HREF)
+
+Owner's decision (2026-11-13): offer both references that need no empty belt and no laser, next to the empty-belt baseline. Design: [design §16](design.md#16-height-references).
+
+| ID | Requirement | Acceptance criteria |
+|---|---|---|
+| FR-HREF-01 | Line scan **Height reference…** sheet: *Empty belt* (the baseline, FR-CAL), *Camera height* or *Side walls*; kept in *Calibration › HeightReference.json*. | Choice survives closing the screen. |
+| FR-HREF-02 | Camera height: typed lens-to-belt distance H (mm). Belt = plane at distance H along the belt normal; normal = gravity tilt minus the Line scan level zero (gravity when not zeroed; then the belt must be level). Height = H − n·P for every camera-frame point P. | Unit tests: plane maths and a map of known heights. |
+| FR-HREF-03 | Side walls: typed wall height h_w; two bands across the picture (default 2–10 % and 90–98 %, draggable on the live depth picture, shared width 2–25 %) on the wall tops; 90 frames (≈ 3 s); per band the closest cluster of n·P (seed at the 5th percentile, median within ±20 mm until it settles; ≥ 100 readings); belt distance = mean of the two wall-top distances + h_w. Refused with a reason when a band has too few readings, no wall height is set or the belt distance is implausible; a difference between the walls over 5 mm, a tilt change over 0.3° since the calibration, another depth filter setting or moved bands are flagged. | Unit tests: tilted synthetic walls give the belt to ±0.5 mm; refusal. |
+| FR-HREF-04 | Live view: with a camera-height or side-wall reference the overlay, legend, centre height and σ are heights above the belt (live tilt). | Visible on the device. |
+| FR-HREF-05 | Record copies the reference (with the level zero in use) into the recording as `HeightReference.json`, instead of the baseline; a reference that is not set up, or a failed copy, adds a summary line and the map shows distances. | File in new recordings. |
+| FR-HREF-06 | Every Line scan map (averaged, single reading, camera parallax) uses, in order: a ready camera-height or side-wall `HeightReference.json`, a matching `Baseline.bin`, else distances. `TopoStats.heightReference` records which; summary, `TopoStats.csv` (`height_above_belt_camera_height` / `_side_walls`) and the map screen say "above the belt"; summary line `Height reference: …` (replaced on rebuild). | Unit tests for both plane references and the baseline fallback. |
+| FR-HREF-07 | Side walls: maps keep only the depth columns between the inner edges of the calibrated wall bands. | Unit test: map width halves with bands covering the outer quarters. |
+| FR-HREF-08 | Accuracy (analysis, design §16.5): camera height ±5 mm tape → ±5 mm plus the LiDAR distance bias at the mat; side walls cancel most of the LiDAR bias (wall tops and mat measured by the same sensor): wall height ±1 mm + wall-top distance (averaged) ±1–2 mm + fixed-pattern difference between the edges and the middle of the view. | P9 V19/V20 on the line. |
 
 ## 6. Non-functional requirements
 
@@ -332,7 +355,8 @@ Status values: **Met** (shown by the code or CI), **Partially met**, **Not met**
 | NFR-PERF-06 | Playback stays responsive: the overlay updates per frame; whole-recording probe statistics are computed in parallel off the main thread. | Probe min/max appear ≤ 2 s after lifting the finger on a 60 s recording (P9 V4). | Unverified |
 | NFR-PERF-08 | Remote link responsiveness: status 4 Hz; command answer ≤ 1 s; copy throughput limited by the link (chunks encrypted on the fly, no extra pass over the files). Range is not published by Apple for peer-to-peer Wi-Fi; it depends on the radios, the mount and obstructions. | Status latency ≤ 1 s and copy ≥ 5 MB/s at 5 m line of sight; range and the distance where the link drops measured at the forming line (P9 V12). | Unverified |
 | NFR-PERF-07 | Sustained recording on USB-C power on a plant mount. A "Hot" label shows at serious/critical thermal state; at serious state the live overlay and LiDAR tilt refresh every 6th frame instead of every 2nd (recording continues), at critical state the recording is stopped and saved. | 10-minute recording completes; NFR-PERF-01 still met; no thermal shutdown (P9 V1). | Unverified |
-| NFR-PERF-09 | Laser line scan: per-frame line detection, travel and recording keep up at 240 fps; frames dropped by the camera are counted, shown live and saved. | Dropped frames ≤ 2 % over a 60 s recording at 240 fps (P9 V15). | Unverified |
+| NFR-PERF-09 | Withdrawn with the Laser line scan (P16). | — | Withdrawn |
+| NFR-PERF-10 | Camera-parallax map build: decodes Video.mov once, matches the patches of a frame pair in parallel. | Proposed: ≤ 60 s per minute of recording at 500 mm/s and 1 m (P9 V18). | Unverified |
 
 ### 6.3 Measurement accuracy (all UNVERIFIED on device)
 
@@ -345,7 +369,7 @@ Status values: **Met** (shown by the code or CI), **Partially met**, **Not met**
 | NFR-ACC-05 | Equipment mesh point-to-point distances at 0.5–3 m. | Proposed: within ±1 cm or ±1 % (whichever is larger) of tape, live and in the viewer (P9 V9). | Unverified |
 | NFR-ACC-06 | Map completeness and geometry. | Coverage ≥ 95 % for a run whose material fills the view (coverage is computed over the measured extent with the empty padding trimmed, B-4, and the cell is never smaller than a depth-pixel footprint, P-1, so a gap-free scan has no empty rows or columns); no missing columns along the run; across width within ±1 % of the tape width of a board (P9 V6). | Unverified |
 | NFR-ACC-07 | Sampling limits stated by the build guide: ~15 real LiDAR samples per second (30 depth frames/s delivered), real laser-spot spacing ≈ 5 cm across at 1 m. Features smaller than the spot spacing are interpolated by the depth pipeline. | Informational; test pieces in P9 are ≥ 100 mm square. | Unverified |
-| NFR-ACC-08 | Laser line height per single reading (no averaging), after shim calibration. | Proposed: shims and steps of 0.5–10 mm read within ±0.2 mm at 0.5 m and ±0.3 mm at 1 m camera height (P9 V14). | Unverified |
+| NFR-ACC-08 | Camera-parallax height per point relative to its neighbours (σ_h ≈ Z·σ_d / (f·B), B = ⅓ of the view; design §15.6): 0.2–0.6 mm at 1 m, 0.3–0.9 mm at 1.5 m, 0.6–1.8 mm at 2.9 m for σ_d = 0.1–0.3 px; points every ≈ 5.3 mm (patch 16 px ≈ 11 mm) at 1 m. Absolute level from the LiDAR and the height reference (FR-HREF-08). | Proposed: boards and steps of 2–20 mm on the moving belt read within ±1 mm at 1 m (P9 V18). | Unverified |
 | NFR-ACC-09 | Single-frame LiDAR map: each value is one LiDAR reading; per-reading noise and the ≈ 5 cm spot spacing at 1 m are not reduced (NFR-ACC-07). | Informational; P9 V16 compares single-frame and averaged maps of one recording. | Unverified |
 
 ### 6.4 Reliability and data integrity
@@ -556,33 +580,19 @@ Paths are relative to `PhoneLidar/`. Status legend in §4. Review IDs name the M
 | FR-SFM-04 | Line/TopoMapBuilder.swift (`scanLineProfilesCSV`) | Implemented |
 | FR-SFM-05 | Line/TopoMapBuilder.swift; Line/TopoMapView.swift | Implemented |
 | FR-SFM-06 | Line/TopoMapView.swift; Line/MapRebuild.swift | Implemented – not verified on device |
-| FR-LAS-01 | App/HomeView.swift; Storage/ScanStore.swift (`ScanKind.laser`); Laser/LaserCapturePipeline.swift (`isSupported`) | Implemented – not verified on device |
-| FR-LAS-02 | Laser/LaserCapturePipeline.swift | Implemented – not verified on device |
-| FR-LAS-03 | Laser/LaserLineDetector.swift | Implemented |
-| FR-LAS-04 | Laser/LaserGeometry.swift; Laser/LaserScanView.swift; Laser/LidarDistanceProbe.swift | Implemented – not verified on device |
-| FR-LAS-05 | Laser/LaserGeometry.swift | Implemented |
-| FR-LAS-06 | Laser/LaserGeometry.swift (`LaserTravel`); Laser/LaserCapturePipeline.swift; Line/SpeedEstimator.swift (`rows`) | Implemented – not verified on device |
-| FR-LAS-07 | Laser/LaserRecording.swift; Laser/LaserCapturePipeline.swift; Laser/LaserScanView.swift | Implemented – not verified on device |
-| FR-LAS-08 | Laser/LaserMapBuilder.swift; Line/MapCells.swift; Line/TopoMapBuilder.swift (`finish`) | Implemented |
-| FR-LAS-09 | Line/TopoMapView.swift; Line/TopoReplayView.swift; Line/MapRebuild.swift; Line/TopoReplayData.swift | Implemented – not verified on device |
-| FR-LAS-10 | Laser/LaserScanView.swift | Implemented – not verified on device |
-| FR-LAS-11 | Laser/LaserGeometry.swift (`LaserCalibration.method`); Laser/LaserScanView.swift | Implemented – not verified on device |
-| FR-LAS-12 | Laser/LaserWalls.swift; Laser/LaserScanModel.swift (`calibrateOnWalls`, level) | Implemented – not verified on device |
-| FR-LAS-13 | Laser/LaserWalls.swift (`shift`); Laser/LaserMapBuilder.swift; Laser/LaserCapturePipeline.swift | Implemented |
-| FR-LAS-14 | Laser/LaserWalls.swift (`isInsideWalls`, `matColumns`); Laser/LaserMapBuilder.swift; Laser/LaserCapturePipeline.swift | Implemented |
-| FR-LAS-15 | Tests/PhoneLidarTests/LaserWallsTests.swift (`testFiveMillimetreBudget`) | Analysis verified; not verified on device |
-| FR-LAS-16 | Laser/LaserGeometry.swift (`LaserCaptureWatch`, unit tests); Laser/LaserCapturePipeline.swift (`collectRows`, `restoreFormat`); Laser/LaserScanModel.swift (`cancelCalibration`) | Implemented – not verified on device |
-| FR-DIR-01 | Line/TravelDirectionDetector.swift (`DirectionSetting`; unit tests); Line/LineScanView.swift; Laser/LaserScanModel.swift; Laser/LaserScanView.swift | Implemented – not verified on device |
-| FR-DIR-02 | Line/TravelDirectionDetector.swift (`TravelDirectionDetector`; unit tests); Line/SpeedEstimator.swift (`searchesBothWays`; unit tests); Line/LineCapturePipeline.swift; Laser/LaserCapturePipeline.swift | Implemented – not verified on device |
-| FR-DIR-03 | Line/TravelDirectionDetector.swift (unit tests); Line/LineCapturePipeline.swift (`applyTravelSign`); Laser/LaserCapturePipeline.swift; Line/LineScanView.swift (sparkline) | Implemented – not verified on device |
-| FR-DIR-04 | Line/LineCapturePipeline.swift; Laser/LaserCapturePipeline.swift | Implemented – not verified on device |
-| FR-DIR-05 | Line/LineScanView.swift (`startRecording`, `remoteStart`); Laser/LaserScanModel.swift (`startRecording`) | Implemented – not verified on device |
-| FR-DIR-06 | Line/LineCapturePipeline.swift (recorder creation); Laser/LaserCapturePipeline.swift (`PendingRecording.direction`); Laser/LaserScanModel.swift (summary) | Implemented – not verified on device |
+| FR-LAS-01…16 | — (deleted in P16) | Withdrawn (owner, 2026-11-13) |
+| FR-DIR-01 | Line/TravelDirectionDetector.swift (`DirectionSetting`; unit tests); Line/LineScanView.swift | Implemented – not verified on device |
+| FR-DIR-02 | Line/TravelDirectionDetector.swift (`TravelDirectionDetector`; unit tests); Line/SpeedEstimator.swift (`searchesBothWays`; unit tests); Line/LineCapturePipeline.swift | Implemented – not verified on device |
+| FR-DIR-03 | Line/TravelDirectionDetector.swift (unit tests); Line/LineCapturePipeline.swift (`applyTravelSign`); Line/LineScanView.swift (sparkline) | Implemented – not verified on device |
+| FR-DIR-04 | Line/LineCapturePipeline.swift | Implemented – not verified on device |
+| FR-DIR-05 | Line/LineScanView.swift (`startRecording`, `remoteStart`) | Implemented – not verified on device |
+| FR-DIR-06 | Line/LineCapturePipeline.swift (recorder creation) | Implemented – not verified on device |
 
 ## 9. Document history
 
 | Date | Change |
 |---|---|
+| 2026-11-13 | P16: Laser line scan removed (FR-LAS withdrawn); camera-parallax map (FR-PAR-01…06); height references camera height and side walls (FR-HREF-01…08). |
 | 2026-11-13 | P15: calibration capture watchdog, cancel and format restore after the LiDAR probe (FR-LAS-16), from the first on-device test (baseline calibration did not finish). |
 | 2026-11-12 | P13: side-wall calibration and wall re-zero (FR-LAS-11…15). |
 | 2026-11-12 | P12: single-frame LiDAR map (FR-SFM-01…06), laser line scan (FR-LAS-01…10), NFR-PERF-09, NFR-ACC-08/09. |

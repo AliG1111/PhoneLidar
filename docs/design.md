@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Document | Architecture, module design, data flow, concurrency, algorithms, on-disk formats, technology choices, risks |
-| Describes | `main` at `4fa93c7` (PR #9, CI build #61): build #23 plus the P8 changes (unit tests, CI hardening, M1 review fixes of cycles 1–3, the final review and the re-reviews); plus the remote link (P11: §3.9, §6.15, §7.20, §10.10), added 2026-11-12. |
-| Date | 2026-11-12 |
+| Describes | `main` at `4fa93c7` (PR #9, CI build #61): build #23 plus the P8 changes (unit tests, CI hardening, M1 review fixes of cycles 1–3, the final review and the re-reviews); plus the remote link (P11: §3.9, §6.15, §7.20, §10.10), added 2026-11-12; P16 (camera-parallax map §15, height references §16, Laser line scan removed §14), 2026-11-13. |
+| Date | 2026-11-13 |
 | Related | [requirements.md](requirements.md), [implementation-plan.md](implementation-plan.md), [../CLAUDE.md](../CLAUDE.md) |
 
 Source paths are relative to `PhoneLidar/` unless they start with `Support/`, `.github/` or `project.yml`. Review IDs (`A-1`, `B-4`, `C-2`, `P-1`, `F-6`, …) refer to the M1 review ([reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md)). This document describes the code after the M1 fixes (cycles 1–3, final review and re-reviews); where it says "was" it names the behaviour of build #23. The user guide is [`../README.md`](../README.md).
@@ -163,6 +163,13 @@ flowchart LR
 | `TopoReplayScene.swift` | SceneKit content: orthographic camera with any orientation and a depth shear (slant), light attached to the camera, surface strip with walls, tolerance planes, newest-line bar, axes and billboard labels. |
 | `TopoReplayOrientation.swift` | `ReplayOrientation`: camera orientation as a unit quaternion; trackball drag, twist, (turn, tilt, roll) angles for the settings sheet (§6.11). Pure, in the test target. |
 | `TopoReplayView.swift` | Replay screen: loading (builds the grid if missing), landscape/portrait layouts, `ReplaySceneView` (SCNView + gestures), `AlongChart`, `AcrossPanel`, `ColorBar`, `ReplaySettingsView`, `ActivityView`. |
+| `MapCells.swift` | `MapMethod` (`averaged`, `singleReading`, `cameraParallax`), `MapSensor` (`lidar`, `cameraParallax`), `MapCells` accumulator, single-frame helpers (§13). |
+| `MapRebuild.swift` | `MapRecording`, async `MapRebuild.build` (LiDAR builder or `ParallaxMapBuilder` by method), replay inputs. |
+| `HeightReference.swift` | Height references (§16): `HeightReferenceMethod`, `WallBand`, `WallCalibration`, `HeightPlane`, `HeightReference` (file), `HeightMath.closestCluster`, `WallCapture`, `MapHeightModel`. Pure, in the test target. |
+| `HeightReferenceSheet.swift` | `LineScanModel` height-reference actions and the **Height reference** sheet with the live wall-band picture. |
+| `ParallaxMath.swift` | Camera parallax (§15): `LensCalibration`, `ParallaxCamera`, `ParallaxGeometry` (triangulation, travel direction, belt normal, cell size), `LumaPlane`, `MatchTemplate` (ZNCC), `PatchMatcher`, `ScaleSmoother`. Pure, in the test target. |
+| `ParallaxProcessor.swift` | Frame-by-frame parallax measurement: template bands, pairing, parallel matching, per-pair LiDAR scale, smoothed readings. Pure, in the test target. |
+| `ParallaxMapBuilder.swift` | Decodes `Video.mov` (AVAssetReader), runs the processor, fills `MapCells`, finishes the map. Device/AVFoundation; not in the test target. |
 
 ### 3.9 Remote (`Remote/`)
 
@@ -640,6 +647,8 @@ Header key order is not defined. Frames are not sorted-key and contain no newlin
 | `shortShutter` | bool | |
 | `tileColumns`, `tileRows` | int, optional | 6 and 4; absent before PR #7. |
 | `videoHeight`, `videoWidth` | int | Camera buffer size (landscape). |
+| `mapMethod` | string, optional | `singleReading` or `cameraParallax` (P16); absent = averaged. Older builds read an unknown value as averaged. |
+| `lens` | object, optional | P16: `LensCalibration` of the video camera — `referenceWidth`, `referenceHeight` (px), `centerX`, `centerY` (distortion centre, reference px), `forward` (`lensDistortionLookupTable`, undistorted → image), `inverse` (`inverseLensDistortionLookupTable`, image → undistorted), Float arrays of radial magnification for radii 0…r_max (§15.2). Absent when the camera did not report it. |
 
 `LineFrameInfo`:
 
@@ -707,7 +716,7 @@ Row 1: `across_mm \ along_mm` followed by each column centre (c + 0.5)·cell as 
 - `TopoReplay_<t>s.png` — name `String(format: "TopoReplay_%07.2fs.png", playhead)`, e.g. `TopoReplay_0012.34s.png`; the header readouts are refreshed to the playhead right before the snapshot, so name, header and picture show the same time (B-18); SCNView snapshot centred under a 64 pt header (title, time and statistics) and above a 76 pt footer (colour bar with five labels and caption); width max(snapshot, 900) pt at the screen scale.
 
 ### 7.18 Preferences
-`UserDefaults.standard`: `lineLevelZeroed` (Bool), `lineLevelZeroX`, `lineLevelZeroY` (Double, degrees); `remoteLinkMode` (String: `off`, `scanner`, `remote`); `remoteDeviceID` (UUID string, created on first use); laser screen settings `laserFrameRate`, `laserShutterLimit`, `laserExposureBias`, `laserMaxHeight` (Double), `laserMapMethod` (String) and `laserDirectionSetting` (String: `auto`, `rightToLeft`, `leftToRight`; default `auto`). The older key `laserDirection` (a fixed direction) is no longer read.
+`UserDefaults.standard`: `lineLevelZeroed` (Bool), `lineLevelZeroX`, `lineLevelZeroY` (Double, degrees); `remoteLinkMode` (String: `off`, `scanner`, `remote`); `remoteDeviceID` (UUID string, created on first use). The `laser…` keys of the removed Laser line scan are no longer read.
 
 ### 7.19 Recording marker and temporary files
 - `.recording-in-progress` — empty hidden file in a `line_` folder, created by `LineRecorder.init` before any other file. It is removed when the saved recording has been read back successfully (`LineRecordingRepair.clearMarker` after `loadInfo` in the map step) or after a recovery has added the folder to the library. A folder that still has it (and a `Recording.json`) is an interrupted recording (§6.14).
@@ -717,6 +726,9 @@ Row 1: `across_mm \ along_mm` followed by each column centre (c + 0.5)·cell as 
 ### 7.20 Remote link staging and pairing data
 - Staging (remote phone): `Library/Application Support/RemoteIncoming/<scan UUID>/` holds the files being copied under their own names and a hidden manifest `.transfer.json` (pretty JSON: `scan` = the `RemoteScanInfo` the copy started from (id, name, created, summary, files with name, size in bytes and modification time in seconds since 1970), `scannerName`, `started` ISO 8601). Not visible in the Files app and not part of the library; removed after the import or by **Discard**.
 - Pairing: one Keychain generic-password item per role, service `ca.gervais.phonelidar.remote-link`, account `scanner` (the scanner's paired remote) or `remote` (the remote's paired scanner), accessibility `AfterFirstUnlockThisDeviceOnly`, data = JSON `RemotePairing` {peerID, peerName, key (base64, 32 bytes), created}. Not backed up to other devices.
+
+### 7.21 `HeightReference.json` (P16)
+Pretty JSON (`JSONEncoder.pretty`), in *Documents/Calibration/* (the reference in use) and, for a camera-height or side-wall reference, copied into a recording folder at Record. Keys: `method` (`emptyBelt`, `cameraHeight`, `sideWalls`; unknown → `emptyBelt`), optional `cameraHeight` (mm, lens to belt), `wallHeight` (mm), `topBand` / `bottomBand` (`{start, end}`, fractions of the buffer width, 0 = top of the portrait screen), `walls` (`WallCalibration`: `date`, `wallHeight`, `topDistance` / `bottomDistance` (mm along the belt normal), `topReadings` / `bottomReadings`, `topSpread` / `bottomSpread` (mm), `tiltX` / `tiltY` (degrees from the level zero), `depthWidth`, `depthHeight`, `filteredDepth`, `topBand`, `bottomBand`), `levelZeroX` / `levelZeroY` (degrees; written in the recording copy). A recording's map uses it when the method is a plane method and ready (§16.4).
 
 ## 8. Storage layout
 
@@ -913,103 +925,65 @@ Written with the other map files (staged, renamed together) for single-reading b
 
 `singleReading`: `meanHitsPerCell` = 1, `repeatStdDev` = 0 in JSON and blank in `TopoStats.csv` (`repeat_reading_std_dev`), "—" on screen. New summary line, recognised as a map line on rebuild: `Map method: one reading per cell (no averaging); N of M frames used, K repeated depth frames skipped`. `TopoStats.mapMethod` is absent for averaged maps written before P12 and treated as `averaged`.
 
-## 14. Laser line scan
+## 14. Laser line scan (removed in P16)
 
-Added in P12 (FR-LAS). Sheet-of-light triangulation: a line laser projects a line across the belt at an angle; the main camera looks straight down; the line moves along the image in proportion to the height under it.
+Withdrawn on 2026-11-13 (owner: no external line laser available). `PhoneLidar/Laser/` and its tests were deleted. Leftovers kept for old data: `ScanKind` reads `laser` as `.unknown`; `MapSensor` reads `laserLine` as `lidar`; the summary prefixes `Laser line:` and `Wall re-zero:` are still map lines, so a rebuild replaces them; `SpeedEstimator.process(_:rows:zones:)` keeps its optional crop. The design of the mode is in the git history (P12, P13, P15).
 
-### 14.1 Modules (`PhoneLidar/Laser/`)
+## 15. Camera-parallax map
 
-| File | Role | Test target |
-|---|---|---|
-| `LaserLineDetector.swift` | Per-column peak and sub-pixel centre on a luma plane. | Yes |
-| `LaserGeometry.swift` | `LaserCalibration` (Codable), height/across/along formulas, shim and angle scale, baseline from frames, `LaserTravel`. | Yes |
-| `LaserRecording.swift` | `LaserRecordingInfo`, `Profiles.bin` writer/reader, `LaserFrames.csv` rows, calibration store. | Yes |
-| `LaserMapBuilder.swift` | Map from `Profiles.bin` via `MapCells` and `TopoMapBuilder.finish`; replay frames; summary. | Yes |
-| `LaserCapturePipeline.swift` | AVCaptureSession on the wide camera, per-frame processing, calibration capture, recorder. | No (device) |
-| `LidarDistanceProbe.swift` | One-shot camera height from the LiDAR depth camera (median of the central 20 % of 30 frames). | No (device) |
-| `LaserScanView.swift` | Screen, model, overlay, profile chart, settings, calibration controls. | No |
+Added in P16 (FR-PAR). Strand-level heights from the Line scan video without added hardware. The material is a rigid surface translating under a fixed camera, so two frames are a stereo pair whose baseline is the travel between them (motion stereo). The baseline is long (⅓ of the view ≈ 0.32 Z), so the parallax is large; the travel is known only roughly, so its scale comes from the LiDAR.
 
-`Line/MapRebuild.swift` dispatches map rebuilds and replay loading to the LiDAR or laser builder (a laser scan is a folder with `LaserRecording.json`).
+### 15.1 Principle
+A surface point at camera-frame position P₁ (frame i) is at P₂ = P₁ + s·u in frame j (u = unit travel direction, s = travel in mm). With rays r = (x_n, y_n, 1) from the undistorted image positions, Z₁·r₁ + s·u = Z₂·r₂; least squares in Z₁, Z₂ gives **Z₁ = s·g**, g = ((r₁·u)(r₂·r₂) − (r₁·r₂)(r₂·u)) / ((r₁·r₂)² − (r₁·r₁)(r₂·r₂)) (`ParallaxGeometry.depthPerTravel`). Higher points move more pixels for the same s. All patches of one frame pair share s, so the ratio of their g values is independent of the belt speed; the LiDAR fixes s.
 
-### 14.2 Capture
+### 15.2 Camera model
+Video intrinsics = the frame's depth intrinsics × (video size ÷ depth size) (the depth map is registered to the video, same aspect). Lens distortion from `AVCameraCalibrationData` saved at Record (`LensCalibration`, §7.9): magnification m(r) by linear interpolation in the table over r ∈ [0, r_max], r_max = distance from the distortion centre to the farthest corner, applied as p' = c + (p − c)(1 + m) in reference pixels (Apple's reference implementation); `inverse` maps an image point to its undistorted position (rays), `forward` maps back (prediction). Without tables the pinhole model is used and the summary says so; the error grows toward the picture edges.
 
-- Device `builtInWideAngleCamera` (back). Format score: supports the requested fps (+1000), 1920 × 1080 (+500) or 1280 × 720 (+200), 8-bit 420 full range (+100) / video range (+90). If no format reaches the requested fps, the highest-fps 8-bit format at ≥ 1280 wide is used. `activeVideoMin/MaxFrameDuration` = 1/fps.
-- Video data output, `alwaysDiscardsLateVideoFrames = true`, native landscape (`videoRotationAngle = 0`), stabilisation off, `isCameraIntrinsicMatrixDeliveryEnabled` when supported (intrinsics from the `CameraIntrinsicMatrix` attachment; fallback f = W/2 / tan(fov/2), c = centre). Dropped frames are counted in `captureOutput(_:didDrop:from:)`.
-- Exposure: continuous auto-exposure with `activeMaxExposureDuration` = the shutter limit (1/1000, 1/2000, 1/4000 s, clamped to the format) and `setExposureTargetBias` (−3…+1 EV). Focus: continuous until a baseline is calibrated, then `.locked`; white balance locked at the same time. A saved calibration restores its lens position (`setFocusModeLocked(lensPosition:)`).
-- Queues: `phonelidar.laser.session` (configuration, start/stop), `phonelidar.laser.data` (frames, detection, tracking, recorder). UI updates ≤ 15 Hz.
-- Calibration capture (`collectRows`, FR-LAS-16): the data queue counts camera frames, drops and the buffer size since the start and checks every 0.5 s (`LaserCaptureWatch`, pure): no frame for 2 s, or longer than max(5 s, 4 × frames × stride / fps), ends the capture with a reason; an interruption or runtime error ends it with its text. After a 2 s frame gap the session is also stopped and started again (when the screen wants it running), once per stalled capture and outside the `maxErrorRestarts` count, which only limits restarts after runtime errors. The completion gets `LaserRowCapture` (frames, stop reason). The screen tags each calibration with a token, so **Cancel calibration** and **Close** end it at once and a late result is ignored.
-- `start()` restores the chosen format and 1/fps frame duration when they differ (the LiDAR height probe runs its own session on the same camera hardware); after the probe the screen restores the calibration's lens position (or autofocus). Close cancels a running probe; the session is not restarted on returning to the foreground while the probe runs.
+### 15.3 Templates and pairing (`ParallaxProcessor`)
+- A template band is stored when the material has advanced ≥ 8 px since the last band (`advance = |Δtravel|·f_y / Z`), so a stopped belt stores nothing and at most ≈ B/8 bands wait at any speed. Rows: M = ⌈advance / 8⌉ (1…16), y_m = even(c_y − sign·B/2) + sign·8·m, B = ⅓ of the picture height (480 px for 1440); patches every 8 px across from 18 px in from the edges; the strip (and its 2 × 2 half-resolution copy) is copied out of the frame.
+- Each patch keeps its ray r₁ and the LiDAR distance Z_L at its depth pixel (3 × 3 median of that frame's depth map; no LiDAR → no patch).
+- A band is matched in the first decoded frame in which the material moved ≥ B (`Δtravel·f_y / Z ≥ B`). Bands waiting more than 600 frames are dropped (belt stopped or reversed).
 
-### 14.3 Line detection (`LaserLineDetector`)
+### 15.4 Matching (`PatchMatcher`)
+Prediction: P₂ = Z_L·r₁ + ρ̂·Δtravel·u projected with distortion; ρ̂ = median of the last 15 scale ratios (1 before any). Search (half resolution, 8 × 8 template): along ±⌈(0.08·D + 8)/2⌉ half-pixels until three ratios exist, then ±⌈(0.04·D + 6)/2⌉ (D = predicted displacement); across ±3, then ±2 after three drift updates. Score = ZNCC (gain and offset of the auto-exposure cancel). Gates: patch SD ≥ 3 grey levels (1.5 at half resolution), coarse best ≥ 0.5 and not on the window edge. Full resolution (16 × 16): hill-climb on the 3 × 3 neighbourhood (≤ 6 moves), best ≥ 0.75, parabola in each axis (strict maximum required). Patches of one pair are matched in parallel (`concurrentPerform`, each iteration writes its own slot). Across drift: half the median residual (across offset per pixel of travel) is added to the travel direction's across component after each pair with ≥ 12 matches.
 
-Columns u = first + k·stride (stride 2, first = 1), rows v in the band [v_lo, v_hi). Pass 1 (row-major, cache-friendly): per column the maximum value and its row. Pass 2 per column: background b = minimum within ±12 rows of the peak (inside the band); valid when peak − b ≥ minContrast (30). Threshold t = b + (peak − b)/2. Walk up and down from the peak while I > t (max 10 rows each way); centre = Σ v·(I − t) / Σ (I − t) over those rows (a saturated plateau gives its middle). Output: row (Float, NaN = none) per column and the fraction detected. Bias of the half-height centroid on an ideal Gaussian line: ≤ 0.08 px at σ = 1.5 px, ≤ 0.05 px at σ = 2, ≤ 0.03 px at σ = 2.5 (below the speckle limit, L-03).
+### 15.5 Scale and readings
+Per pair: s_pair = median over matched patches of Z_L / g (≥ 12 patches), ratio ρ = s_pair / Δtravel. `ScaleSmoother`: ρ̃ = median of the valid ratios within ±15 pairs; a pair's readings are released once its window is complete (or at the end), with s = ρ̃·Δtravel (pairs without any ratio in their window use the overall median). Reading: P₁ = s·g·r₁. Rolling shutter adds the same time offset to every patch of a band (rows are read along the travel), so it is absorbed by ρ. Speed errors of the recorded travel are absorbed likewise; the published motion-stereo result over a conveyor found the travel estimate to be the limiting error (Fisher et al., IET Image Processing 2023), which this design removes by scaling each pair to the LiDAR.
 
-Band: with a baseline, [min(y₀) − m, max(y₀) + m] where m = shift of the maximum height setting (`LaserGeometry.shift(height:)`, at least 8 px), clamped to the frame. Without one, the full frame on every 4th frame.
+Belt normal for u: zeroed gravity tilt when the recording's `HeightReference.json` has a level zero, else the median LiDAR surface tilt, else gravity, else straight down (`ParallaxGeometry.beltNormal`). u is perpendicular to it with image direction (across drift, sign) (`travelDirection`).
 
-### 14.4 Geometry (`LaserGeometry`)
+### 15.6 Map and expected precision
+Readings go into `MapCells(method: .cameraParallax)` (single-reading semantics: the reading nearest the cell centre). q = sign·travel − P₁.y, x = P₁.x (as §6.8); value from the height model (§16.4): plane → H − n·P₁, baseline → b(u, v) − Z₁, else Z₁. Cell = 8 px at the typical distance, rounded up to 0.1 mm (5.3 mm at 1 m with f ≈ 1512 px), ×1.25 until ≤ 3,000,000 cells. `TopoMapBuilder.finish` writes the usual files (`sensor = cameraParallax`).
 
-Camera looking straight down from height H (mm, lens to belt). A laser plane at angle θ to the optical axis, projected from one side, meets the belt along y₀ = (v₀ − c_y)·H/f_y (v₀ = baseline row of the column). A surface at height h meets the plane at y = y₀ + side·h·tan θ, seen at row v = c_y + f_y·y/(H − h). The shift is d = v − v₀ = A_k·h/(H − h) with **A_k = K + (v₀,k − c_y)**, K = side·f_y·tan θ (the second term is perspective: a line away from the principal row moves with height even for a vertical laser; review finding M2-1). Inverting: **h = H·d / (A_k + d)**.
-- Sign: buffer v increases toward the left of the portrait screen; a laser on the left moves raised points to larger v, so K > 0 (left) or K < 0 (right).
-- The calibration stores K (`scale`); each column uses A_k from its own baseline row (`LaserCalibration.shiftScale(column:)`).
-- Shim: H known, shim thickness t, measured median shift d_t over the shim columns ⇒ A = d_t·(H − t)/t, K = A − (v₀,shim − c_y) with v₀,shim the median baseline row of those columns (stored as `shimBaselineRow`, so K is recomputed when H changes). Sign follows the data.
-- Angle: K = side·f_y·tan θ.
-- Inverse for the band: d(h) = A·h/(H − h), with the A_k of largest magnitude (`bandScale`); before a scale exists, K of a 45° laser.
-- Positions: across x = (u − c_x)·(H − h)/f_x; along y = (v − c_y)·(H − h)/f_y; map q = s·travel − y (s = `bufferSign`), as §6.8.
-- Rejected: no baseline value, |A + d| < 1 px, h ∉ [−0.5 H, 0.8 H].
-- Baseline: per column, median of the detected rows over the calibration frames (≥ 50 % of frames detected, else no value). Coverage = columns with a value ÷ columns; < 50 % is refused. Missing columns are filled by linear interpolation between neighbours with values (edges: nearest value) and counted.
-- Shim measurement: 30 frames; per column median shift; columns with |d| ≥ max(1.5 px, 0.5·P95(|d|)) form the shim; d_t = median of those (≥ 10 columns needed) and v₀,shim = median of their baseline rows.
-- A calibration applies when picture size and columns match, f_x and f_y are within 1 %, c_x and c_y within 3 px, and the binning matches when both are known (a binned or cropped format of the same size has other intrinsics; M2-4). Intrinsics are taken from the frames and re-reported when they change by more than 0.1 % or 0.5 px (focus lock).
+σ_h ≈ Z²·σ_d / (f·B) = Z·σ_d / (f·0.317) with σ_d the matching error: 0.2–0.6 mm at 1 m, 0.3–0.9 mm at 1.5 m, 0.6–1.8 mm at 2.9 m (σ_d = 0.1–0.3 px). Lateral resolution ≈ the 16 px patch (11 mm at 1 m, 31 mm at 2.9 m). Absolute level: LiDAR (§16.5).
 
-### 14.5 Speed and travel
+### 15.7 Video decoding (`ParallaxMapBuilder`)
+`AVURLAsset.loadTracks` (async), `AVAssetReaderTrackOutput` in 420 8-bit full range, luma plane in buffer orientation (the writer's portrait transform is metadata only). Sample time = PTS (movie time starts at the first frame; a source-clock timeline, PTS > 1 s at the first sample, is shifted to it); the nearest recording frame within 25 ms is used, each once. Frames skipped by the encoder simply have no partner. Progress (0…1) every 15 frames. `MapRebuild.build` is async for this reason; Line scan's map step and both map screens await it.
 
-`SpeedEstimator.process(_:rows:zones:)` (new optional full-resolution row range; zones off in laser mode) builds its pyramid from the rows away from the laser band: the larger of [0, v_lo − 8) and [v_hi + 8, H), used only when it holds at least `SpeedEstimator.minimumTrackingRows` = 216 rows (the 1/8 level needs ≥ 27 rows for the coarse search to reach past its backward steps; M2-2); otherwise the screen says there is no room for tracking. The estimator resets when the crop size changes. It runs every k = max(1, round(fps / 60)) frames (≈ 60 Hz, so 1000 mm/s stays inside the coarse search at 0.5–1 m). Speed = `LineMotionMath.trackedSpeed` with distance = H − (median line height, 0 without readings) and f = f_y. `LaserTravel` keeps a `LineSpeedTracker` fed on tracked frames (dt between tracked frames); travel for any frame at time t = travel at the last tracked frame + held speed × (t − t_tracked).
-
-### 14.6 Files
-
-Scan folder `laser_<yyyy-MM-dd_HHmmss>`:
-
-**`LaserRecording.json`** (`JSONEncoder.pretty`, written at Record and rewritten at Stop): `version` (1), `videoWidth`, `videoHeight`, `frameRate` (requested), `activeFrameRate`, `direction`, `columnFirst`, `columnStride`, `columnCount`, `fx`, `fy`, `cx`, `cy` (px of the video buffer), `shutterLimit` (s), `exposureBias` (EV), `maxHeight` (mm), `mapMethod`, `calibration` (`LaserCalibration`), optional `frameCount`, `duration` (s), `droppedFrames`, `stopReason`.
-
-**`LaserCalibration`** (also *Documents/Calibration/LaserCalibration.json*): `date`, `cameraHeight` (mm), `cameraHeightSource` (`entered`/`lidar`), `scale` (laser term K, px, signed; optional until a shim or angle calibration), `scaleSource` (`shim`/`angle`), `shimThickness` (mm, optional), `shimShift` (px, optional), `shimBaselineRow` (px, optional), `laserAngle` (degrees, optional), `laserSide` (`left`/`right`), `videoWidth`, `videoHeight`, `columns` (object `{first, stride, count}`), `baselineRows` ([Float], one per column, NaN never stored: gaps filled), `coverage` (%), `filledColumns`, `lensPosition` (optional), `fx`, `fy`, `cx`, `cy`, `binned` (optional). Matching rules: §14.4.
-
-**`Profiles.bin`** (little endian): header 32 bytes: `PLLP`, version (UInt32 = 1), columns N, first column, column stride, row scale (UInt32 = 32: rows are stored in 1/32 px), two reserved UInt32. Then fixed-size records of 24 + 2N bytes: time (Float64, s from the first frame), travel (Float64, mm), speed (Float32, mm/s, NaN = no reading this frame), flags (UInt32; bit 0 = tracked frame, bit 1 = speed valid), then N × UInt16 rows (round(v·32); 0xFFFF = no detection). A cut-off last record is ignored. Records are buffered and written in blocks of about 256 kB (≈ 0.5 s at 240 fps).
-
-**`LaserFrames.csv`** (streamed, `TextFileWriter`): `frame,time_s,speed_mm_s,travel_mm,detected_pct,median_height_mm,max_height_mm`; speed empty except on tracked frames with a reading.
-
-Map files: the FR-TOPO-04 set (heights above the belt, `TopoStats.sensor = laserLine`), plus the summary lines of §14.7.
-
-### 14.7 Map (`LaserMapBuilder`)
-
-Pass 1 over `Profiles.bin`: bounds of q and x over all valid readings, the across spacing stride·H/f_x and the 90th percentile of positive travel steps. Cell = max(across spacing, P90 step, 0.2) rounded up to 0.1 mm; ×1.25 (rounded up to 0.1 mm) until ≤ 3,000,000 cells (long runs at fine cells are coarsened; `Profiles.bin` keeps the full data). Readings use each column's A_k. Pass 2 adds every reading: `singleReading` score = |q − q_centre| + |x − x_centre| of its cell (mm), `averaged` as §13.3. zRef = 0, height mode. Speed statistics use tracked frames only. Summary adds `Laser line: N profiles at F fps, P % of columns detected, height scale from a T mm shim` (or `from a θ° laser angle`), `camera height H mm` and the map-method line. Replay frames = tracked frames (≈ 60 Hz): times, travel, speed and reveal p = travel − s·y_line, y_line = (median baseline row − c_y)·H/f_y.
-
-### 14.8 Risks
-
+### 15.8 Risks
 | ID | Risk | Mitigation |
 |---|---|---|
-| L-01 | 240 fps format may be binned or cropped, changing the field of view. | Intrinsics per frame; format and fps stored; guide shows the active format. |
-| L-02 | Ambient light or wood colour hides the line. | Short shutter, exposure bias, contrast threshold; guide recommends a band-pass filter matching the laser and a bright line laser. |
-| L-03 | Laser speckle on wood limits the sub-pixel centre (≈ 0.15–0.5 px). | Shim calibration measures the real scale; P9 V14 measures repeatability. |
-| L-04 | Occlusion: a strand edge can hide the line from the camera (laser shadow). | Readings drop out (no detection) instead of reading wrong; small angles reduce shadows at the cost of resolution. |
-| L-05 | Lens distortion (R-01) bends the line across the width. | The baseline is per column, so a flat belt reads 0 everywhere; heights use the per-column shift and A_k. |
-| L-06 | Laser safety. | Guide: use a Class 2 (or lower) line laser where people can look into it; follow plant rules. |
+| X-01 | HEVC compression smooths the wood texture and biases sub-pixel matches. | 40 Mbit/s video for parallax recordings; ZNCC + parabola; P9 V18 measures σ_d. |
+| X-02 | Strand edges and occlusions: a patch straddling a height step matches poorly. | ZNCC gates drop weak matches; one reading per cell; patch size limits the lateral resolution. |
+| X-03 | Flakes moving relative to the belt (near the forming heads) break the rigid-motion model. | Mount downstream of the formers; such patches fail the window or the gates. |
+| X-04 | Depth registration: the LiDAR depth is sampled at the scaled video pixel. | The LiDAR only fixes the per-pair scale (median over ≥ 12 patches) and the baseline value; both vary slowly across the picture. |
+| X-05 | Lens tables missing on old recordings. | Summary says so; new recordings store them. |
 
-### 14.9 Side-wall calibration and wall re-zero (P13)
+## 16. Height references
 
-The belt of a running forming line cannot always be cleared. The side walls on both sides are always visible and their tops stand at a known height h_w above the belt.
+Added in P16 (FR-HREF). The empty-belt baseline (§6.6) needs a clear belt; the laser side-wall method went with the laser. Two LiDAR-based references need neither.
 
-**Unknowns and why one wall height is not enough on its own.** With a flat belt the empty-belt line is straight: offset a, slope b. With the laser term K that is three unknowns; two wall tops give two equations (v_w = v₀ + A·r, A = K + (v₀ − c_y), r = h_w/(H − h_w)), and a change of K is absorbed by a change of v₀ of −ΔK·r/(1 + r). K therefore comes from the measured laser angle and camera tilt: K = f_y·tan(side·θ − φ) (`LaserWalls.laserTerm`). φ is `LineMotionMath.gravityTilt(g.x)` minus the laser level zero (UserDefaults `laserLevelZeroX/Y`, made on a level surface; Line scan keeps its own conveyor-relative zero); + = right edge of the portrait screen high, which leans the optical axis toward −row.
+### 16.1 Belt plane
+Camera frame: x = buffer x (across, toward the bottom of the portrait screen), y = buffer y (along, toward the left), z = optical axis. Belt normal n from the phone tilt relative to the Line scan level zero (`gravityTilt` degrees): gravity in device coordinates is (−sin t_x, −sin t_y, −√(1 − sin² t_x − sin² t_y)); camera x = −device y, camera y = −device x, camera z = −device z, so **n = (sin t_y, sin t_x, √…)**. Height of a camera-frame point P above the belt: **h = H − n·P**; for a planar depth reading z at (x_n, y_n): h = H − z·(n_x·x_n + n_y·y_n + n_z) (`HeightPlane`). Without a level zero gravity is the normal (the belt must be level).
 
-**Tilted camera (review finding M2S-1).** With φ ≠ 0 the belt is not perpendicular to the optical axis, and correcting K alone leaves errors of ≈ 3.4 mm per 0.5° (left laser, 3.3 m). Tracing a ray at angle β = atan((v − c_y)/f_y) from the axis: (H − h)·tan(β − φ) = H·tan(β₀ − φ) + side·h·tan θ. Its exact solution equals h = H_eff·d/(A + d) with A = K + (v₀ − c_y), K = f_y·tan(side·θ − φ) and **H_eff = H·cos θ·cos β₀ / (cos(β₀ − φ)·cos(side·θ − φ))**, β₀ = atan((v₀ − c_y)/f_y): the ratio of the exact to the untilted solution does not depend on the row (verified to 1e-13 mm for φ = 0…5°, both sides). `LaserCalibration.effectiveHeight(column:)` applies it to angle scales with a stored tilt (side walls and the empty-belt **Use** path); a shim scale absorbs the tilt to first order (0.14 mm at 150 mm for 1°), so shim calibrations keep H. The wall fit iterates (4 passes) because H_eff depends on v₀. Across and along positions keep H − h (second-order). Tilt across the belt is not modelled: a banner asks for ≤ 0.5° (≈ 1.2 mm near the walls at 0.5°).
+### 16.2 Camera height
+H = typed lens-to-belt distance. Recordings use the median tilt of their frames minus the stored zero.
 
-**Detection** (`LaserWalls.detect`): 60 frames (every round(fps/60)-th, full-frame search), per-column median (≥ half the frames). Raised columns are ≥ 10 px more raised than the median of the middle half (`raisedSign` = sign of A = K + (median row − c_y), refused with its own message when it differs from the sign of K). Selection works on the median rows with the roll of the line across the image removed (slope from the median column and median row of the two halves of the middle half; the fit uses the measured rows), so a rolled line keeps its wall tops flat. On each side the wall is the widest contiguous raised run that reaches into the outer quarter (it may extend past it). Its level is the most raised window of 3 adjacent columns whose rows spread ≤ 1.5 px: a 1–2-column spike cannot fill a window, and the lit inner face, which is always less raised than the top, is never the level, even where it is shallow enough to pass the spread test (review finding M2T-1: a percentile level could fall on the face of a thin wall). The plateau is the run's columns within 1 % of the wall's rise above the middle of that level (0.5–2 px; ≈ 3 mm of a 300 mm wall), gaps of up to 2 columns bridged (spikes left out, inner edge kept); ≥ 3 columns, so a wall top must be about 3 profile columns wide (≈ 12 mm at 3.3 m). The face climbs A·H/(f_x·|X_w|) px per pixel, which is shallow when |A| is small, so its top columns can fall inside the tolerance: they sit at most the tolerance (≈ 1 % of h_w) below the top, which moves the mat by ≤ 1.5 mm in ray-traced tests (1.2 mm at |A| = 250 px with a 10 mm top; 0 at |A| ≥ 400 px; tops 10–40 mm, lasers 20–45°, both sides).
+### 16.3 Side walls
+Two bands across the picture (fractions of the buffer width) cover the wall tops. `WallCapture` collects, over 90 depth frames of the chosen filter setting with a gravity reading, n·P of every pixel in each band (n from that frame's tilt minus the zero; border rows skipped). Per band `HeightMath.closestCluster`: seed at the 5th percentile, then the median of the values within ±20 mm until it moves < 0.01 mm (≤ 30 steps); readings = values in the final window (≥ 100 required), spread = 1.4826·MAD. A wall top is the closest surface in its band; mixed edge pixels and the belt or mat behind are farther. H = (d_top + d_bottom)/2 + h_w. Warnings: |d_top − d_bottom| > 5 mm, tilt change > 0.3° since the capture, another depth filter, bands moved. Maps keep the depth columns strictly between the inner band edges (`keptAcross`). A new wall height changes `walls.wallHeight` only (the distances stay valid).
 
-**Fit** (`LaserWalls.fit`): v₀ = (v_w − (K − c_y)·r)/(1 + r) per wall column; least-squares line v₀ = a + b·u through both walls; `baselineRows` = that line for every column; residual = RMS of the wall columns about the line; inner faces x_inner = (u_inner − c_x)(H − h_w)/f_x at the innermost wall column of each side. Stored in `LaserCalibration`: `method = sideWalls`, `wallHeight`, `wallColumns`, `wallRows` (median rows at calibration), `wallInnerX`, `wallTracking`, `cameraTilt`, `scale` = K, `scaleSource = angle`, `laserAngle`; `coverage` = wall columns ÷ columns.
+### 16.4 Use in maps (`MapHeightModel`)
+Order: a `HeightReference.json` in the recording with a plane method that is ready → plane (normal from the recording's median tilt minus its stored zero; the wall calibration's tilt or level when the frames have no tilt); else `Baseline.bin` of the depth size → baseline; else distances. Applies to averaged, single-reading and parallax maps. `TopoStats.heightReference` (optional) records the method; `heightAboveBelt` drives the "above the belt" texts and the `TopoStats.csv` `values` label. Summary line `Height reference: …` (a map line). The live view uses the same plane with the live tilt (`LineCapturePipeline.setHeightPlane`). At Record the screen writes the reference into the folder; the pipeline then does not copy the baseline. Playback still shows distances for plane references (P10 backlog).
 
-**Wall re-zero** (`LaserWalls.shift`): per frame, per side the median of (row − wallRows) over the wall columns detected (≥ 2) at the side's median u; both sides → line c(u) through them, one side → constant, none → hold the last value. The baseline of that frame is `baselineRows + c(u)`; A_k stays from the calibration. Live in `LaserCapturePipeline`, per frame in `LaserMapBuilder` (`wallShifts`), summary line `Wall re-zero:` (a map line). A camera rotation shifts wall and belt rows equally; a translation shifts the wall rows H/(H − h_w) times more (10 % at 3.3 m / 300 mm), a second-order error.
-
-**Camera height change**: Set or LiDAR on a side-wall calibration refits it from the stored wall rows (`LaserWalls.refit`; walls split at the widest column gap); if the refit fails, the previous height stays in use and the field shows it again. The search band uses the smallest effective camera height of the columns, so tilted angle scales keep the wall tops inside it. **Measure shim** and **Use** are refused on a side-wall calibration (they would change K under a wall-fitted baseline).
-
-**Map and readouts**: readings with x ≤ x_inner,left + 10 mm or ≥ x_inner,right − 10 mm are dropped from the map (`isInsideWalls`; the inner faces map to x_inner because each face point's height is computed); live median and maximum use the columns whose u lies between the faces' feet c_x + f_x·x_inner/H (`matColumns`). The search band includes the wall tops (max height ≥ h_w + 20 mm).
-
-**Error budget** (owner's tolerance 5 mm; 12 ft line, 300 mm walls, camera 3.3 m so the wall tops are in view: 1.27·(H − h_w) ≥ line width; 45° laser, f_y ≈ 1512 px, belt line 300 px from c_y; worst sign combination over 0–200 mm): θ ±0.1°, H ±5 mm, h_w ±1 mm → 2.5 mm; θ ±0.2°, H ±10 mm, h_w ±2 mm → 5.0 mm; θ ±0.5° → 7.6 mm; θ ±1° → 12.1 mm. The angle error is largest at the belt and zero at wall-top height; h_w error passes through ≈ 1.1 : 1. An error in φ adds one-to-one to the θ error. Not included: belt sag, wall-top flatness, lens-distortion curvature between the walls (least with the line near the middle row), tilt across the belt, per-reading noise (0.36–0.91 mm at 3.3 m). The map summary's detection share counts every reading, walls included. `LaserWallsTests.testFiveMillimetreBudget` reproduces the 5.0 mm case.
-
+### 16.5 Accuracy
+Camera height: error = tape error of H (±5 mm with care) + the LiDAR's absolute distance bias at the mat (parallax maps take their scale from the LiDAR; LiDAR maps use it directly) + n-error × lateral distance (0.2° at 0.6 m off-axis ≈ 2 mm). Side walls: wall height ±1 mm + averaged wall-top distance (±1–2 mm) + the LiDAR's fixed-pattern difference between the picture edges (walls) and the middle (mat), not removed without an empty-belt baseline; the LiDAR bias largely cancels because walls and mat are measured by the same sensor. Wall tops narrower than about two LiDAR spots (≈ 10 cm at 1 m, ≈ 30 cm at 3 m) give mixed readings. Both are checked on the line in P9 (V19 camera height, V20 side walls) against a board of known thickness.

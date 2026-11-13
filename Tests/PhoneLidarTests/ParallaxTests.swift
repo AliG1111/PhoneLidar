@@ -133,22 +133,34 @@ enum SyntheticTexture {
     }
 
     private static func lattice(_ i: Int, _ j: Int, seed: UInt64) -> Double {
-        var h = UInt64(bitPattern: Int64(i)) &* 0x9E37_79B9_7F4A_7C15
-        h ^= UInt64(bitPattern: Int64(j)) &* 0xC2B2_AE3D_27D4_EB4F
-        h ^= seed &* 0x1656_67B1_9E37_79F9
+        let ki: UInt64 = 0x9E37_79B9_7F4A_7C15
+        let kj: UInt64 = 0xC2B2_AE3D_27D4_EB4F
+        let ks: UInt64 = 0x1656_67B1_9E37_79F9
+        let km: UInt64 = 0xBF58_476D_1CE4_E5B9
+        var h: UInt64 = UInt64(bitPattern: Int64(i)) &* ki
+        h ^= UInt64(bitPattern: Int64(j)) &* kj
+        h ^= seed &* ks
         h ^= h >> 29
-        h = h &* 0xBF58_476D_1CE4_E5B9
+        h = h &* km
         h ^= h >> 32
-        return Double(h % 10_000) / 10_000 * 255
+        let bucket = Double(h % 10_000)
+        return bucket / 10_000 * 255
     }
 
     private static func noise(_ x: Double, _ y: Double, seed: UInt64) -> Double {
-        let i = Int(floor(x)), j = Int(floor(y))
-        let fx = x - floor(x), fy = y - floor(y)
-        let sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy)
-        let a = lattice(i, j, seed: seed), b = lattice(i + 1, j, seed: seed)
-        let c = lattice(i, j + 1, seed: seed), d = lattice(i + 1, j + 1, seed: seed)
-        return (a + (b - a) * sx) * (1 - sy) + (c + (d - c) * sx) * sy
+        let i = Int(floor(x))
+        let j = Int(floor(y))
+        let fx = x - floor(x)
+        let fy = y - floor(y)
+        let sx: Double = fx * fx * (3 - 2 * fx)
+        let sy: Double = fy * fy * (3 - 2 * fy)
+        let a = lattice(i, j, seed: seed)
+        let b = lattice(i + 1, j, seed: seed)
+        let c = lattice(i, j + 1, seed: seed)
+        let d = lattice(i + 1, j + 1, seed: seed)
+        let top: Double = a + (b - a) * sx
+        let bottom: Double = c + (d - c) * sx
+        return top * (1 - sy) + bottom * sy
     }
 
     /// Picture of material moved `travel` mm along +sign·y past a level camera (no lens distortion): a belt plane at
@@ -215,7 +227,8 @@ final class PatchMatcherTests: XCTestCase {
         XCTAssertEqual(half.originY, 2)
         XCTAssertEqual(half.width, 4)
         XCTAssertEqual(half.height, 2)
-        XCTAssertEqual(half.pixels[0], UInt8((32 + 33 + 40 + 41 + 2) / 4))
+        let sum: Int = 32 + 33 + 40 + 41
+        XCTAssertEqual(Int(half.pixels[0]), (sum + 2) / 4)
     }
 }
 
