@@ -128,6 +128,71 @@ final class SpeedEstimatorTests: XCTestCase {
         XCTAssertEqual(shift.along, -16, accuracy: wholePixelTolerance)
     }
 
+    // MARK: - Searching both ways (automatic direction, design §6.16)
+
+    func testSearchingBothWaysMeasuresFastMovementAgainstTheTravelSign() throws {
+        // 100 px against the sign is far past the one-way search's 48 px backward range.
+        for travelSign in [1, -1] {
+            for pixels in [-100.0, -40.5, -8.0] {
+                let estimator = SpeedEstimator()
+                estimator.travelSign = travelSign
+                estimator.searchesBothWays = true
+                let shift = try estimate(estimator, along: pixels)
+                XCTAssertEqual(shift.along, pixels, accuracy: fractionalTolerance, "sign \(travelSign), \(pixels)")
+                XCTAssertGreaterThan(shift.quality, 0.5, "sign \(travelSign), \(pixels)")
+            }
+        }
+    }
+
+    func testSearchingBothWaysStillMeasuresMovementWithTheTravelSign() throws {
+        for travelSign in [1, -1] {
+            for pixels in [0.0, 8.0, 24.5, 100.0, 200.0] {
+                let estimator = SpeedEstimator()
+                estimator.travelSign = travelSign
+                estimator.searchesBothWays = true
+                let shift = try estimate(estimator, along: pixels, across: 3)
+                XCTAssertEqual(shift.along, pixels, accuracy: fractionalTolerance, "sign \(travelSign), \(pixels)")
+                XCTAssertEqual(shift.across, 3, accuracy: fractionalTolerance, "sign \(travelSign), \(pixels)")
+            }
+        }
+    }
+
+    func testSwitchingTheSearchModeNeedsNoReset() throws {
+        let estimator = SpeedEstimator()
+        estimator.searchesBothWays = true
+        XCTAssertNil(estimator.process(try makeBuffer()))
+        let first = try XCTUnwrap(estimator.process(try makeBuffer(along: 24)))
+        XCTAssertEqual(first.along, 24, accuracy: wholePixelTolerance)
+        // One-way search on the next frame compares with the frame just processed.
+        estimator.searchesBothWays = false
+        let second = try XCTUnwrap(estimator.process(try makeBuffer(along: 48)))
+        XCTAssertEqual(second.along, 24, accuracy: wholePixelTolerance)
+    }
+
+    func testSearchingBothWaysDoesNotChangeTheZones() throws {
+        let estimator = SpeedEstimator()
+        estimator.searchesBothWays = true
+        _ = try estimate(estimator, along: 24)
+        XCTAssertEqual(estimator.lastTiles.count, SpeedEstimator.tileColumns * SpeedEstimator.tileRows)
+        let tiles = estimator.lastTiles.compactMap { $0 }
+        XCTAssertGreaterThanOrEqual(tiles.count, 20)
+        for tile in tiles {
+            XCTAssertEqual(tile.along, 24, accuracy: 1.5)
+        }
+    }
+
+    func testSearchingBothWaysOnAShortCropStillWorks() throws {
+        // Laser mode: the smallest crop (216 rows) leaves 6 coarse steps each way (48 px).
+        let estimator = SpeedEstimator()
+        estimator.searchesBothWays = true
+        let rows = 0..<SpeedEstimator.minimumTrackingRows
+        XCTAssertNil(estimator.process(try makeBuffer(), rows: rows, zones: false))
+        let back = try XCTUnwrap(estimator.process(try makeBuffer(along: -20), rows: rows, zones: false))
+        XCTAssertEqual(back.along, -20, accuracy: fractionalTolerance)
+        let forward = try XCTUnwrap(estimator.process(try makeBuffer(along: 0), rows: rows, zones: false))
+        XCTAssertEqual(forward.along, 20, accuracy: fractionalTolerance)
+    }
+
     func testTenBitBuffersGiveTheSameShift() throws {
         let shift = try estimate(SpeedEstimator(), along: 24, format: kCVPixelFormatType_420YpCbCr10BiPlanarFullRange)
         XCTAssertEqual(shift.along, 24, accuracy: wholePixelTolerance)

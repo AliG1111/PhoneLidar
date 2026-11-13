@@ -53,6 +53,8 @@ targets:
       - path: PhoneLidar/Line/TopoGridFile.swift
       - path: PhoneLidar/Line/TopoMapBuilder.swift
       - path: PhoneLidar/Line/TopoReplayData.swift
+      - path: PhoneLidar/Line/TopoReplayOrientation.swift
+      - path: PhoneLidar/Line/TravelDirectionDetector.swift
       - path: PhoneLidar/Laser/LaserGeometry.swift
       - path: PhoneLidar/Laser/LaserLineDetector.swift
       - path: PhoneLidar/Laser/LaserMapBuilder.swift

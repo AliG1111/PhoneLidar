@@ -7,8 +7,9 @@ import simd
 ///
 /// Scene units are metres. x runs along the strip (0 = oldest end of the window, newest data at the right),
 /// y is up (base of the walls at 0), z runs across the material (back = top of the recording screen,
-/// front = bottom). The strip is drawn in a parallel projection with the depth axis sheared up and to the right,
-/// so the front edge stays horizontal and both end walls are visible.
+/// front = bottom). The strip is drawn in a parallel projection; by default the depth axis is sheared up and to the
+/// right (slant), so the front edge stays horizontal and both end walls are visible. The camera can be turned to any
+/// orientation (`ReplayOrientation`); it always turns about the centre of the window.
 @MainActor
 final class TopoReplayScene {
     struct Layout: Equatable {
@@ -33,7 +34,7 @@ final class TopoReplayScene {
     }
 
     struct CameraSettings: Equatable {
-        var elevation: Double
+        var orientation: ReplayOrientation
         var shear: Double
         var zoom: Double
         var aspect: Double
@@ -73,14 +74,18 @@ final class TopoReplayScene {
         ambient.light = ambientLight
         scene.rootNode.addChildNode(ambient)
 
+        // The light turns with the camera, so the surface is lit the same way from every side (also from below).
+        // At the default orientation it shines as a scene light looking toward (0.35, −1, −0.6).
         let sun = SCNNode()
         let sunLight = SCNLight()
         sunLight.type = .directional
         sunLight.intensity = 560
         sunLight.color = UIColor.white
         sun.light = sunLight
-        sun.simdLook(at: SIMD3<Float>(0.35, -1, -0.6))
-        scene.rootNode.addChildNode(sun)
+        let aim = SCNNode()
+        aim.simdLook(at: SIMD3<Float>(0.35, -1, -0.6))
+        sun.simdOrientation = ReplayOrientation.standard.rotation.inverse * aim.simdOrientation
+        cameraNode.addChildNode(sun)
 
         surfaceMaterial.lightingModel = .lambert
         surfaceMaterial.diffuse.contents = UIColor.white
@@ -352,7 +357,9 @@ final class TopoReplayScene {
 
     // MARK: Camera
 
-    /// Parallel projection: camera elevation (degrees above horizontal) and depth shear, fitted to the window.
+    /// Parallel projection: camera orientation (any) and depth shear. The scale fits the window (with room for the
+    /// labels) as seen from the default orientation and does not change when the strip is turned; the camera turns
+    /// about the centre of the window.
     func applyCamera(_ v: CameraSettings) {
         guard let l = layout else { return }
         let shear = l.flat ? 0 : Float(v.shear)
@@ -362,34 +369,43 @@ final class TopoReplayScene {
         world.simdTransform = transform
         positionLabels()
 
-        let elevation = Float((l.flat ? 90 : min(max(v.elevation, 5), 90)) * .pi / 180)
-        let back = SIMD3<Float>(0, sin(elevation), cos(elevation))
-        let right = SIMD3<Float>(1, 0, 0)
-        let up = simd_normalize(simd_cross(right, -back))
-        cameraNode.simdOrientation = simd_quatf(simd_float3x3(right, up, back))
+        let orientation = l.flat ? ReplayOrientation.top : v.orientation
+        let reference = l.flat ? ReplayOrientation.top : ReplayOrientation.standard
+        cameraNode.simdOrientation = orientation.rotation
 
-        // Fit the window (with room for the labels) to the view.
+        // Box around the window with room for the labels; its centre is the pivot.
         let margin = l.width * 0.22
         let topY = l.flat ? 0 : l.height * 1.3
-        var uMin = Float.infinity, uMax = -Float.infinity, vMin = Float.infinity, vMax = -Float.infinity
+        var corners: [SIMD3<Float>] = []
         for x in [-margin, l.length + margin] {
             for yy in [0, topY] {
                 for zz in [-l.width / 2 - margin * 0.5, l.width / 2] {
-                    let p = SIMD3<Float>(x - shear * zz, yy, zz)
-                    let u = simd_dot(p, right)
-                    let w = simd_dot(p, up)
-                    uMin = min(uMin, u)
-                    uMax = max(uMax, u)
-                    vMin = min(vMin, w)
-                    vMax = max(vMax, w)
+                    corners.append(SIMD3<Float>(x - shear * zz, yy, zz))
                 }
             }
         }
+        let center = corners.reduce(SIMD3<Float>(repeating: 0), +) / Float(corners.count)
+        let radius = corners.map { simd_length($0 - center) }.max() ?? 1
+
+        // Scale: the box as seen from the reference orientation fills the view at zoom 1.
+        let refRight = reference.right
+        let refUp = reference.up
+        var uMin = Float.infinity, uMax = -Float.infinity, vMin = Float.infinity, vMax = -Float.infinity
+        for p in corners {
+            let u = simd_dot(p, refRight)
+            let w = simd_dot(p, refUp)
+            uMin = min(uMin, u)
+            uMax = max(uMax, u)
+            vMin = min(vMin, w)
+            vMax = max(vMax, w)
+        }
         let aspect = Float(max(v.aspect, 0.1))
         let halfHeight = max((vMax - vMin) / 2, (uMax - uMin) / 2 / aspect) * 1.03
-        cameraNode.camera?.orthographicScale = Double(halfHeight / Float(max(v.zoom, 0.2)))
-        let center = right * (uMin + uMax) / 2 + up * (vMin + vMax) / 2
-        cameraNode.simdPosition = center + back * 100
+        cameraNode.camera?.orthographicScale = Double(halfHeight / Float(max(v.zoom, 0.1)))
+        // Far enough out that the whole box stays between the clipping planes in every orientation.
+        let distance = max(100, 2 * radius + 1)
+        cameraNode.simdPosition = center + orientation.back * distance
+        cameraNode.camera?.zFar = Double(distance + radius + 10)
     }
 
     // MARK: Builders

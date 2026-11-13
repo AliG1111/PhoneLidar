@@ -204,8 +204,9 @@ struct LineScanView: View {
             SpeedSparkline(values: model.speedHistory)
                 .frame(height: 34)
             HStack(spacing: 6) {
-                Image(systemName: model.direction == .rightToLeft ? "arrow.left" : "arrow.right")
-                Text("Material travel \(model.direction.label)")
+                Image(systemName: model.direction.map { $0 == .rightToLeft ? "arrow.left" : "arrow.right" }
+                      ?? "arrow.left.arrow.right")
+                Text(model.directionSetting.travelText(detected: model.detectedDirection))
             }
             .font(.caption2)
         }
@@ -288,10 +289,10 @@ struct LineScanView: View {
                         get: { model.shortShutter },
                         set: { model.setShortShutter($0) }))
                     Picker("Direction", selection: Binding(
-                        get: { model.direction },
+                        get: { model.directionSetting },
                         set: { model.setDirection($0) })) {
-                        ForEach(TravelDirection.allCases) { direction in
-                            Text(direction.label).tag(direction)
+                        ForEach(DirectionSetting.allCases) { setting in
+                            Text(setting.label).tag(setting)
                         }
                     }
                     .pickerStyle(.segmented)
@@ -447,7 +448,13 @@ final class LineScanModel {
     var recordedFrames = 0
     var filteredDepth = true
     var shortShutter = true
-    var direction: TravelDirection = .rightToLeft
+    /// Direction setting (default Auto) and the direction the automatic detection found (FR-DIR-01).
+    var directionSetting: DirectionSetting = .auto
+    var detectedDirection: TravelDirection?
+    /// Counts setting changes, so a live update made under an earlier setting cannot set `detectedDirection`.
+    private var directionGeneration = 0
+    /// Direction in use: set by hand, or detected (nil while Auto has not seen the material move).
+    var direction: TravelDirection? { directionSetting.manual ?? detectedDirection }
     /// Map built after Stop (stored in Recording.json); single frame turns raw depth on (FR-SFM-01).
     var mapMethod: MapMethod = .averaged
     var overlayOpacity: Double = 0.55
@@ -610,7 +617,7 @@ final class LineScanModel {
         guard !closed else { return }
         do {
             try pipeline.configure(filteredDepth: filteredDepth)
-            pipeline.setDirection(direction)
+            pipeline.setDirection(directionSetting, generation: directionGeneration)
             pipeline.setBaseline(baseline)
             pipeline.start(shortShutter: shortShutter)
             phase = .ready
@@ -766,14 +773,22 @@ final class LineScanModel {
         pipeline.setShortShutter(enabled)
     }
 
-    func setDirection(_ newDirection: TravelDirection) {
+    func setDirection(_ newSetting: DirectionSetting) {
         guard !calibrating else { return }
-        direction = newDirection
-        pipeline.setDirection(newDirection)
+        directionSetting = newSetting
+        detectedDirection = nil
+        directionGeneration += 1
+        pipeline.setDirection(newSetting, generation: directionGeneration)
         speedHistory.removeAll()
     }
 
     private func apply(_ update: LiveUpdate) {
+        if directionSetting == .auto, update.directionGeneration == directionGeneration,
+           update.detectedDirection != detectedDirection {
+            // A reversal: the sparkline's readings were signed for the other direction.
+            if detectedDirection != nil { speedHistory.removeAll() }
+            detectedDirection = update.detectedDirection
+        }
         speed = update.speed
         quality = update.quality
         medianDepth = update.medianDepth
@@ -835,6 +850,10 @@ final class LineScanModel {
         if let free = LineStorage.freeBytes(at: store.root), free < LineStorage.minimumToStart {
             notice = "Not enough free storage to record: \(LineStorage.text(free)) free, at least "
                 + "\(LineStorage.text(LineStorage.minimumToStart)) needed. Delete old scans or free up space on the iPhone."
+            return
+        }
+        guard let direction else {
+            notice = "Recording not started: \(DirectionSetting.notDetectedReason)."
             return
         }
         do {
