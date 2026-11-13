@@ -224,7 +224,7 @@ Review plan for M2 (token budget): P11 is a new subsystem, so its first review i
 - [x] P11.6 `LaserScanView`, `ScanKind.laser`, Home row, scan-detail section, laser branch of the map screen and replay (capture + UI → Opus 5.5 / high)
 - [x] P11.7 Unit tests for P11.2 and P11.4; add the new pure-logic files to the test target (Sonnet 5.5 / high)
 - [x] P11.8 CI green: app build and unit tests, 0 warnings (Sonnet 5.5 / medium for compile-error triage)
-- [ ] P11.9 M2 final review of the P11 diff (Opus 5.5 / max), fixes, re-reviews of the fix diffs until no new findings (Opus 5.5 / high); record in `docs/reviews/2026-11-12-M2.md`
+- [x] P11.9 M2 final review of the P11 diff (Opus 5.5 / max), fixes, re-reviews of the fix diffs until no new findings (Opus 5.5 / high); record in `docs/reviews/2026-11-12-M2.md`
 - [x] P11.10 Build guide (`README.md`) sections for both modes, `CLAUDE.md` repo map, requirements statuses (Sonnet 5.5 / medium; written by the orchestrator, Opus 5.5, with the code to avoid a cold-start agent)
 - [ ] P11.11 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator; local sync Haiku 5.5 / low)
 
@@ -241,7 +241,7 @@ Owner's request (2026-11-12): calibrate without clearing the belt, from the side
 - [x] P12.2 `LaserWalls` (laser term with tilt, detection, fit, re-zero shift, map crop), `LaserCalibration` fields, re-zero in `LaserMapBuilder` and the pipeline (Opus 5.5 / high)
 - [x] P12.3 Laser screen: method picker, wall inputs, level readout and zero, wall overlay, re-zero switch (capture + UI → Opus 5.5 / high)
 - [x] P12.4 Unit tests `LaserWallsTests` incl. the 5 mm budget (orchestrator, Opus 5.5, written with the code)
-- [ ] P12.5 Change review until no new findings; guide; PR with P11
+- [x] P12.5 Change review until no new findings; guide; PR with P11
 
 P9 addition:
 - [ ] **V15 Side-wall calibration on the line** — measure h_w (±1 mm), H (tape, ±5 mm), the laser angle (digital gauge, ±0.1°), zero the level; calibrate on the walls with flakes on the belt; compare mat heights with an empty-belt shim calibration made at a shutdown, and with a known board on the belt. Pass: within ±5 mm (FR-LAS-15) (Opus 5.5 / high)
