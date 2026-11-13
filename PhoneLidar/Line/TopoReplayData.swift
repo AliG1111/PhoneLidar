@@ -49,9 +49,6 @@ enum ReplayPalette {
 
 // MARK: - Replay source
 
-/// Everything the replay needs, prepared once when the screen opens: the topographic grid re-ordered so that
-/// column 0 is the oldest material and the last column the newest, and the position of the newest complete
-/// line at every frame.
 /// Per-frame inputs of a replay: frame times (s), travel (mm), raw speeds (mm/s) and the reveal position (travel
 /// coordinate p of the newest complete line, NaN = unknown; made non-decreasing by `TopoReplaySource.make`).
 struct ReplayFrames: Sendable {
@@ -61,6 +58,9 @@ struct ReplayFrames: Sendable {
     var reveal: [Double]
 }
 
+/// Everything the replay needs, prepared once when the screen opens: the topographic grid re-ordered so that
+/// column 0 is the oldest material and the last column the newest, and the position of the newest complete
+/// line at every frame.
 struct TopoReplaySource: Sendable {
     /// Values are heights above the flat-surface baseline (true) or relative heights from distances (false).
     let heightMode: Bool

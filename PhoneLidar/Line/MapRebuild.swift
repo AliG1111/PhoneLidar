@@ -14,19 +14,6 @@ enum MapRecording: Sendable {
         }
     }
 
-    /// Map method chosen when the recording was made.
-    var recordedMethod: MapMethod {
-        switch self {
-        case .lidar(let info, _): return info.mapMethod ?? .averaged
-        case .laser(let info): return info.mapMethod
-        }
-    }
-
-    var isLaser: Bool {
-        if case .laser = self { return true }
-        return false
-    }
-
     /// The scan record's summary after a map build: recording line(s) kept, map lines replaced.
     func recordSummary(existing: [String], map: [String]) -> [String] {
         switch self {

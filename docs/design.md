@@ -851,19 +851,21 @@ Band: with a baseline, [min(y₀) − m, max(y₀) + m] where m = shift of the m
 
 ### 14.4 Geometry (`LaserGeometry`)
 
-Camera looking straight down from height H (mm, lens to belt). A laser plane at angle θ to the optical axis, projected from one side. A surface at height h intercepts the plane displaced along the travel by h·tan θ toward the laser; in the image that is d = A·h/(H − h) px with A = ±f_y·tan θ. Inverting: **h = H·d / (A + d)**.
-- Sign: buffer v increases toward the left of the portrait screen; a laser on the left moves raised points to larger v, so A > 0 (left) or A < 0 (right).
-- Shim: H known, shim thickness t, measured median shift d_t ⇒ A = d_t·(H − t)/t (sign follows the data).
-- Angle: A = side·f_y·tan θ.
-- Inverse for the band: d(h) = A·h/(H − h).
+Camera looking straight down from height H (mm, lens to belt). A laser plane at angle θ to the optical axis, projected from one side, meets the belt along y₀ = (v₀ − c_y)·H/f_y (v₀ = baseline row of the column). A surface at height h meets the plane at y = y₀ + side·h·tan θ, seen at row v = c_y + f_y·y/(H − h). The shift is d = v − v₀ = A_k·h/(H − h) with **A_k = K + (v₀,k − c_y)**, K = side·f_y·tan θ (the second term is perspective: a line away from the principal row moves with height even for a vertical laser; review finding M2-1). Inverting: **h = H·d / (A_k + d)**.
+- Sign: buffer v increases toward the left of the portrait screen; a laser on the left moves raised points to larger v, so K > 0 (left) or K < 0 (right).
+- The calibration stores K (`scale`); each column uses A_k from its own baseline row (`LaserCalibration.shiftScale(column:)`).
+- Shim: H known, shim thickness t, measured median shift d_t over the shim columns ⇒ A = d_t·(H − t)/t, K = A − (v₀,shim − c_y) with v₀,shim the median baseline row of those columns (stored as `shimBaselineRow`, so K is recomputed when H changes). Sign follows the data.
+- Angle: K = side·f_y·tan θ.
+- Inverse for the band: d(h) = A·h/(H − h), with the A_k of largest magnitude (`bandScale`); before a scale exists, K of a 45° laser.
 - Positions: across x = (u − c_x)·(H − h)/f_x; along y = (v − c_y)·(H − h)/f_y; map q = s·travel − y (s = `bufferSign`), as §6.8.
 - Rejected: no baseline value, |A + d| < 1 px, h ∉ [−0.5 H, 0.8 H].
 - Baseline: per column, median of the detected rows over the calibration frames (≥ 50 % of frames detected, else no value). Coverage = columns with a value ÷ columns; < 50 % is refused. Missing columns are filled by linear interpolation between neighbours with values (edges: nearest value) and counted.
-- Shim measurement: 30 frames; per column median shift; columns with |d| ≥ max(1.5 px, 0.5·P95(|d|)) form the shim; d_t = median of those (≥ 10 columns needed).
+- Shim measurement: 30 frames; per column median shift; columns with |d| ≥ max(1.5 px, 0.5·P95(|d|)) form the shim; d_t = median of those (≥ 10 columns needed) and v₀,shim = median of their baseline rows.
+- A calibration applies when picture size and columns match, f_x and f_y are within 1 %, c_x and c_y within 3 px, and the binning matches when both are known (a binned or cropped format of the same size has other intrinsics; M2-4). Intrinsics are taken from the frames and re-reported when they change by more than 0.1 % or 0.5 px (focus lock).
 
 ### 14.5 Speed and travel
 
-`SpeedEstimator.process(_:rows:)` (new optional full-resolution row range) builds its pyramid from the rows away from the laser band: the larger of [0, v_lo − 8) and [v_hi + 8, H); the estimator resets when the crop size changes. It runs every k = max(1, round(fps / 30)) frames. Speed = `LineMotionMath.trackedSpeed` with distance = H − (median line height, 0 without readings) and f = f_y. `LaserTravel` keeps a `LineSpeedTracker` fed on tracked frames (dt between tracked frames); travel for any frame at time t = travel at the last tracked frame + held speed × (t − t_tracked).
+`SpeedEstimator.process(_:rows:zones:)` (new optional full-resolution row range; zones off in laser mode) builds its pyramid from the rows away from the laser band: the larger of [0, v_lo − 8) and [v_hi + 8, H), used only when it holds at least `SpeedEstimator.minimumTrackingRows` = 216 rows (the 1/8 level needs ≥ 27 rows for the coarse search to reach past its backward steps; M2-2); otherwise the screen says there is no room for tracking. The estimator resets when the crop size changes. It runs every k = max(1, round(fps / 60)) frames (≈ 60 Hz, so 1000 mm/s stays inside the coarse search at 0.5–1 m). Speed = `LineMotionMath.trackedSpeed` with distance = H − (median line height, 0 without readings) and f = f_y. `LaserTravel` keeps a `LineSpeedTracker` fed on tracked frames (dt between tracked frames); travel for any frame at time t = travel at the last tracked frame + held speed × (t − t_tracked).
 
 ### 14.6 Files
 
@@ -871,7 +873,7 @@ Scan folder `laser_<yyyy-MM-dd_HHmmss>`:
 
 **`LaserRecording.json`** (`JSONEncoder.pretty`, written at Record and rewritten at Stop): `version` (1), `videoWidth`, `videoHeight`, `frameRate` (requested), `activeFrameRate`, `direction`, `columnFirst`, `columnStride`, `columnCount`, `fx`, `fy`, `cx`, `cy` (px of the video buffer), `shutterLimit` (s), `exposureBias` (EV), `maxHeight` (mm), `mapMethod`, `calibration` (`LaserCalibration`), optional `frameCount`, `duration` (s), `droppedFrames`, `stopReason`.
 
-**`LaserCalibration`** (also *Documents/Calibration/LaserCalibration.json*): `date`, `cameraHeight` (mm), `cameraHeightSource` (`entered`/`lidar`), `scale` (A, px, signed), `scaleSource` (`shim`/`angle`), `shimThickness` (mm, optional), `shimShift` (px, optional), `laserAngle` (degrees, optional), `laserSide` (`left`/`right`), `videoWidth`, `videoHeight`, `columnFirst`, `columnStride`, `baselineRows` ([Float], one per column, NaN never stored: gaps filled), `coverage` (%), `filledColumns`, `lensPosition` (optional), `fx`, `fy`, `cx`, `cy`. A calibration applies only to the same video size and column layout.
+**`LaserCalibration`** (also *Documents/Calibration/LaserCalibration.json*): `date`, `cameraHeight` (mm), `cameraHeightSource` (`entered`/`lidar`), `scale` (laser term K, px, signed; optional until a shim or angle calibration), `scaleSource` (`shim`/`angle`), `shimThickness` (mm, optional), `shimShift` (px, optional), `shimBaselineRow` (px, optional), `laserAngle` (degrees, optional), `laserSide` (`left`/`right`), `videoWidth`, `videoHeight`, `columns` (object `{first, stride, count}`), `baselineRows` ([Float], one per column, NaN never stored: gaps filled), `coverage` (%), `filledColumns`, `lensPosition` (optional), `fx`, `fy`, `cx`, `cy`, `binned` (optional). Matching rules: §14.4.
 
 **`Profiles.bin`** (little endian): header 32 bytes: `PLLP`, version (UInt32 = 1), columns N, first column, column stride, row scale (UInt32 = 32: rows are stored in 1/32 px), two reserved UInt32. Then fixed-size records of 24 + 2N bytes: time (Float64, s from the first frame), travel (Float64, mm), speed (Float32, mm/s, NaN = no reading this frame), flags (UInt32; bit 0 = tracked frame, bit 1 = speed valid), then N × UInt16 rows (round(v·32); 0xFFFF = no detection). A cut-off last record is ignored. Records are buffered and written in blocks of about 256 kB (≈ 0.5 s at 240 fps).
 
@@ -881,7 +883,7 @@ Map files: the FR-TOPO-04 set (heights above the belt, `TopoStats.sensor = laser
 
 ### 14.7 Map (`LaserMapBuilder`)
 
-Pass 1 over `Profiles.bin`: bounds of q and x over all valid readings, the across spacing stride·H/f_x and the 90th percentile of positive travel steps. Cell = max(across spacing, P90 step, 0.2) rounded up to 0.1 mm; ×1.25 until ≤ 3,000,000 cells (long runs at fine cells are coarsened; `Profiles.bin` keeps the full data). Pass 2 adds every reading: `singleReading` score = |q − q_centre| + |x − x_centre| of its cell (mm), `averaged` as §13.3. zRef = 0, height mode. Speed statistics use tracked frames only. Summary adds `Laser line: N profiles at F fps, P % of columns detected, height scale from a T mm shim` (or `from a θ° laser angle`), `camera height H mm` and the map-method line. Replay frames = tracked frames (≈ 30 Hz): times, travel, speed and reveal p = travel − s·y_line, y_line = (median baseline row − c_y)·H/f_y.
+Pass 1 over `Profiles.bin`: bounds of q and x over all valid readings, the across spacing stride·H/f_x and the 90th percentile of positive travel steps. Cell = max(across spacing, P90 step, 0.2) rounded up to 0.1 mm; ×1.25 until ≤ 3,000,000 cells (long runs at fine cells are coarsened; `Profiles.bin` keeps the full data). Readings use each column's A_k. Pass 2 adds every reading: `singleReading` score = |q − q_centre| + |x − x_centre| of its cell (mm), `averaged` as §13.3. zRef = 0, height mode. Speed statistics use tracked frames only. Summary adds `Laser line: N profiles at F fps, P % of columns detected, height scale from a T mm shim` (or `from a θ° laser angle`), `camera height H mm` and the map-method line. Replay frames = tracked frames (≈ 30 Hz): times, travel, speed and reveal p = travel − s·y_line, y_line = (median baseline row − c_y)·H/f_y.
 
 ### 14.8 Risks
 
@@ -891,6 +893,6 @@ Pass 1 over `Profiles.bin`: bounds of q and x over all valid readings, the acros
 | L-02 | Ambient light or wood colour hides the line. | Short shutter, exposure bias, contrast threshold; guide recommends a band-pass filter matching the laser and a bright line laser. |
 | L-03 | Laser speckle on wood limits the sub-pixel centre (≈ 0.15–0.5 px). | Shim calibration measures the real scale; P9 V12 measures repeatability. |
 | L-04 | Occlusion: a strand edge can hide the line from the camera (laser shadow). | Readings drop out (no detection) instead of reading wrong; small angles reduce shadows at the cost of resolution. |
-| L-05 | Lens distortion (R-01) bends the line across the width. | The baseline is per column, so a flat belt reads 0 everywhere; heights use the per-column shift. |
+| L-05 | Lens distortion (R-01) bends the line across the width. | The baseline is per column, so a flat belt reads 0 everywhere; heights use the per-column shift and A_k. |
 | L-06 | Laser safety. | Guide: use a Class 2 (or lower) line laser where people can look into it; follow plant rules. |
 

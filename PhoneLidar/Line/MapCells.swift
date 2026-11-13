@@ -244,8 +244,9 @@ enum ScanLineProfiles {
     static func header(geometry: TopoMapBuilder.Geometry) -> [String] {
         var header = ["frame", "time_s", "travel_mm", "repeated"]
         header.reserveCapacity(4 + geometry.rows)
+        let label = abs(geometry.cell - geometry.cell.rounded()) < 1e-9 ? "%.0f" : "%.2f"
         for r in 0..<geometry.rows {
-            header.append(String(format: "%.0f", geometry.xMin + (Double(r) + 0.5) * geometry.cell))
+            header.append(String(format: label, geometry.xMin + (Double(r) + 0.5) * geometry.cell))
         }
         return header
     }

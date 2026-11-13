@@ -23,6 +23,8 @@ struct LaserLiveUpdate: Sendable {
     var videoWidth: Int
     var videoHeight: Int
     var calibrationProgress: Double?
+    /// False when the part of the picture outside the laser band is too small for speed tracking.
+    var trackingAvailable = true
 }
 
 /// Active camera format and intrinsics, reported once frames arrive.
@@ -95,6 +97,9 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private var pressureObservation: NSKeyValueObservation?
     // Session-queue state
     private var wantsRunning = false
+    /// Automatic restarts after runtime errors since frames last arrived (max `maxErrorRestarts`).
+    private var errorRestarts = 0
+    static let maxErrorRestarts = 3
     private var shutterLimit = 1.0 / 1000
     private var exposureBias: Float = 0
 
@@ -120,6 +125,9 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private var pending: PendingRecording?
     private var pendingToken = 0
     private var autoStopReason: String?
+    /// The camera was interrupted or failed; the next frame reports that it runs again.
+    private var awaitingResume = false
+    private var trackingAvailable = true
 
     private struct PendingRecording {
         var token: Int
@@ -192,7 +200,7 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
         dataQueue.async { [self] in
             format = info
             requestedFrameRate = frameRate
-            trackStride = max(1, Int((rate / 30).rounded()))
+            trackStride = max(1, Int((rate / 60).rounded()))      // texture tracking at about 60 Hz
         }
         observe(device: device)
     }
@@ -339,21 +347,31 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     private func interrupted(_ text: String) {
         dataQueue.async { [self] in
+            awaitingResume = true
             cancelCollectionOnDataQueue()
             requestAutoStop(text)
             onEvent?(.cameraInterrupted(text))
         }
     }
 
+    /// Stops the recording, then restarts the camera: always after a media-services reset, else at most
+    /// `maxErrorRestarts` times in a row (the count is reset by the first frame after a restart).
     private func failed(_ error: AVError?) {
         let message = error?.localizedDescription ?? "unknown camera error"
+        let reset = error?.code == .mediaServicesWereReset
         dataQueue.async { [self] in
+            awaitingResume = true
             cancelCollectionOnDataQueue()
             requestAutoStop("the camera stopped with an error (\(message))")
         }
         sessionQueue.async { [self] in
-            onEvent?(.cameraError(message))
-            if wantsRunning && !session.isRunning { session.startRunning() }
+            let needed = wantsRunning && !session.isRunning
+            let restart = needed && (reset || errorRestarts < Self.maxErrorRestarts)
+            onEvent?(.cameraError(restart ? message + "; restarting" : message))
+            guard restart else { return }
+            if !reset { errorRestarts += 1 }
+            session.startRunning()
+            applyExposure()
         }
     }
 
@@ -444,19 +462,30 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer), var info = format else { return }
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
         guard time.isFinite else { return }
+        if awaitingResume {
+            awaitingResume = false
+            onEvent?(.cameraResumed)
+            sessionQueue.async { [self] in errorRestarts = 0 }
+        }
         frameIndex += 1
         if let previous = lastFrameTime, time - previous > 0.5 { fpsWindow.removeAll() }   // after a pause
         lastFrameTime = time
         fpsWindow.append(time)
         while let first = fpsWindow.first, time - first > 1 { fpsWindow.removeFirst() }
 
-        // Intrinsics with the frames (preferred over the field-of-view estimate), reported once.
-        if !intrinsicsFromFrames, let m = Self.intrinsics(sampleBuffer) {
-            info.fx = Double(m.columns.0.x)
-            info.fy = Double(m.columns.1.y)
-            info.cx = Double(m.columns.2.x)
-            info.cy = Double(m.columns.2.y)
-            intrinsicsFromFrames = true
+        // Intrinsics with the frames (preferred over the field-of-view estimate); reported again when they change
+        // by more than 0.1 % (focus lock) or 0.5 px.
+        if let m = Self.intrinsics(sampleBuffer) {
+            let fx = Double(m.columns.0.x), fy = Double(m.columns.1.y)
+            let cx = Double(m.columns.2.x), cy = Double(m.columns.2.y)
+            if !intrinsicsFromFrames || abs(fx - info.fx) > 0.001 * info.fx || abs(fy - info.fy) > 0.001 * info.fy
+                || abs(cx - info.cx) > 0.5 || abs(cy - info.cy) > 0.5 {
+                info.fx = fx
+                info.fy = fy
+                info.cx = cx
+                info.cy = cy
+                intrinsicsFromFrames = true
+            }
         }
         if format != info || frameIndex == 1 {
             format = info
@@ -464,12 +493,11 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
         }
 
         let columns = info.columns
-        let calibration = settings.calibration.flatMap {
-            $0.isComplete && $0.matches(width: info.width, height: info.height, columns: columns) ? $0 : nil
-        }
         let baselineReady = settings.calibration.map {
-            $0.matches(width: info.width, height: info.height, columns: columns)
+            $0.matches(width: info.width, height: info.height, columns: columns, fx: info.fx, fy: info.fy,
+                       cx: info.cx, cy: info.cy, binned: info.binned)
         } == true
+        let calibration = baselineReady && settings.calibration?.isComplete == true ? settings.calibration : nil
         let collecting = collection != nil
         // Without a baseline the whole frame is searched, on every 4th frame (preview) or the collection's stride.
         let fullFrame = !baselineReady
@@ -483,9 +511,13 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
             let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
             let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
             let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
-            if let calibrated = settings.calibration, baselineReady {
-                let scale = calibrated.scale ?? LaserGeometry.scaleFromAngle(degrees: 45, side: calibrated.laserSide,
-                                                                             focal: info.fy) ?? info.fy
+            if var calibrated = settings.calibration, baselineReady {
+                // Before a scale exists (shim measurement), size the band as for a 45° laser.
+                if calibrated.scale == nil {
+                    calibrated.scale = LaserGeometry.scaleFromAngle(degrees: 45, side: calibrated.laserSide,
+                                                                    focal: info.fy)
+                }
+                let scale = calibrated.bandScale ?? info.fy
                 let H = calibrated.cameraHeight > 0 ? calibrated.cameraHeight : max(settings.cameraHeight, 300)
                 band = LaserGeometry.band(baseline: calibrated.baselineRows, maxHeight: settings.maxHeight,
                                           cameraHeight: H, scale: scale, height: height)
@@ -512,13 +544,13 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
         var heights: [Float] = []
         var medianHeight: Double?
         var maxHeight: Double?
-        if let calibration, let scale = calibration.scale {
+        if let calibration {
             heights = [Float](repeating: .nan, count: columns.count)
             var finite: [Float] = []
             finite.reserveCapacity(columns.count)
             for k in 0..<columns.count {
                 let row = detection.rows[k]
-                guard row.isFinite,
+                guard row.isFinite, let scale = calibration.shiftScale(column: k),
                       let h = LaserGeometry.height(shift: Double(row - calibration.baselineRows[k]),
                                                    cameraHeight: calibration.cameraHeight, scale: scale) else { continue }
                 heights[k] = Float(h)
@@ -547,7 +579,8 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 }
             }
             let rows = LaserGeometry.trackingRows(band: trackBand, height: info.height)
-            if let rows, let shift = estimator.process(pixelBuffer, rows: rows) {
+            trackingAvailable = rows != nil
+            if let rows, let shift = estimator.process(pixelBuffer, rows: rows, zones: false) {
                 let dt = lastTrackTime.map { time - $0 } ?? 0
                 let distance = H - max(0, medianHeight ?? 0)
                 rawSpeed = LineMotionMath.trackedSpeed(shiftPixels: shift.along, quality: shift.quality,
@@ -604,7 +637,8 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 speed: lastSpeed, quality: lastQuality, travel: travelNow,
                 recordedFrames: recorder?.frameCount ?? 0, recordingElapsed: recorder?.elapsed ?? 0,
                 videoWidth: info.width, videoHeight: info.height,
-                calibrationProgress: collection.map { Double($0.frames.count) / Double($0.target) })
+                calibrationProgress: collection.map { Double($0.frames.count) / Double($0.target) },
+                trackingAvailable: trackingAvailable)
             onUpdate?(update)
         }
     }

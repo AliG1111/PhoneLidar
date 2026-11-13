@@ -36,7 +36,8 @@ struct LaserCalibration: Codable, Equatable, Sendable {
     /// Lens to belt surface, mm.
     var cameraHeight: Double
     var cameraHeightSource: HeightSource
-    /// Signed scale A (px): shift d = A·h / (H − h). Nil until a shim or angle calibration.
+    /// Laser term K = side·f_y·tan θ (px, signed). The shift scale of profile column k is
+    /// A_k = K + (baselineRows[k] − c_y), so d = A_k·h / (H − h) (design §14.4). Nil until a shim or angle calibration.
     var scale: Double?
     var scaleSource: ScaleSource?
     var shimThickness: Double?
@@ -58,19 +59,51 @@ struct LaserCalibration: Codable, Equatable, Sendable {
     var fy: Double
     var cx: Double
     var cy: Double
+    /// Median baseline row of the shim columns (px), to recompute K when the camera height changes.
+    var shimBaselineRow: Double? = nil
+    /// The camera format was binned at calibration.
+    var binned: Bool? = nil
 
     static let fileName = "LaserCalibration.json"
 
-    /// Everything a recording needs: camera height, baseline and scale.
+    /// Shift scale A_k (px) of profile column `k`: K + (baseline row − c_y); nil without a scale, outside the
+    /// columns, or when |A_k| < 1 px.
+    func shiftScale(column k: Int) -> Double? {
+        guard let scale, scale.isFinite, k >= 0, k < baselineRows.count, baselineRows[k].isFinite else { return nil }
+        let a = scale + (Double(baselineRows[k]) - cy)
+        return a.isFinite && abs(a) >= 1 ? a : nil
+    }
+
+    /// A_k of every column (NaN where there is none).
+    var shiftScales: [Double] {
+        (0..<baselineRows.count).map { shiftScale(column: $0) ?? .nan }
+    }
+
+    /// The A_k of largest magnitude (sizes the search band).
+    var bandScale: Double? {
+        shiftScales.filter { $0.isFinite }.max { abs($0) < abs($1) }
+    }
+
+    /// Everything a recording needs: camera height, baseline and a usable scale at the middle column.
     var isComplete: Bool {
-        guard let scale, scale.isFinite, abs(scale) >= 1 else { return false }
-        return cameraHeight > 0 && baselineRows.count == columns.count && !baselineRows.isEmpty
+        guard cameraHeight > 0, baselineRows.count == columns.count, !baselineRows.isEmpty else { return false }
+        return shiftScale(column: baselineRows.count / 2) != nil
     }
 
     /// The calibration fits frames of this size and column layout.
     func matches(width: Int, height: Int, columns: LaserColumns) -> Bool {
         videoWidth == width && videoHeight == height && self.columns == columns
             && baselineRows.count == columns.count
+    }
+
+    /// Also checks the camera geometry: focal lengths within 1 % and principal point within 3 px (a binned or cropped
+    /// format of the same size has other intrinsics), and the binning when both are known.
+    func matches(width: Int, height: Int, columns: LaserColumns, fx: Double, fy: Double, cx: Double, cy: Double,
+                 binned: Bool?) -> Bool {
+        guard matches(width: width, height: height, columns: columns), self.fx > 0, self.fy > 0 else { return false }
+        if let a = self.binned, let b = binned, a != b { return false }
+        return abs(fx - self.fx) <= 0.01 * self.fx && abs(fy - self.fy) <= 0.01 * self.fy
+            && abs(cx - self.cx) <= 3 && abs(cy - self.cy) <= 3
     }
 
     /// Median baseline row (buffer px), the laser line's place in the picture.
@@ -118,17 +151,24 @@ enum LaserGeometry {
         return A * h / (H - h)
     }
 
-    /// Scale A from a shim of thickness t (mm) that shifted the line by d (px): A = d·(H − t) / t.
+    /// Shift scale A of the shim's columns from a shim of thickness t (mm) that shifted the line by d (px):
+    /// A = d·(H − t) / t. The calibration stores the laser term K = A − (v₀ − c_y) (`laserTerm`).
     static func scaleFromShim(shift d: Double, thickness t: Double, cameraHeight H: Double) -> Double? {
         guard t > 0, H > t, abs(d) >= 0.5, d.isFinite else { return nil }
         let a = d * (H - t) / t
         return a.isFinite && abs(a) >= 1 ? a : nil
     }
 
-    /// Scale A from the laser angle to the optical axis (degrees, 1–80) and its side: A = ±f_y·tan θ.
+    /// Laser term K = ±f_y·tan θ from the laser angle to the optical axis (degrees, 1–80) and its side
+    /// (a column's A_k adds its baseline row − c_y, the perspective term).
     static func scaleFromAngle(degrees: Double, side: LaserSide, focal fy: Double) -> Double? {
         guard degrees >= 1, degrees <= 80, fy > 0 else { return nil }
         return side.sign * fy * tan(degrees * .pi / 180)
+    }
+
+    /// Laser term K from a column scale A measured where the baseline row is v₀: K = A − (v₀ − c_y).
+    static func laserTerm(columnScale a: Double, baselineRow v0: Double, cy: Double) -> Double {
+        a - (v0 - cy)
     }
 
     /// Across position (mm from the principal point line) of column u at height h.
@@ -219,9 +259,15 @@ enum LaserGeometry {
     /// Columns needed under a shim.
     static let minimumShimColumns = 10
 
-    /// Shift (px) of a shim from calibration frames: per column the median shift from the baseline; the shim is
-    /// the columns with |d| ≥ max(1.5 px, half the 95th percentile of |d|); its shift is their median (≥ 10 columns).
+    /// Shift (px) of a shim from calibration frames (`shimMeasurement`).
     static func shimShift(frames: [[Float]], baseline: [Float]) -> Double? {
+        shimMeasurement(frames: frames, baseline: baseline)?.shift
+    }
+
+    /// Shim from calibration frames: per column the median shift from the baseline; the shim is the columns with
+    /// |d| ≥ max(1.5 px, half the 95th percentile of |d|); its shift is their median (≥ 10 columns), and
+    /// `baselineRow` the median baseline row of those columns.
+    static func shimMeasurement(frames: [[Float]], baseline: [Float]) -> (shift: Double, baselineRow: Double)? {
         let count = baseline.count
         guard count > 0, !frames.isEmpty, frames.allSatisfy({ $0.count == count }) else { return nil }
         var shifts = [Float](repeating: .nan, count: count)
@@ -236,9 +282,11 @@ enum LaserGeometry {
         guard !magnitudes.isEmpty else { return nil }
         let p95 = magnitudes[min(magnitudes.count - 1, Int((Double(magnitudes.count - 1) * 0.95).rounded()))]
         let limit = max(1.5, p95 / 2)
-        let shim = shifts.filter { $0.isFinite && abs($0) >= limit }
-        guard shim.count >= minimumShimColumns, let m = median(shim) else { return nil }
-        return Double(m)
+        let shimColumns = shifts.indices.filter { shifts[$0].isFinite && abs(shifts[$0]) >= limit }
+        guard shimColumns.count >= minimumShimColumns,
+              let m = median(shimColumns.map { shifts[$0] }),
+              let row = median(shimColumns.map { baseline[$0] }) else { return nil }
+        return (Double(m), Double(row))
     }
 
     /// Row band to search with a baseline: from the lowest baseline row minus the shift of `maxHeight` to the
@@ -255,12 +303,13 @@ enum LaserGeometry {
         return (lo, max(lo, hi))
     }
 
-    /// Rows for texture tracking: the larger part of the frame outside the laser band (8 px clear of it).
+    /// Rows for texture tracking: the larger part of the frame outside the laser band (8 px clear of it), when it
+    /// holds at least `SpeedEstimator.minimumTrackingRows` rows.
     static func trackingRows(band: (lo: Int, hi: Int), height: Int) -> Range<Int>? {
         let above = 0..<max(0, band.lo - 8)
         let below = min(height, band.hi + 8)..<height
         let best = above.count >= below.count ? above : below
-        return best.count >= 128 ? best : nil
+        return best.count >= SpeedEstimator.minimumTrackingRows ? best : nil
     }
 }
 

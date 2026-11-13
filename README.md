@@ -11,7 +11,7 @@ You need a Windows PC, a LiDAR iPhone (12 Pro / Pro Max or a newer **Pro** model
 | **Room scan** | RoomPlan | `Room.usdz` (walls/doors/windows/furniture as boxes), `RoomMesh.usdz`, `CapturedRoom.json`, `RoomReport.csv` (every wall, door, window, opening, floor and object with W × H × D in m and ft-in, plus a totals block: wall count, total wall length, maximum wall height, floor area) |
 | **Equipment scan (LiDAR mesh)** | ARKit scene reconstruction | `Mesh.usdz`, `Mesh.obj`, `Mesh.ply` (world-space, metres, Y up), `Measurements.csv` from live point-to-point measuring |
 | **Object capture** | RealityKit Object Capture + on-device photogrammetry | `Model.usdz` (photo-textured, real scale), `Images/` folder with the source photos (kept even when the model cannot be built) |
-| **Line scan (moving material)** | AVFoundation LiDAR depth camera + synchronized video | `Video.mov`, `Depth.bin`, `Recording.json`, `Frames.csv` (per-frame speed, fastest zone, travel, distance, tilt), `ZoneSpeeds.csv`, `Baseline.bin` / `Baseline.json` (when calibrated), `TopoMap.png`, `TopoMapGrid.png`, `TopoMap.csv`, `TopoGrid.bin`, `TopoStats.csv`, `TopoStats.json`, `TopoProfiles.json`, `AcrossProfile.csv`, `AlongProfile.csv`, `TopoReplay_<time>s.png` (saved replay images) |
+| **Line scan (moving material)** | AVFoundation LiDAR depth camera + synchronized video | `Video.mov`, `Depth.bin`, `Recording.json`, `Frames.csv` (per-frame speed, fastest zone, travel, distance, tilt), `ZoneSpeeds.csv`, `Baseline.bin` / `Baseline.json` (when calibrated), `TopoMap.png`, `TopoMapGrid.png`, `TopoMap.csv`, `TopoGrid.bin`, `TopoStats.csv`, `TopoStats.json`, `TopoProfiles.json`, `AcrossProfile.csv`, `AlongProfile.csv`, `ScanLineProfiles.csv` (single-frame maps), `TopoReplay_<time>s.png` (saved replay images) |
 | **Laser line scan (flake topography)** | AVFoundation main camera at up to 240 fps + your line laser (laser-line triangulation) | `Profiles.bin` (raw sub-pixel line position per column and frame), `LaserFrames.csv`, `LaserRecording.json` (settings and calibration), and the same map files as Line scan (`TopoMap.png`, `TopoMap.csv`, `TopoGrid.bin`, `TopoStats.csv`, …) |
 
 Room, equipment and object scans can be:
@@ -243,17 +243,18 @@ A line laser draws a thin line across the belt at an angle; the phone's main cam
 - Phone in **portrait**, camera pointing straight down (level it with a bubble level), on USB-C power.
 - Laser line **across** the belt, from the left or right side of the screen at about 30–45° from vertical. A larger angle gives more height resolution and more shadowing behind tall strands.
 - Put the line near one side of the picture (not the middle): the speed is measured from the rest of the picture.
-- Height: 0.5 m gives about 0.33 mm per pixel across and 0.64 m of width; 1 m gives 0.66 mm per pixel and 1.27 m of width.
+- Height: 0.5 m gives 0.33 mm per camera pixel and 0.64 m of width; 1 m gives 0.66 mm per pixel and 1.27 m of width. The line is read on every 2nd pixel column, so a profile point every 0.66 mm across at 0.5 m and every 1.3 mm at 1 m (the smallest map cell).
 
 **Calibration (once per mount; the app keeps it)**
-1. **Camera height**: lens to belt in mm. Type it, or tap **LiDAR** to measure it (check against a tape measure).
-2. **Calibrate baseline** with the belt empty and the laser on: about 1 s; focus and white balance are locked. The line must be found on at least half of the width.
-3. **Measure shim**: put the shim on the belt under part of the line (at least a tenth of the width), type its thickness, tap **Measure shim**, then remove it. This sets the height scale. If you cannot use a shim, type the laser angle, pick its side and tap **Use** (less accurate).
-- Recalibrate after moving the phone, the laser or the focus. A calibration made at another frame rate's picture size is not used; the screen says so.
+1. **Camera height**: lens to belt in mm. Type it and tap **Set**, or tap **LiDAR** to measure it (check against a tape measure). Recording is not offered while a typed height has not been set.
+2. **Calibrate baseline** with the belt empty and the laser on: 60 frames over about 1 s; focus and white balance are locked. The line must be found on at least half of the width.
+3. **Measure shim**: put the shim on the belt under part of the line (at least a tenth of the width), type its thickness, tap **Measure shim**, then remove it. This sets the height scale. If you cannot use a shim, type the laser angle from vertical, pick its side and tap **Use** (less accurate: the angle is hard to measure exactly). Either way the app corrects each column for the line's distance from the picture centre.
+- Recalibrate after moving the phone, the laser or the focus. A calibration made with another camera format (picture size, crop or binning, which can differ between frame rates) is not used; the screen says so.
 
 **Recording screen**
 - Green dots = the line found in each frame; yellow = the calibrated baseline.
 - Speed, % of the line found, median and maximum height on the line, picture size, actual fps and dropped frames, and a live across-width height profile.
+- Speed is measured about 60 times a second from the part of the picture on the far side of the laser band; it needs at least 216 pixel rows there. If the band takes too much of the picture, the screen says "No room for speed tracking": move the line toward an edge or lower **Max height**.
 - Settings: **frame rate** 240 / 120 / 60 fps (if a rate is not available the highest available is used and the screen says so), **shutter** limit 1/1000–1/4000 s, **exposure** bias (lower it until only the line is bright), **max height above belt** (sets the search band), **direction**, **map** single reading (default) or averaged.
 - Profile spacing along the belt = speed ÷ frame rate:
 

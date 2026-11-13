@@ -148,9 +148,11 @@ struct LaserScanView: View {
                 TextField("mm", text: $model.cameraHeightText)
                     .keyboardType(.decimalPad)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 90)
-                    .onChange(of: model.cameraHeightText) { _, _ in model.cameraHeightEdited() }
+                    .frame(width: 80)
                 Text("mm")
+                Button("Set") { model.applyCameraHeight() }
+                    .buttonStyle(.bordered)
+                    .disabled(model.calibrating || !model.cameraHeightPending)
                 Spacer()
                 if model.lidarAvailable {
                     Button("LiDAR") { model.measureCameraHeight() }

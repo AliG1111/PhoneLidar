@@ -229,7 +229,7 @@ final class LaserMapBuilderTests: XCTestCase {
         let info = makeLaserInfo(calibration: makeLaserCalibration(scale: nil))
         try writeRecording(info, frameCount: 60) { _, _ in 150 }
         XCTAssertThrowsError(try LaserMapBuilder.build(folder: folder, info: info)) {
-            assertLineError($0, .notEnoughData)
+            assertLineError($0, LaserMapBuilder.calibrationIncomplete)
         }
     }
 
@@ -238,7 +238,7 @@ final class LaserMapBuilderTests: XCTestCase {
         try writeRecording(info, frameCount: 60) { _, _ in 150 }
         info.columnCount -= 1
         XCTAssertThrowsError(try LaserMapBuilder.build(folder: folder, info: info)) {
-            assertLineError($0, .notEnoughData)
+            assertLineError($0, LaserMapBuilder.calibrationMismatch)
         }
     }
 
@@ -247,7 +247,7 @@ final class LaserMapBuilderTests: XCTestCase {
         try writeRecording(info, frameCount: 60) { _, _ in 150 }
         info.calibration.baselineRows.removeLast()
         XCTAssertThrowsError(try LaserMapBuilder.build(folder: folder, info: info)) {
-            assertLineError($0, .notEnoughData)
+            assertLineError($0, LaserMapBuilder.calibrationMismatch)
         }
     }
 
@@ -263,7 +263,7 @@ final class LaserMapBuilderTests: XCTestCase {
         let info = makeLaserInfo()
         try writeRecording(info, frameCount: 60) { _, _ in .nan }
         XCTAssertThrowsError(try LaserMapBuilder.build(folder: folder, info: info)) {
-            assertLineError($0, .notEnoughData)
+            assertLineError($0, LaserMapBuilder.lineNotFound)
         }
     }
 
@@ -272,7 +272,7 @@ final class LaserMapBuilderTests: XCTestCase {
         try writeRecording(info, frameCount: 60) { _, _ in 150 }
         info.fx = 0
         XCTAssertThrowsError(try LaserMapBuilder.build(folder: folder, info: info)) {
-            assertLineError($0, .notEnoughData)
+            assertLineError($0, LaserMapBuilder.calibrationMismatch)
         }
     }
 

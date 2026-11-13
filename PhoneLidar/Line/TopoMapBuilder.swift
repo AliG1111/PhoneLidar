@@ -799,15 +799,18 @@ enum TopoMapBuilder {
         let rows = grid.rows
         let cols = grid.columns
         let writer = try TextFileWriter(url: url)
+        // Whole-millimetre cells keep their whole-millimetre labels; finer cells (laser maps) get 0.01 mm labels so
+        // neighbouring labels stay distinct.
+        let label = abs(grid.cell - grid.cell.rounded()) < 1e-9 ? "%.0f" : "%.2f"
         var header = ["across_mm \\ along_mm"]
         header.reserveCapacity(cols + 1)
-        for c in 0..<cols { header.append(String(format: "%.0f", (Double(c) + 0.5) * grid.cell)) }
+        for c in 0..<cols { header.append(String(format: label, (Double(c) + 0.5) * grid.cell)) }
         try writer.line(header.joined(separator: ","))
         var fields = [String]()
         fields.reserveCapacity(cols + 1)
         for r in 0..<rows {
             fields.removeAll(keepingCapacity: true)
-            fields.append(String(format: "%.0f", grid.xMin + (Double(r) + 0.5) * grid.cell))
+            fields.append(String(format: label, grid.xMin + (Double(r) + 0.5) * grid.cell))
             for c in 0..<cols {
                 let v = grid.values[r * cols + c]
                 fields.append(v.isFinite ? tenths(v) : "")

@@ -299,12 +299,15 @@ final class LaserGeometryTests: XCTestCase {
         XCTAssertEqual(LaserGeometry.trackingRows(band: (lo: 700, hi: 750), height: 1000), 0..<692)
     }
 
-    func testTrackingRowsNeedAtLeast128Rows() {
+    func testTrackingRowsNeedTheEstimatorMinimum() {
+        XCTAssertEqual(SpeedEstimator.minimumTrackingRows, 216)
         // Both sides are 92 rows.
         XCTAssertNil(LaserGeometry.trackingRows(band: (lo: 100, hi: 900), height: 1000))
-        // Exactly 128 rows above: 0..<128 needs lo = 136.
-        XCTAssertEqual(LaserGeometry.trackingRows(band: (lo: 136, hi: 995), height: 1000), 0..<128)
-        XCTAssertNil(LaserGeometry.trackingRows(band: (lo: 135, hi: 995), height: 1000))
+        // Exactly 216 rows above: 0..<216 needs lo = 224.
+        XCTAssertEqual(LaserGeometry.trackingRows(band: (lo: 224, hi: 995), height: 1000), 0..<216)
+        XCTAssertNil(LaserGeometry.trackingRows(band: (lo: 223, hi: 995), height: 1000))
+        // A 172-row crop (M2-2 example) is refused: the coarse search would have no forward room.
+        XCTAssertNil(LaserGeometry.trackingRows(band: (lo: 180, hi: 901), height: 1080))
         // A band that reaches the end of the frame leaves nothing below.
         XCTAssertEqual(LaserGeometry.trackingRows(band: (lo: 500, hi: 1000), height: 1000), 0..<492)
     }
