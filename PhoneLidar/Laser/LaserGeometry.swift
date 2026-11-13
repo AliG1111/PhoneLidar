@@ -63,7 +63,7 @@ struct LaserCalibration: Codable, Equatable, Sendable {
     var shimBaselineRow: Double? = nil
     /// The camera format was binned at calibration.
     var binned: Bool? = nil
-    /// How the baseline was found (nil = empty belt, every calibration before P12).
+    /// How the baseline was found (nil = empty belt, every calibration before P13).
     var method: Method? = nil
     /// Side walls: wall-top height above the belt, mm.
     var wallHeight: Double? = nil

@@ -144,7 +144,7 @@ struct LineRecordingHeader: Encodable {
     var direction: TravelDirection
     var tileColumns: Int
     var tileRows: Int
-    /// Written only for single-frame recordings, so averaged recordings keep the pre-P11 header.
+    /// Written only for single-frame recordings, so averaged recordings keep the pre-P12 header.
     var mapMethod: MapMethod? = nil
 }
 

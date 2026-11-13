@@ -461,7 +461,7 @@ Not recoverable: the video after the last complete 5 s fragment, the tail of `Re
 
 ## 7. On-disk formats
 
-Formats added in P11 (`ScanLineProfiles.csv`, `LaserRecording.json`, `Profiles.bin`, `LaserFrames.csv`, `LaserCalibration.json`, the optional `mapMethod` and `sensor` keys) are specified in [§13](#13-single-frame-lidar-map) and [§14](#14-laser-line-scan).
+Formats added in P12 (`ScanLineProfiles.csv`, `LaserRecording.json`, `Profiles.bin`, `LaserFrames.csv`, `LaserCalibration.json`, the optional `mapMethod` and `sensor` keys) are specified in [§13](#13-single-frame-lidar-map) and [§14](#14-laser-line-scan).
 
 ### 7.1 General
 - All files of a scan live in its folder (§8). Text is UTF-8 without BOM. Numbers are written with `String(format:)` (not localized: "." decimal separator) or by `JSONEncoder`.
@@ -790,7 +790,7 @@ The code wins; the build guide should be corrected (or the code changed, where a
 
 ## 13. Single-frame LiDAR map
 
-Added in P11 (FR-SFM). Goal: the scanned height of the surface as measured, one reading per map cell, instead of the mean of every reading that lands in the cell.
+Added in P12 (FR-SFM). Goal: the scanned height of the surface as measured, one reading per map cell, instead of the mean of every reading that lands in the cell.
 
 ### 13.1 What still limits a single-frame map
 
@@ -808,7 +808,7 @@ LiDAR score = |v − v_scan| (depth rows), v_scan = clamp(round(c_y), border, H 
 
 ### 13.4 Repeated frames (`ScanLineMath.identicalFraction`)
 
-For each frame after the first: n_both = pixels with z > 0 in this and the previous frame (previous delivered frame, used or not), n_same = those with equal values (Depth.bin stores 0.1 mm steps, so equality is exact). Repeat when n_both ≥ 100 and n_same / n_both ≥ 0.90. Repeated frames add no readings. The summary reports frames used and repeats skipped; `ScanLineProfiles.csv` keeps them with `repeated = 1`. Interpolated (not identical) frames are not detectable this way; P9 V14 measures how often frames repeat on the iPhone 17 Pro Max.
+For each frame after the first: n_both = pixels with z > 0 in this and the previous frame (previous delivered frame, used or not), n_same = those with equal values (Depth.bin stores 0.1 mm steps, so equality is exact). Repeat when n_both ≥ 100 and n_same / n_both ≥ 0.90. Repeated frames add no readings. The summary reports frames used and repeats skipped; `ScanLineProfiles.csv` keeps them with `repeated = 1`. Interpolated (not identical) frames are not detectable this way; P9 V16 measures how often frames repeat on the iPhone 17 Pro Max.
 
 ### 13.5 `ScanLineProfiles.csv`
 
@@ -816,11 +816,11 @@ Written with the other map files (staged, renamed together) for single-reading b
 
 ### 13.6 Statistics and summary
 
-`singleReading`: `meanHitsPerCell` = 1, `repeatStdDev` = 0 in JSON and blank in `TopoStats.csv` (`repeat_reading_std_dev`), "—" on screen. New summary line, recognised as a map line on rebuild: `Map method: one reading per cell (no averaging); N of M frames used, K repeated depth frames skipped`. `TopoStats.mapMethod` is absent for averaged maps written before P11 and treated as `averaged`.
+`singleReading`: `meanHitsPerCell` = 1, `repeatStdDev` = 0 in JSON and blank in `TopoStats.csv` (`repeat_reading_std_dev`), "—" on screen. New summary line, recognised as a map line on rebuild: `Map method: one reading per cell (no averaging); N of M frames used, K repeated depth frames skipped`. `TopoStats.mapMethod` is absent for averaged maps written before P12 and treated as `averaged`.
 
 ## 14. Laser line scan
 
-Added in P11 (FR-LAS). Sheet-of-light triangulation: a line laser projects a line across the belt at an angle; the main camera looks straight down; the line moves along the image in proportion to the height under it.
+Added in P12 (FR-LAS). Sheet-of-light triangulation: a line laser projects a line across the belt at an angle; the main camera looks straight down; the line moves along the image in proportion to the height under it.
 
 ### 14.1 Modules (`PhoneLidar/Laser/`)
 
@@ -891,12 +891,12 @@ Pass 1 over `Profiles.bin`: bounds of q and x over all valid readings, the acros
 |---|---|---|
 | L-01 | 240 fps format may be binned or cropped, changing the field of view. | Intrinsics per frame; format and fps stored; guide shows the active format. |
 | L-02 | Ambient light or wood colour hides the line. | Short shutter, exposure bias, contrast threshold; guide recommends a band-pass filter matching the laser and a bright line laser. |
-| L-03 | Laser speckle on wood limits the sub-pixel centre (≈ 0.15–0.5 px). | Shim calibration measures the real scale; P9 V12 measures repeatability. |
+| L-03 | Laser speckle on wood limits the sub-pixel centre (≈ 0.15–0.5 px). | Shim calibration measures the real scale; P9 V14 measures repeatability. |
 | L-04 | Occlusion: a strand edge can hide the line from the camera (laser shadow). | Readings drop out (no detection) instead of reading wrong; small angles reduce shadows at the cost of resolution. |
 | L-05 | Lens distortion (R-01) bends the line across the width. | The baseline is per column, so a flat belt reads 0 everywhere; heights use the per-column shift and A_k. |
 | L-06 | Laser safety. | Guide: use a Class 2 (or lower) line laser where people can look into it; follow plant rules. |
 
-### 14.9 Side-wall calibration and wall re-zero (P12)
+### 14.9 Side-wall calibration and wall re-zero (P13)
 
 The belt of a running forming line cannot always be cleared. The side walls on both sides are always visible and their tops stand at a known height h_w above the belt.
 

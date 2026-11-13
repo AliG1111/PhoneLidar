@@ -239,7 +239,7 @@ Byte-level definitions are in [design.md §7](design.md#7-on-disk-formats). Each
 | FR-EXP-18 | `AcrossProfile.csv`, `AlongProfile.csv`, `TopoProfiles.json` | §7.16 |
 | FR-EXP-19 | `TopoMapGrid.png`, `TopoMap.png`, `TopoReplay_<t>s.png` | §7.17 |
 
-### 5.13 Single-frame LiDAR map (FR-SFM)
+### 5.14 Single-frame LiDAR map (FR-SFM)
 
 The owner wants the scanned height of each passing strand, not values averaged between frames. These requirements add a map built from one reading per cell. Algorithm: [design §13](design.md#13-single-frame-lidar-map).
 
@@ -252,7 +252,7 @@ The owner wants the scanned height of each passing strand, not values averaged b
 | FR-SFM-05 | `TopoStats` records `mapMethod`. Single-frame maps: readings per cell = 1, repeat-reading noise blank in `TopoStats.csv` and "—" on screen; summary line "Map method: one reading per cell (no averaging) …" with frames used and repeated frames skipped. | Values in `TopoStats.csv`/`.json` and the summary. |
 | FR-SFM-06 | Map screen: **Map method** picker and **Rebuild map** build either method from the same recording. Default = method of the map on screen, else the recording's `mapMethod`. The replay uses the map last built. | Rebuilding as Averaged and back as Single frame changes `TopoStats.json` `mapMethod` and the map. |
 
-### 5.14 Laser line scan (FR-LAS)
+### 5.15 Laser line scan (FR-LAS)
 
 Laser-line triangulation with the phone's main camera for strand-level topography. Algorithm and formats: [design §14](design.md#14-laser-line-scan).
 
@@ -272,7 +272,7 @@ Laser-line triangulation with the phone's main camera for strand-level topograph
 | FR-LAS-12 | Side-wall calibration inputs: camera height H (Set or LiDAR), wall-top height h_w above the belt, laser angle θ from vertical (digital angle gauge) and its side; camera tilt along the travel φ from the gravity sensor (its own level zero, made on a level surface). K = f_y·tan(side·θ − φ); heights of angle scales with a tilt use the effective camera height H_eff = H·cos θ·cos β₀ / (cos(β₀ − φ)·cos(side·θ − φ)) per column (exact for a tilted camera). Walls = per-column median of 60 frames over ≈ 1 s; on each side the widest run of columns raised ≥ 10 px above the median of the middle half that reaches into the outer quarter; selection on median rows with the line's roll removed (slope from the two halves of the middle half; fit on measured rows); its level = the most raised flat window of 3 adjacent columns (spread ≤ 1.5 px, which excludes spikes; the lower inner face is never the level); plateau within 1 % of the wall's rise of it, 0.5–2 px (gaps ≤ 2 columns bridged), ≥ 3 columns (wall tops ≥ ≈ 12 mm wide at 3.3 m). Belt row of each wall column v₀ = (v_w − (K − c_y)·r)/(1 + r), r = h_w/(H − h_w); least-squares straight line through both walls = baseline of every column (flat belt). Refused unless both walls are found; fit residual shown; wall points drawn in orange; a new camera height refits from the stored wall rows; shim and angle actions are refused on a side-wall calibration; a camera tilt across the belt over 0.5° is flagged. The empty-belt angle path also uses φ and H_eff. | Synthetic walls give the tilted belt line and the mat height exactly, also for a ray-traced camera tilted 1–2° (unit tests). |
 | FR-LAS-13 | Wall re-zero (side walls, on by default, switchable): per frame, per side the median of (row − calibration wall row) over its wall columns with a detection (≥ 2); both sides → straight-line shift of the baseline, one side → offset, none → last value held. Applied live and in every map build. Summary line "Wall re-zero: N % of frames measured, line shift a…b px (mean c px)". | A synthetic 3 px picture shift reads 0 mm with re-zero and 7.4 mm without (unit test). |
 | FR-LAS-14 | With side walls the map keeps readings strictly between the walls' inner faces (10 mm margin), and the live median and maximum use the columns between the feet of the faces. | Map width excludes the walls (unit test). |
-| FR-LAS-15 | Accuracy budget (flat belt, one wall height per side; analysis in design §14.9): worst case over 0–200 mm ≤ 2.5 mm with θ ±0.1°, H ±5 mm, h_w ±1 mm; ≤ 5.0 mm with θ ±0.2°, H ±10 mm, h_w ±2 mm (owner's tolerance 5 mm). | Unit test reproduces the 5.0 mm case; P9 V15 on the line. |
+| FR-LAS-15 | Accuracy budget (flat belt, one wall height per side; analysis in design §14.9): worst case over 0–200 mm ≤ 2.5 mm with θ ±0.1°, H ±5 mm, h_w ±1 mm; ≤ 5.0 mm with θ ±0.2°, H ±10 mm, h_w ±2 mm (owner's tolerance 5 mm). | Unit test reproduces the 5.0 mm case; P9 V17 on the line. |
 
 ## 6. Non-functional requirements
 
@@ -296,7 +296,7 @@ Status values: **Met** (shown by the code or CI), **Partially met**, **Not met**
 | NFR-PERF-05 | Replay timing follows recording time at the selected speed (clock step clamped to ≤ 0.1 s per refresh). | At 1×, replay time vs wall clock within ±1 % over 60 s; at 4×, ratio 4.00 ± 0.04 (P9 V7). | Unverified |
 | NFR-PERF-06 | Playback stays responsive: the overlay updates per frame; whole-recording probe statistics are computed in parallel off the main thread. | Probe min/max appear ≤ 2 s after lifting the finger on a 60 s recording (P9 V4). | Unverified |
 | NFR-PERF-07 | Sustained recording on USB-C power on a plant mount. A "Hot" label shows at serious/critical thermal state; at serious state the live overlay and LiDAR tilt refresh every 6th frame instead of every 2nd (recording continues), at critical state the recording is stopped and saved. | 10-minute recording completes; NFR-PERF-01 still met; no thermal shutdown (P9 V1). | Unverified |
-| NFR-PERF-08 | Laser line scan: per-frame line detection, travel and recording keep up at 240 fps; frames dropped by the camera are counted, shown live and saved. | Dropped frames ≤ 2 % over a 60 s recording at 240 fps (P9 V13). | Unverified |
+| NFR-PERF-09 | Laser line scan: per-frame line detection, travel and recording keep up at 240 fps; frames dropped by the camera are counted, shown live and saved. | Dropped frames ≤ 2 % over a 60 s recording at 240 fps (P9 V15). | Unverified |
 
 ### 6.3 Measurement accuracy (all UNVERIFIED on device)
 
@@ -309,8 +309,8 @@ Status values: **Met** (shown by the code or CI), **Partially met**, **Not met**
 | NFR-ACC-05 | Equipment mesh point-to-point distances at 0.5–3 m. | Proposed: within ±1 cm or ±1 % (whichever is larger) of tape, live and in the viewer (P9 V9). | Unverified |
 | NFR-ACC-06 | Map completeness and geometry. | Coverage ≥ 95 % for a run whose material fills the view (coverage is computed over the measured extent with the empty padding trimmed, B-4, and the cell is never smaller than a depth-pixel footprint, P-1, so a gap-free scan has no empty rows or columns); no missing columns along the run; across width within ±1 % of the tape width of a board (P9 V6). | Unverified |
 | NFR-ACC-07 | Sampling limits stated by the build guide: ~15 real LiDAR samples per second (30 depth frames/s delivered), real laser-spot spacing ≈ 5 cm across at 1 m. Features smaller than the spot spacing are interpolated by the depth pipeline. | Informational; test pieces in P9 are ≥ 100 mm square. | Unverified |
-| NFR-ACC-08 | Laser line height per single reading (no averaging), after shim calibration. | Proposed: shims and steps of 0.5–10 mm read within ±0.2 mm at 0.5 m and ±0.3 mm at 1 m camera height (P9 V12). | Unverified |
-| NFR-ACC-09 | Single-frame LiDAR map: each value is one LiDAR reading; per-reading noise and the ≈ 5 cm spot spacing at 1 m are not reduced (NFR-ACC-07). | Informational; P9 V14 compares single-frame and averaged maps of one recording. | Unverified |
+| NFR-ACC-08 | Laser line height per single reading (no averaging), after shim calibration. | Proposed: shims and steps of 0.5–10 mm read within ±0.2 mm at 0.5 m and ±0.3 mm at 1 m camera height (P9 V14). | Unverified |
+| NFR-ACC-09 | Single-frame LiDAR map: each value is one LiDAR reading; per-reading noise and the ≈ 5 cm spot spacing at 1 m are not reduced (NFR-ACC-07). | Informational; P9 V16 compares single-frame and averaged maps of one recording. | Unverified |
 
 ### 6.4 Reliability and data integrity
 
@@ -526,7 +526,7 @@ Paths are relative to `PhoneLidar/`. Status legend in §4. Review IDs name the M
 
 | Date | Change |
 |---|---|
-| 2026-11-12 | P12: side-wall calibration and wall re-zero (FR-LAS-11…15). |
-| 2026-11-12 | P11: single-frame LiDAR map (FR-SFM-01…06), laser line scan (FR-LAS-01…10), NFR-PERF-08, NFR-ACC-08/09. |
+| 2026-11-12 | P13: side-wall calibration and wall re-zero (FR-LAS-11…15). |
+| 2026-11-12 | P12: single-frame LiDAR map (FR-SFM-01…06), laser line scan (FR-LAS-01…10), NFR-PERF-09, NFR-ACC-08/09. |
 | 2026-11-10 | Updated for the M1 review fixes (cycles 1–2, on `process-alignment` `547de8c`): recovery of killed recordings (FR-LINE-14), incomplete scans, delete confirmation, baseline coverage thresholds, short-shutter exposure limit, trimmed map extent and cell sizing, CV in distance mode only, replay run-out, gap fill and measured-only statistics, playback without or with a short video, RoomReport totals block, Object photos kept, camera-permission handling, Photos permission. Items that were *Not implemented* moved to *Implemented – not verified on device*; NFR statuses refreshed. |
 | 2026-11-10 | First version, reconstructed from the code at `1cf693e` and the build guide (P8 process alignment). Gaps cross-referenced to the M1 cycle-1 review findings. |

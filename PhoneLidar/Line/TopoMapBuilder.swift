@@ -68,9 +68,9 @@ struct TopoStats: Codable {
     /// True when values are heights above a flat-surface baseline (colorFar = dark-blue/low end,
     /// colorNear = dark-red/high end). False/nil: distances from the camera.
     var heightMode: Bool? = nil
-    /// How readings in a cell were combined (design §13.2); absent in maps before P11 = averaged.
+    /// How readings in a cell were combined (design §13.2); absent in maps before P12 = averaged.
     var mapMethod: MapMethod? = nil
-    /// Sensor of the values (design §14.6); absent in maps before P11 = LiDAR.
+    /// Sensor of the values (design §14.6); absent in maps before P12 = LiDAR.
     var sensor: MapSensor? = nil
 }
 

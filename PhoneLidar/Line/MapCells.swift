@@ -2,7 +2,7 @@ import Foundation
 
 /// How readings that land in the same map cell become the cell's value (design §13.2).
 enum MapMethod: String, Codable, CaseIterable, Identifiable, Sendable {
-    /// Mean of every reading that lands in the cell (every map built before P11).
+    /// Mean of every reading that lands in the cell (every map built before P12).
     case averaged
     /// One reading per cell: the best-placed reading by the builder's score; nothing is averaged.
     case singleReading
@@ -23,7 +23,7 @@ enum MapMethod: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Which sensor produced a map's values (design §14.6). Absent in maps written before P11 (LiDAR).
+/// Which sensor produced a map's values (design §14.6). Absent in maps written before P12 (LiDAR).
 enum MapSensor: String, Codable, Sendable {
     case lidar
     case laserLine
