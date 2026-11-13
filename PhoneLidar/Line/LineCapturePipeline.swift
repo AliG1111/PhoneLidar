@@ -577,13 +577,13 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                                                    focalPixels: fyVideo, dt: dt)
         }
         // Local speeds per zone: zone movement × (zone distance / focal length) / time.
-        let rawTiles = LineMotionMath.zoneSpeeds(
+        var rawTiles = LineMotionMath.zoneSpeeds(
             tiles: tileShifts.map { tile in tile.map { (along: $0.along, quality: $0.quality) } },
             millimetres: millimetres, width: dw, height: dh, centerDistance: median, focalPixels: fyVideo, dt: dt,
             columns: SpeedEstimator.tileColumns, rows: SpeedEstimator.tileRows)
         let smoothTiles = zoneSmoother.add(rawTiles)
         let fastest = LineMotionMath.fastest(smoothTiles)
-        let rawFastest = LineMotionMath.fastest(rawTiles)
+        var rawFastest = LineMotionMath.fastest(rawTiles)
 
         // Travel (held speed through frames without lock) and the half-second rolling average.
         let smoothed = speedTracker.add(rawSpeed: rawSpeed, dt: dt)
@@ -660,11 +660,13 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         if let pending = pendingRecording, recorder == nil {
             pendingRecording = nil
             // The recording keeps its direction: the screen passes the direction in use (set by hand or detected).
-            // If that differs from the sign this frame was tracked with, its shift is not recorded.
+            // If that differs from the sign this frame was tracked with, its shifts are not recorded.
             if pending.direction.bufferSign != estimator.travelSign {
                 applyTravelSign(pending.direction)
                 shift = nil
                 rawSpeed = nil
+                rawTiles = [Double?](repeating: nil, count: rawTiles.count)
+                rawFastest = nil
             }
             do {
                 let created = try LineRecorder(folder: pending.folder, videoWidth: videoWidth, videoHeight: videoHeight,
