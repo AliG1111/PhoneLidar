@@ -204,7 +204,7 @@ struct LaserScanView: View {
                 Spacer()
                 Button("Measure shim") { model.measureShim() }
                     .buttonStyle(.bordered)
-                    .disabled(model.calibrating || model.calibration == nil)
+                    .disabled(model.calibrating || model.calibration == nil || model.calibration?.isSideWalls == true)
             }
             HStack {
                 Text("or angle")
@@ -215,7 +215,7 @@ struct LaserScanView: View {
                 laserSidePicker
                 Button("Use") { model.useAngle() }
                     .buttonStyle(.bordered)
-                    .disabled(model.calibrating || model.calibration == nil)
+                    .disabled(model.calibrating || model.calibration == nil || model.calibration?.isSideWalls == true)
             }
         }
     }
@@ -241,8 +241,9 @@ struct LaserScanView: View {
                 laserSidePicker
             }
             HStack {
-                Text(model.tiltAlong.map { String(format: "Camera tilt along travel %+.2f°", $0) }
-                     ?? "Camera tilt: no sensor reading")
+                Text(model.tiltAlong.map { along in
+                    String(format: "Camera tilt along %+.2f°, across %+.2f°", along, model.tiltAcross ?? 0)
+                } ?? "Camera tilt: no sensor reading")
                     .font(.caption.monospacedDigit())
                 Spacer()
                 Button(model.levelZeroed ? "Re-zero" : "Zero here") { model.zeroLevel() }

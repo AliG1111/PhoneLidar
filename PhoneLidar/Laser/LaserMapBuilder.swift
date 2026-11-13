@@ -27,8 +27,9 @@ enum LaserMapBuilder {
     /// Calls `body` for every valid reading of frame `index`: map position (q along, x across, mm) and height (mm).
     @inline(__always)
     private static func readings(_ records: ProfilesFileReader.Records, index: Int, columns: LaserColumns,
-                                 baseline: [Float], calibration H: Double, scales: [Double], fx: Double, fy: Double,
-                                 cx: Double, cy: Double, sign: Double, body: (Reading) -> Void) {
+                                 baseline: [Float], calibration H: Double, heights: [Double], scales: [Double],
+                                 fx: Double, fy: Double, cx: Double, cy: Double, sign: Double,
+                                 body: (Reading) -> Void) {
         let travel = records.travel(index)
         guard travel.isFinite else { return }
         for k in 0..<columns.count {
@@ -36,7 +37,9 @@ enum LaserMapBuilder {
             let base = baseline[k]
             let a = scales[k]
             guard row.isFinite, base.isFinite, a.isFinite,
-                  let h = LaserGeometry.height(shift: Double(row - base), cameraHeight: H, scale: a) else { continue }
+                  let h = LaserGeometry.height(shift: Double(row - base), cameraHeight: heights[k], scale: a) else {
+                continue
+            }
             let x = LaserGeometry.across(u: Double(columns.u(k)), height: h, cameraHeight: H, fx: fx, cx: cx)
             let y = LaserGeometry.along(v: Double(row), height: h, cameraHeight: H, fy: fy, cy: cy)
             body(Reading(q: sign * travel - y, x: x, height: h))
@@ -58,6 +61,7 @@ enum LaserMapBuilder {
         guard reader.frameCount >= 2 else { throw LineError.notEnoughData }
         let H = calibration.cameraHeight
         let scales = calibration.shiftScales
+        let effectiveHeights = calibration.effectiveHeights
         let walls = calibration.isSideWalls
         let tracking = walls && calibration.wallTracking != false
         // Per-frame baseline: the calibration's, moved by the line shift seen on the wall tops (design §14.9).
@@ -77,6 +81,7 @@ enum LaserMapBuilder {
         var steps: [Double] = []
         steps.reserveCapacity(frames)
         var valid = 0
+        var detectedReadings = 0          // every reading, walls included (the detection share)
         var speeds: [Double?] = []
         var travelLo = Double.infinity, travelHi = -Double.infinity
         var duration = 0.0
@@ -92,7 +97,9 @@ enum LaserMapBuilder {
                 }
                 if records.flags(i) & ProfilesFile.trackedFlag != 0 { speeds.append(records.speed(i)) }
                 readings(records, index: i, columns: columns, baseline: baseline(frame: i), calibration: H,
-                         scales: scales, fx: info.fx, fy: info.fy, cx: info.cx, cy: info.cy, sign: sign) { r in
+                         heights: effectiveHeights, scales: scales, fx: info.fx, fy: info.fy, cx: info.cx,
+                         cy: info.cy, sign: sign) { r in
+                    detectedReadings += 1
                     guard !walls || LaserWalls.isInsideWalls(x: r.x, calibration: calibration) else { return }
                     qMin = min(qMin, r.q)
                     qMax = max(qMax, r.q)
@@ -121,7 +128,8 @@ enum LaserMapBuilder {
             reader.withRecords { records in
                 for i in 0..<frames {
                     readings(records, index: i, columns: columns, baseline: baseline(frame: i), calibration: H,
-                             scales: scales, fx: info.fx, fy: info.fy, cx: info.cx, cy: info.cy, sign: sign) { r in
+                             heights: effectiveHeights, scales: scales, fx: info.fx, fy: info.fy, cx: info.cx,
+                         cy: info.cy, sign: sign) { r in
                         guard !walls || LaserWalls.isInsideWalls(x: r.x, calibration: calibration),
                               let idx = acc.index(q: r.q, x: r.x) else { return }
                         var score: Float = 0
@@ -136,7 +144,7 @@ enum LaserMapBuilder {
             }
         }
 
-        let detected = 100 * Double(valid) / Double(frames * columns.count)
+        let detected = 100 * Double(detectedReadings) / Double(frames * columns.count)
         var lines = [laserLine(info: info, frames: frames, detectedPercent: detected)]
         if let wallShifts { lines.append(wallLine(wallShifts, frames: frames)) }
         if single {

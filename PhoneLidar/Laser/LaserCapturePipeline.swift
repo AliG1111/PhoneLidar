@@ -130,6 +130,8 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private var trackingAvailable = true
     /// Last line shift measured on the wall tops (side-wall calibration), held while the walls are hidden.
     private var lastWallShift: (offset: Double, slope: Double)?
+    /// Effective camera height per column of the current calibration (design §14.9).
+    private var effectiveHeights: [Double] = []
 
     private struct PendingRecording {
         var token: Int
@@ -387,7 +389,10 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 travel.clearHeldSpeed()
                 lastTrackTime = nil
             }
-            if newSettings.calibration != settings.calibration { lastWallShift = nil }
+            if newSettings.calibration != settings.calibration {
+                lastWallShift = nil
+                effectiveHeights = newSettings.calibration?.effectiveHeights ?? []
+            }
             settings = newSettings
         }
     }
@@ -562,9 +567,10 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 let row = detection.rows[k]
                 var base = calibration.baselineRows[k]
                 if let wallShift { base += Float(wallShift.offset + wallShift.slope * Double(columns.u(k))) }
+                let effective = k < effectiveHeights.count ? effectiveHeights[k] : calibration.cameraHeight
                 guard row.isFinite, let scale = calibration.shiftScale(column: k),
-                      let h = LaserGeometry.height(shift: Double(row - base),
-                                                   cameraHeight: calibration.cameraHeight, scale: scale) else { continue }
+                      let h = LaserGeometry.height(shift: Double(row - base), cameraHeight: effective,
+                                                   scale: scale) else { continue }
                 heights[k] = Float(h)
                 if readout?.contains(k) ?? true { finite.append(Float(h)) }
             }

@@ -101,6 +101,21 @@ struct LaserCalibration: Codable, Equatable, Sendable {
         return a.isFinite && abs(a) >= 1 ? a : nil
     }
 
+    /// Effective camera height (mm) of profile column `k` (design §14.9): with an angle scale and a camera tilt the
+    /// belt is not perpendicular to the optical axis (`LaserWalls.effectiveHeight`); a shim scale absorbs the tilt, so
+    /// it and untilted angle scales use `cameraHeight`.
+    func effectiveHeight(column k: Int) -> Double {
+        guard scaleSource == .angle, let theta = laserAngle, let phi = cameraTilt, phi != 0,
+              k >= 0, k < baselineRows.count else { return cameraHeight }
+        return LaserWalls.effectiveHeight(cameraHeight: cameraHeight, laserAngle: theta, side: laserSide,
+                                          cameraTilt: phi, beltRow: Double(baselineRows[k]), cy: cy, fy: fy)
+    }
+
+    /// Effective camera height of every column.
+    var effectiveHeights: [Double] {
+        (0..<baselineRows.count).map { effectiveHeight(column: $0) }
+    }
+
     /// A_k of every column (NaN where there is none).
     var shiftScales: [Double] {
         (0..<baselineRows.count).map { shiftScale(column: $0) ?? .nan }

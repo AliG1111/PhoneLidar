@@ -136,6 +136,10 @@ final class LaserScanModel {
             lines.append("The calibration was made with another camera format (picture size, crop or binning at this "
                          + "frame rate). Calibrate again.")
         }
+        if calibrationMethod == .sideWalls, let across = tiltAcross, abs(across) > 0.5 {
+            lines.append(String(format: "Camera tilted %.1f° across the belt: level it within 0.5° (the wall "
+                                + "calibration assumes no tilt across).", across))
+        }
         if live?.trackingAvailable == false {
             lines.append("No room for speed tracking: move the laser line toward an edge of the picture or lower "
                          + "Max height.")
@@ -284,7 +288,7 @@ final class LaserScanModel {
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
-    // MARK: - Level (camera tilt, shared zero with Line scan)
+    // MARK: - Level (camera tilt; its own zero, made on a level surface, unlike Line scan's conveyor zero)
 
     private func startMotion() {
         guard motion.isDeviceMotionAvailable, !motion.isDeviceMotionActive else { return }
@@ -305,20 +309,20 @@ final class LaserScanModel {
     @ObservationIgnored private var rawTilt: (x: Double, y: Double)?
 
     private func loadLevelZero() {
-        levelZeroed = defaults.bool(forKey: "lineLevelZeroed")
-        levelZeroX = defaults.double(forKey: "lineLevelZeroX")
-        levelZeroY = defaults.double(forKey: "lineLevelZeroY")
+        levelZeroed = defaults.bool(forKey: "laserLevelZeroed")
+        levelZeroX = defaults.double(forKey: "laserLevelZeroX")
+        levelZeroY = defaults.double(forKey: "laserLevelZeroY")
     }
 
-    /// Lay the phone flat (screen up) on a level surface first; the zero is shared with Line scan.
+    /// Lay the phone flat (screen up) on a level surface first (checked with a spirit level).
     func zeroLevel() {
         guard let raw = rawTilt else { return }
         levelZeroX = raw.x
         levelZeroY = raw.y
         levelZeroed = true
-        defaults.set(true, forKey: "lineLevelZeroed")
-        defaults.set(raw.x, forKey: "lineLevelZeroX")
-        defaults.set(raw.y, forKey: "lineLevelZeroY")
+        defaults.set(true, forKey: "laserLevelZeroed")
+        defaults.set(raw.x, forKey: "laserLevelZeroX")
+        defaults.set(raw.y, forKey: "laserLevelZeroY")
     }
 
     func scenePhaseChanged(_ newPhase: ScenePhase) {
@@ -451,6 +455,17 @@ final class LaserScanModel {
             pushSettings()
             return
         }
+        if c.isSideWalls {
+            // The wall fit depends on H: refit from the stored wall rows (same walls, K and wall height).
+            if var refit = LaserWalls.refit(c, cameraHeight: H) {
+                refit.cameraHeightSource = source
+                saveCalibration(refit)
+            } else {
+                notice = "The wall calibration could not be refitted for this camera height: calibrate on the side "
+                    + "walls again."
+            }
+            return
+        }
         c.cameraHeight = H
         c.cameraHeightSource = source
         // A shim scale depends on H (A = d·(H − t)/t): recompute K from the stored shim shift and its baseline row.
@@ -556,6 +571,10 @@ final class LaserScanModel {
 
     func measureShim() {
         guard phase == .ready, !calibrating, let c = activeCalibration else { return }
+        guard !c.isSideWalls else {
+            notice = "This is a side-wall calibration: calibrate the baseline on the empty belt first to use a shim."
+            return
+        }
         guard let t = Double(shimText.replacingOccurrences(of: ",", with: ".")), t > 0.1, t < c.cameraHeight / 2 else {
             notice = "Enter the shim thickness in mm (measured with a calliper)."
             return
@@ -604,6 +623,10 @@ final class LaserScanModel {
 
     func useAngle() {
         guard phase == .ready, !calibrating, var c = activeCalibration, let format else { return }
+        guard !c.isSideWalls else {
+            notice = "This is a side-wall calibration: change the laser angle and calibrate on the side walls again."
+            return
+        }
         let tilt = tiltAlong ?? 0
         guard let degrees = Double(angleText.replacingOccurrences(of: ",", with: ".")),
               let scale = LaserWalls.laserTerm(laserAngle: degrees, side: laserSide, cameraTilt: tilt,
@@ -679,14 +702,24 @@ final class LaserScanModel {
             return
         }
         let columns = current.columns
-        guard let detection = LaserWalls.detect(frames: frames, raisedSign: k > 0 ? 1 : -1) else {
+        // A raised point moves with the sign of A = K + (v₀ − c_y), not of K alone (line far from the centre row).
+        let lineRow = LaserGeometry.median(frames.flatMap { $0 }) ?? Float(current.cy)
+        let a = k + (Double(lineRow) - current.cy)
+        guard a.sign == k.sign, abs(a) >= 1 else {
+            notice = "The laser line is too far from the picture centre for this laser angle (raised points would move "
+                + "the other way). Move the line toward the middle of the picture or use a larger laser angle."
+            pushSettings()
+            return
+        }
+        guard let detection = LaserWalls.detect(frames: frames, raisedSign: a > 0 ? 1 : -1) else {
             notice = "Side walls not found: the laser line must cross both wall tops, and both must be in the picture. "
                 + "Check the laser side, the exposure and that the wall tops are matte, then try again."
             pushSettings()
             return
         }
         guard let fit = LaserWalls.fit(detection, columns: columns, cameraHeight: H, wallHeight: hw, laserTerm: k,
-                                       fx: current.fx, cx: current.cx, cy: current.cy) else {
+                                       fx: current.fx, cx: current.cx, cy: current.cy,
+                                       tilt: (laserAngle: angle, side: side, cameraTilt: tilt, fy: current.fy)) else {
             notice = "The wall calibration could not be computed (check the camera and wall heights)."
             pushSettings()
             return
