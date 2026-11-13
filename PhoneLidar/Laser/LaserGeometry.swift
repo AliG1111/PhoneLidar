@@ -413,3 +413,57 @@ struct LaserTravel {
         tracker.beginRecording()
     }
 }
+
+/// Progress check of a calibration capture (`LaserCapturePipeline.collectRows`, design §14.2, FR-LAS-16): instead of waiting
+/// for ever, a capture stops with a reason when the camera stops sending frames or runs far slower than its format.
+/// Pure; the pipeline calls it on the data queue every `checkInterval`.
+enum LaserCaptureWatch {
+    /// No camera frame for this long (s) stops the capture.
+    static let frameGap = 2.0
+    /// Longest capture: this many times the expected duration (s), at least `minimumLimit`.
+    static let slowFactor = 4.0
+    static let minimumLimit = 5.0
+    /// Time between checks (s).
+    static let checkInterval = 0.5
+
+    struct Progress: Equatable {
+        /// Seconds since the capture started.
+        var elapsed: Double
+        /// Seconds since the last camera frame, or since the start when none arrived.
+        var sinceLastFrame: Double
+        /// Camera frames delivered since the start.
+        var delivered: Int
+        /// Frames the camera output dropped since the start.
+        var dropped: Int
+        var collected: Int
+        var target: Int
+        /// Seconds the capture takes at the format's frame rate.
+        var expectedDuration: Double
+        /// Size (px) of the last camera buffer; 0 when none arrived.
+        var width: Int
+        var height: Int
+    }
+
+    /// Longest capture (s) for an expected duration (s).
+    static func limit(expectedDuration: Double) -> Double {
+        max(minimumLimit, slowFactor * (expectedDuration.isFinite ? max(0, expectedDuration) : 0))
+    }
+
+    /// Nil = keep going; otherwise why the capture stops (completes "Calibration stopped: …").
+    static func stallReason(_ p: Progress) -> String? {
+        if p.sinceLastFrame >= frameGap {
+            if p.delivered == 0 {
+                return String(format: "no camera frames arrived in %.0f s", p.elapsed)
+            }
+            return String(format: "the camera stopped sending frames %.0f s ago (%ld of %ld frames collected, "
+                          + "%ld camera frames, %ld dropped)", p.sinceLastFrame, p.collected, p.target, p.delivered,
+                          p.dropped)
+        }
+        if p.elapsed >= limit(expectedDuration: p.expectedDuration) {
+            let fps = p.elapsed > 0 ? Double(p.delivered) / p.elapsed : 0
+            return String(format: "only %ld of %ld frames collected in %.0f s (camera %.0f fps, %ld × %ld, %ld frames "
+                          + "dropped)", p.collected, p.target, p.elapsed, fps, p.width, p.height, p.dropped)
+        }
+        return nil
+    }
+}

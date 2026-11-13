@@ -143,7 +143,15 @@ struct LaserScanView: View {
 
     private var calibrationPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Calibration").font(.headline)
+            HStack {
+                Text("Calibration").font(.headline)
+                Spacer()
+                if model.canCancelCalibration {
+                    Button("Cancel calibration", role: .cancel) { model.cancelCalibration() }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                }
+            }
             HStack {
                 Text("Camera height")
                 TextField("mm", text: $model.cameraHeightText)
