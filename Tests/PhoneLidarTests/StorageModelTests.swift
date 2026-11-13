@@ -2,8 +2,9 @@ import XCTest
 
 final class StorageModelTests: XCTestCase {
     func testScanKindMetadata() {
-        XCTAssertEqual(ScanKind.allCases.count, 6)      // room, mesh, object, line, laser and .unknown (C-17)
-        XCTAssertEqual(ScanKind.laser.rawValue, "laser")
+        XCTAssertEqual(ScanKind.allCases.count, 5)      // room, mesh, object, line and .unknown (C-17)
+        // Scans of the removed Laser line scan mode (P16) open as an unknown kind.
+        XCTAssertNil(ScanKind(rawValue: "laser"))
         XCTAssertEqual(ScanKind.line.rawValue, "line")
         XCTAssertEqual(ScanKind.line.title, "Line scan (moving material)")
         XCTAssertEqual(ScanKind.room.title, "Room scan")

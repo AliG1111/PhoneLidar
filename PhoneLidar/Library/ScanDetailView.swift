@@ -114,22 +114,6 @@ struct ScanDetailView: View {
                 }
             }
 
-            if scan.kind == .laser {
-                let folder = store.folderURL(for: scan)
-                Section("Laser line scan") {
-                    NavigationLink {
-                        TopoMapView(folder: folder)
-                    } label: {
-                        Label("Topographic map + variance statistics", systemImage: "map")
-                    }
-                    NavigationLink {
-                        TopoReplayView(folder: folder, title: scan.name, created: scan.created)
-                    } label: {
-                        Label("Topographic replay (real time, adjustable speed)", systemImage: "mountain.2")
-                    }
-                }
-            }
-
             if !scan.summary.isEmpty {
                 Section("Summary") {
                     ForEach(Array(scan.summary.enumerated()), id: \.offset) { item in

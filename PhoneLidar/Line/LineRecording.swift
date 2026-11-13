@@ -82,6 +82,8 @@ struct LineRecordingInfo: Codable {
     var repaired: Bool? = nil
     /// Map method chosen on the Line scan screen at Record (design §13.2); absent = averaged.
     var mapMethod: MapMethod? = nil
+    /// Lens distortion of the video camera at Record (design §15.2); absent in recordings before P16.
+    var lens: LensCalibration? = nil
 }
 
 extension LineRecordingInfo {
@@ -144,8 +146,10 @@ struct LineRecordingHeader: Encodable {
     var direction: TravelDirection
     var tileColumns: Int
     var tileRows: Int
-    /// Written only for single-frame recordings, so averaged recordings keep the pre-P12 header.
+    /// Written only for single-frame and camera-parallax recordings, so averaged recordings keep the pre-P12 header.
     var mapMethod: MapMethod? = nil
+    /// Lens distortion tables when the camera reported them (design §15.2).
+    var lens: LensCalibration? = nil
 }
 
 /// What a finished recording produced, for the scan summary.
@@ -160,7 +164,8 @@ struct LineRecordingResult: Sendable {
     var notes: [String]
 }
 
-/// Free storage checks for recordings (~3–4 MB/s: HEVC video ≈ 2 MB/s plus compressed depth).
+/// Free storage checks for recordings (~3–4 MB/s: HEVC video ≈ 2 MB/s plus compressed depth; ≈ 6–7 MB/s for
+/// camera-parallax recordings, whose video is ≈ 5 MB/s).
 enum LineStorage {
     /// Recording does not start with less free space than this.
     static let minimumToStart: Int64 = 1_000_000_000
@@ -588,9 +593,14 @@ final class LineRecorder: @unchecked Sendable {
     /// Set when the recording must stop (a failed write or storage almost full); no more frames are taken.
     private(set) var stopReason: String?
 
+    /// HEVC bit rate of Video.mov: camera-parallax recordings keep more fine texture for sub-pixel matching.
+    static func videoBitRate(for method: MapMethod) -> Int {
+        method == .cameraParallax ? 40_000_000 : 16_000_000
+    }
+
     init(folder: URL, videoWidth: Int, videoHeight: Int, depthWidth: Int, depthHeight: Int,
          filteredDepth: Bool, shortShutter: Bool, direction: TravelDirection, travelOffset: Double,
-         mapMethod: MapMethod = .averaged) throws {
+         mapMethod: MapMethod = .averaged, lens: LensCalibration? = nil) throws {
         self.folder = folder
         self.mapMethod = mapMethod
         self.videoWidth = videoWidth
@@ -610,7 +620,7 @@ final class LineRecorder: @unchecked Sendable {
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: videoWidth,
             AVVideoHeightKey: videoHeight,
-            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 16_000_000]
+            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: LineRecorder.videoBitRate(for: mapMethod)]
         ]
         videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
         videoInput.expectsMediaDataInRealTime = true
@@ -628,7 +638,7 @@ final class LineRecorder: @unchecked Sendable {
                                         videoWidth: videoWidth, videoHeight: videoHeight,
                                         filteredDepth: filteredDepth, shortShutter: shortShutter,
                                         direction: direction, tileColumns: columns, tileRows: rows,
-                                        mapMethod: mapMethod == .singleReading ? mapMethod : nil))
+                                        mapMethod: mapMethod == .averaged ? nil : mapMethod, lens: lens))
         framesWriter = try TextFileWriter(url: folder.appendingPathComponent("Frames.csv"), flushBytes: 64_000)
         zonesWriter = try TextFileWriter(url: folder.appendingPathComponent("ZoneSpeeds.csv"), flushBytes: 64_000)
         try framesWriter.line(LineRecorder.framesHeader.joined(separator: ","))

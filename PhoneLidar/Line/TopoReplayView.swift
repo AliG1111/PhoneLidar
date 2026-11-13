@@ -90,7 +90,7 @@ struct TopoReplayView: View {
 
         var errorDescription: String? {
             switch self {
-            case .recording: return "The recording file (Recording.json or LaserRecording.json) is missing or damaged."
+            case .recording: return "The recording file (Recording.json) is missing or damaged."
             case .build(let reason): return "The topographic map could not be built: \(reason)"
             }
         }
@@ -120,10 +120,10 @@ struct TopoReplayView: View {
         if gridFile == nil {
             // Recordings made before the replay existed: build the map once (this also writes TopoGrid.bin).
             status = "Building the topographic grid…"
-            let built = await Task.detached(priority: .userInitiated) { () -> Result<TopoMapBuilder.Output, Error> in
+            let built = await Task.detached(priority: .userInitiated) { () async -> Result<TopoMapBuilder.Output, Error> in
                 do {
                     // TopoMap.png is rendered here, off the main thread, and staged with the other files.
-                    return .success(try MapRebuild.build(folder: folder, recording: recording, method: nil))
+                    return .success(try await MapRebuild.build(folder: folder, recording: recording, method: nil))
                 } catch {
                     return .failure(error)
                 }

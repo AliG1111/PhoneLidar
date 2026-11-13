@@ -59,9 +59,9 @@ final class SpeedEstimator {
         previousEighth = nil
     }
 
-    /// `rows`: full-resolution buffer rows to track (laser mode keeps the laser band out, design §14.5); nil = all.
+    /// `rows`: full-resolution buffer rows to track (a crop of the picture); nil = all.
     /// A change of the crop size resets the estimator (the previous level no longer matches).
-    /// `zones`: false skips the zone grid (`lastTiles` stays empty), e.g. in laser mode.
+    /// `zones`: false skips the zone grid (`lastTiles` stays empty).
     func process(_ buffer: CVPixelBuffer, rows: Range<Int>? = nil, zones: Bool = true) -> TextureShift? {
         guard let half = Self.halfLevel(from: buffer, rows: rows) else { return nil }
         let eighth = Self.downsample(Self.downsample(half))

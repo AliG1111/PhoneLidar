@@ -6,6 +6,8 @@ enum MapMethod: String, Codable, CaseIterable, Identifiable, Sendable {
     case averaged
     /// One reading per cell: the best-placed reading by the builder's score; nothing is averaged.
     case singleReading
+    /// Heights from the camera's parallax between frames, scaled by the LiDAR (design §15); one reading per cell.
+    case cameraParallax
 
     var id: String { rawValue }
 
@@ -13,8 +15,21 @@ enum MapMethod: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .averaged: return "Averaged"
         case .singleReading: return "Single frame (no averaging)"
+        case .cameraParallax: return "Camera parallax (one reading per cell)"
         }
     }
+
+    /// Short name for pickers.
+    var shortLabel: String {
+        switch self {
+        case .averaged: return "Averaged"
+        case .singleReading: return "Single frame"
+        case .cameraParallax: return "Camera parallax"
+        }
+    }
+
+    /// True when every cell holds one reading (nothing averaged).
+    var isSingleReading: Bool { self != .averaged }
 
     /// Tolerant: a value written by a newer build reads as `averaged`.
     init(from decoder: Decoder) throws {
@@ -23,10 +38,12 @@ enum MapMethod: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Which sensor produced a map's values (design §14.6). Absent in maps written before P12 (LiDAR).
+/// Which sensor produced a map's values. Absent in maps written before P12 (LiDAR). A `laserLine` value from the
+/// removed Laser line scan (P16) reads as `lidar`.
 enum MapSensor: String, Codable, Sendable {
     case lidar
-    case laserLine
+    /// Camera parallax scaled by the LiDAR (design §15).
+    case cameraParallax
 
     /// Tolerant: a value written by a newer build reads as `lidar`.
     init(from decoder: Decoder) throws {
@@ -68,7 +85,7 @@ struct MapCells {
         means = [Float](repeating: 0, count: n)
         hits = [UInt16](repeating: 0, count: n)
         m2s = method == .averaged ? [Float](repeating: 0, count: n) : []
-        scores = method == .singleReading ? [Float](repeating: .infinity, count: n) : []
+        scores = method.isSingleReading ? [Float](repeating: .infinity, count: n) : []
     }
 
     var count: Int { columns * rows }
@@ -99,7 +116,7 @@ struct MapCells {
     /// Runs `body` with an accumulator that writes straight into the cell storage (no copy-on-write check per
     /// reading). The accumulator must not escape `body`.
     mutating func withAccumulator<R>(_ body: (Accumulator) throws -> R) rethrows -> R {
-        let single = method == .singleReading
+        let single = method.isSingleReading
         let zRef = self.zRef
         let geometry = (qMin, xMin, cell, columns, rows)
         return try means.withUnsafeMutableBufferPointer { meanBuf in

@@ -81,6 +81,20 @@ private struct CalibrationCapture: @unchecked Sendable {
     var completion: @Sendable (Result<Baseline, Error>) -> Void
 }
 
+/// A side-wall calibration in progress (data queue) and where its result goes.
+private struct WallCaptureState: @unchecked Sendable {
+    var capture: WallCapture
+    var completion: @Sendable (Result<WallCalibration, Error>) -> Void
+}
+
+/// Belt plane for the live heights (camera height or side walls): camera → belt along the normal (mm) and the level
+/// zero (degrees) the live gravity tilt is taken from.
+struct LiveHeightPlane: Sendable, Equatable {
+    var distance: Double
+    var zeroX: Double
+    var zeroY: Double
+}
+
 /// LiDAR depth camera + synchronized video. Measures surface speed from the video texture,
 /// shows live depth, and records Video.mov + Depth.bin while recording is on.
 final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelegate, @unchecked Sendable {
@@ -113,7 +127,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
 
     // Data-queue state
     private var baseline: Baseline?
+    private var heightPlane: LiveHeightPlane?
     private var calibration: CalibrationCapture?
+    private var wallCapture: WallCaptureState?
     private var zoneSmoother = ZoneSpeedSmoother()
     private var lastSpread: Double?
     private var lastCenterHeight: Double?
@@ -144,6 +160,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         var shortShutter: Bool
         var direction: TravelDirection
         var mapMethod: MapMethod
+        /// Summary lines from the screen (e.g. the height reference was not copied).
+        var notes: [String]
     }
 
     deinit {
@@ -429,9 +447,32 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     }
 
     private func cancelCalibrationOnDataQueue(reason: String) {
-        guard let capture = calibration else { return }
-        calibration = nil
-        capture.completion(.failure(BaselineError.cancelled(reason)))
+        if let capture = calibration {
+            calibration = nil
+            capture.completion(.failure(BaselineError.cancelled(reason)))
+        }
+        if let walls = wallCapture {
+            wallCapture = nil
+            walls.completion(.failure(WallCalibrationError.cancelled(reason)))
+        }
+    }
+
+    // MARK: - Belt plane (camera height, side walls)
+
+    /// Live heights above a belt plane instead of the baseline (nil = baseline or distances).
+    func setHeightPlane(_ plane: LiveHeightPlane?) {
+        dataQueue.async { [self] in
+            heightPlane = plane
+        }
+    }
+
+    /// Measures the two wall tops in `capture.target` depth frames (design §16.3). Frames whose depth filtering differs
+    /// from `capture.filtered` are skipped.
+    func captureWalls(_ capture: WallCapture, completion: @escaping @Sendable (Result<WallCalibration, Error>) -> Void) {
+        dataQueue.async { [self] in
+            wallCapture?.completion(.failure(WallCalibrationError.cancelled("a new calibration was started")))
+            wallCapture = WallCaptureState(capture: capture, completion: completion)
+        }
     }
 
     // MARK: - Recording
@@ -439,7 +480,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     /// Starts recording into `folder` with the next frame. Reports `.recordingStarted` or
     /// `.recordingStartFailed` (also when no frame arrives within 3 s).
     func startRecording(folder: URL, filtered: Bool, shortShutter: Bool, direction: TravelDirection,
-                        mapMethod: MapMethod = .averaged) {
+                        mapMethod: MapMethod = .averaged, notes: [String] = []) {
         dataQueue.async { [self] in
             guard recorder == nil else {
                 onEvent?(.recordingStartFailed("a recording is already running"))
@@ -449,7 +490,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             let token = pendingToken
             pendingRecording = PendingRecording(token: token, folder: folder, filtered: filtered,
                                                 shortShutter: shortShutter, direction: direction,
-                                                mapMethod: mapMethod)
+                                                mapMethod: mapMethod, notes: notes)
             dataQueue.asyncAfter(deadline: .now() + 3) { [self] in
                 guard pendingRecording?.token == token else { return }
                 pendingRecording = nil
@@ -590,13 +631,38 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         let travel = speedTracker.travel
         let angle = shift.flatMap { LineMotionMath.motionAngle(along: $0.along, across: $0.across) }
 
-        // Live colour image (every second frame, less often under system pressure):
-        // heights above the baseline when one is set, else distance.
+        // Level: gravity tilt every frame.
+        var tiltX: Double?
+        var tiltY: Double?
+        if let g = motion.deviceMotion?.gravity {
+            tiltX = LineMotionMath.gravityTilt(g.x)
+            tiltY = LineMotionMath.gravityTilt(g.y)
+        }
+
+        // Live colour image (every second frame, less often under system pressure): heights above the belt plane
+        // (camera height or side walls) or above the baseline when one is set, else distance.
         var image: CGImage?
         var range: ClosedRange<Float>?
         let activeBaseline = baseline?.matches(width: dw, height: dh) == true ? baseline : nil
+        let livePlane: HeightPlane? = heightPlane.flatMap { p in
+            guard let x = tiltX, let y = tiltY else { return nil }
+            return HeightPlane(normal: HeightPlane.normal(tiltX: x - p.zeroX, tiltY: y - p.zeroY), distance: p.distance)
+        }
         if frameCounter % overlayStride == 0 {
-            if let activeBaseline {
+            if let livePlane {
+                let heights = LineCapturePipeline.planeHeights(millimetres, width: dw, height: dh, plane: livePlane,
+                                                               fx: Double(k.fx), fy: Double(k.fy),
+                                                               cx: Double(k.cx), cy: Double(k.cy))
+                heights.withUnsafeBufferPointer { buffer in
+                    if let r = DepthColors.finiteRange(buffer, step: 3) {
+                        range = r
+                        image = DepthColors.heightImage(buffer, width: dw, height: dh,
+                                                        low: r.lowerBound, high: r.upperBound)
+                    }
+                    lastSpread = LineMotionMath.spread(buffer, width: dw, height: dh)
+                }
+                lastCenterHeight = LineMotionMath.centerMedian(heights, width: dw, height: dh, allowNegative: true)
+            } else if let activeBaseline {
                 let heights = activeBaseline.heights(millimetres)
                 heights.withUnsafeBufferPointer { buffer in
                     if let r = DepthColors.finiteRange(buffer, step: 3) {
@@ -656,6 +722,26 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             }
         }
 
+        // Side-wall calibration capture (design §16.3).
+        if var walls = wallCapture {
+            if depthData.isDepthDataFiltered == walls.capture.filtered {
+                walls.capture.add(depth: millimetres, width: dw, height: dh, fx: Double(k.fx), fy: Double(k.fy),
+                                  cx: Double(k.cx), cy: Double(k.cy), tiltX: tiltX, tiltY: tiltY)
+            } else {
+                walls.capture.seen += 1
+            }
+            calibrationProgress = Double(walls.capture.frames) / Double(max(walls.capture.target, 1))
+            if walls.capture.isComplete || walls.capture.seen >= walls.capture.target * 3 {
+                wallCapture = nil
+                let done = walls
+                DispatchQueue.global(qos: .userInitiated).async {
+                    done.completion(Result { try done.capture.build() })
+                }
+            } else {
+                wallCapture = walls
+            }
+        }
+
         // Recording.
         // Auto: the detection changed after the screen read it (e.g. the line reversed just before Record). Refuse
         // rather than lock the recording to a direction against the movement.
@@ -679,9 +765,12 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                 let created = try LineRecorder(folder: pending.folder, videoWidth: videoWidth, videoHeight: videoHeight,
                                                depthWidth: dw, depthHeight: dh, filteredDepth: pending.filtered,
                                                shortShutter: pending.shortShutter, direction: pending.direction,
-                                               travelOffset: travel, mapMethod: pending.mapMethod)
-                // Keep the baseline with the recording so its map and playback use the same reference.
-                if let activeBaseline {
+                                               travelOffset: travel, mapMethod: pending.mapMethod,
+                                               lens: LineCapturePipeline.lens(depth.cameraCalibrationData))
+                pending.notes.forEach { created.addNote($0) }
+                // Keep the baseline with the recording so its map and playback use the same reference (a belt-plane
+                // reference was written into the folder by the screen instead).
+                if heightPlane == nil, let activeBaseline {
                     do {
                         try activeBaseline.save(to: pending.folder)
                     } catch {
@@ -702,13 +791,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                 onEvent?(.recordingStartFailed("the recording files could not be created (\(error.localizedDescription))"))
             }
         }
-        // Level: gravity tilt every frame, LiDAR surface tilt every second frame.
-        var tiltX: Double?
-        var tiltY: Double?
-        if let g = motion.deviceMotion?.gravity {
-            tiltX = LineMotionMath.gravityTilt(g.x)
-            tiltY = LineMotionMath.gravityTilt(g.y)
-        }
+        // LiDAR surface tilt every second frame.
         if frameCounter % overlayStride == 1 {
             surfaceTilt = LineMotionMath.surfaceTilt(millimetres, width: dw, height: dh, fx: Double(k.fx),
                                                      fy: Double(k.fy), cx: Double(k.cx), cy: Double(k.cy))
@@ -736,7 +819,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                              elapsed: recorder?.elapsed ?? 0,
                              tiltX: tiltX, tiltY: tiltY,
                              surfaceTiltX: surfaceTilt?.x, surfaceTiltY: surfaceTilt?.y,
-                             heightMode: activeBaseline != nil,
+                             heightMode: livePlane != nil || activeBaseline != nil,
                              centerHeight: lastCenterHeight,
                              spread: lastSpread,
                              calibrationProgress: calibrationProgress,
@@ -752,6 +835,39 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     /// Zone with the largest speed magnitude (signed speed returned). See `LineMotionMath.fastest`.
     static func fastest(_ speeds: [Double?]) -> (speed: Double, index: Int)? {
         LineMotionMath.fastest(speeds)
+    }
+
+    /// Heights above `plane` of every depth pixel (mm; NaN where there is no reading).
+    static func planeHeights(_ millimetres: [Float], width: Int, height: Int, plane: HeightPlane,
+                             fx: Double, fy: Double, cx: Double, cy: Double) -> [Float] {
+        var out = [Float](repeating: .nan, count: width * height)
+        guard fx > 0, fy > 0, millimetres.count >= width * height else { return out }
+        for v in 0..<height {
+            let yn = (Double(v) - cy) / fy
+            let base = v * width
+            for u in 0..<width {
+                let z = millimetres[base + u]
+                guard z > 0 else { continue }
+                out[base + u] = Float(plane.height(z: Double(z), xn: (Double(u) - cx) / fx, yn: yn))
+            }
+        }
+        return out
+    }
+
+    /// Lens distortion tables of the video camera, when AVFoundation reports them (design §15.2).
+    static func lens(_ calibration: AVCameraCalibrationData?) -> LensCalibration? {
+        guard let calibration else { return nil }
+        func floats(_ data: Data?) -> [Float] {
+            guard let data, data.count >= MemoryLayout<Float>.size else { return [] }
+            return data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+        }
+        let reference = calibration.intrinsicMatrixReferenceDimensions
+        let lens = LensCalibration(referenceWidth: Double(reference.width), referenceHeight: Double(reference.height),
+                                   centerX: Double(calibration.lensDistortionCenter.x),
+                                   centerY: Double(calibration.lensDistortionCenter.y),
+                                   forward: floats(calibration.lensDistortionLookupTable),
+                                   inverse: floats(calibration.inverseLensDistortionLookupTable))
+        return lens.isValid ? lens : nil
     }
 
     /// Depth-map intrinsics in depth pixels.
