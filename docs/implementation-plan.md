@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | P11 remote link merged (PR #12, `cf7fbbc`, build #83; milestone M2, [reviews/2026-11-12-M2.md](reviews/2026-11-12-M2.md)). P12 flake topography (single-reading LiDAR map, laser line scan) and P13 side-wall calibration merged (PR #13, `df07d43`, build #85; milestone M3, [reviews/2026-11-12-M3.md](reviews/2026-11-12-M3.md)). Both review cycles ran until a review yielded no new findings. P14 automatic travel direction and free replay rotation merged (PR #15, `447f2a6`, build #91; review [reviews/2026-11-13-P14.md](reviews/2026-11-13-P14.md), no new findings at the end). Next: P9 on-device validation (V1–V18). |
+| State | P11 remote link merged (PR #12, `cf7fbbc`, build #83; milestone M2, [reviews/2026-11-12-M2.md](reviews/2026-11-12-M2.md)). P12 flake topography (single-reading LiDAR map, laser line scan) and P13 side-wall calibration merged (PR #13, `df07d43`, build #85; milestone M3, [reviews/2026-11-12-M3.md](reviews/2026-11-12-M3.md)). Both review cycles ran until a review yielded no new findings. P14 automatic travel direction and free replay rotation merged (PR #15, `447f2a6`, build #91; review [reviews/2026-11-13-P14.md](reviews/2026-11-13-P14.md), no new findings at the end). P15 laser calibration watchdog merged (PR #17, `5449242`, build #96; review [reviews/2026-11-13-P15.md](reviews/2026-11-13-P15.md)). Next: P15.5 and P9 on-device validation (V1–V18). |
 | Date | 2026-11-13 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
@@ -30,6 +30,7 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P12 | Flake topography: single-frame LiDAR map and laser line scan (milestone M3) | Done (PR #13, build #85) |
 | P13 | Laser side-wall calibration and wall re-zero | Done (PR #13, build #85) |
 | P14 | Automatic travel direction with manual override; unlimited rotation of the replay's 3D strip | Done (PR #15, build #91) |
+| P15 | Laser calibration watchdog, Cancel/Close while calibrating, camera format restore after the LiDAR probe | Done (PR #17, build #96); on-device check open |
 
 Build numbers are GitHub Actions run numbers of the `Build iOS app` workflow on `main` (artifact `PhoneLidar-unsigned-ipa-<n>`).
 
@@ -322,7 +323,7 @@ The owner's first Laser line scan test stayed on "Calibrating baseline (keep the
 - [x] P15.1 `LaserCaptureWatch` (pure: 2 s frame gap, max(5 s, 4 × expected) limit, reasons with frame counts, fps, size, drops); `collectRows` returns `LaserRowCapture`, interruptions and errors pass their text; `restoreFormat()` in `start()` (Opus 5.5 / high)
 - [x] P15.2 Screen: calibration token, **Cancel calibration**, Close available while calibrating, progress % in the status, stop-reason notices, lens restored after the LiDAR probe (Opus 5.5 / high)
 - [x] P15.3 Unit tests `LaserCaptureWatchTests` (written with the code)
-- [ ] P15.4 CI green, 0 warnings; change review (fresh Opus 5.5 / high); PR into `main`; change-log row at merge
+- [x] P15.4 CI green, 0 warnings (branch runs 43487895634, 43489100049; PR run 43490810844); change review W1 (Medium), W2, W3 (Low) fixed; re-review R1, R2 (Low, wording) fixed; PR #17 merged (`5449242`, build #96)
 - [ ] P15.5 On device: repeat the baseline calibration; if it stops, the message names the cause (no frames / slow camera / interruption)
 
 ## 7. Change log
@@ -331,6 +332,7 @@ Newest first. Build = run number of the `Build iOS app` workflow on `main` after
 
 | Date | Build | PR / commit | Summary |
 |---|---|---|---|
+| 2026-11-13 | #96 | PR #17 `laser-calibration-watchdog` (`5449242`; PR run 43490810844, branch runs 43487895634, 43489100049) | P15: first on-device laser test stuck on "Calibrating baseline…" with Close disabled. Calibration captures now stop with a reason after a 2 s frame gap (camera restarted) or past max(5 s, 4 × expected); interruptions pass their text; progress % in the status; Cancel calibration; Close available while calibrating; camera format, frame rate and focus restored after the LiDAR height probe; Close cancels the probe. Change review W1 (Medium), W2, W3 (Low) and re-review R1, R2 (Low) fixed. FR-LAS-16. |
 | 2026-11-13 | #91 | PR #15 `auto-direction-free-rotation` (`447f2a6`; PR runs 43443688002, 43445162943, branch run 43441265753) | P14: Direction Auto (default) / Right → Left / Left → Right on Line scan and Laser line scan — two-way main search while not recording, detection from 12 of the last 15 confident shifts, no speed until detected, Record refused until detected or when the detection just changed, direction fixed per recording, summary note; replay 3D strip rotates without limits (quaternion trackball, two-finger roll, tilt/turn/roll sliders, fixed scale, pivot at the window centre, light on the camera). Change review R1 (Medium) and R2 (Low) fixed; re-review: no new findings. 698 unit tests. |
 | 2026-11-13 | #85 | PR #13 `flake-topography` (`df07d43`; PR run 43433878330 on the merge of `main`) | P12/P13 (milestone M3): single-reading LiDAR map (one reading per cell, repeated frames skipped, `ScanLineProfiles.csv`, map-method picker and rebuild); new scan mode Laser line scan (camera sheet-of-light triangulation, `Profiles.bin`, `LaserRecording.json`, `LaserFrames.csv`, `LaserCalibration.json`, shim or angle scale, LiDAR camera height, ≈ 60 Hz speed tracking, map and replay); side-wall calibration with laser angle and camera tilt, per-frame wall re-zero, map cropped inside the walls, 5 mm error budget. Final review and 6 re-reviews until no new findings (M2-…–M2V- IDs). Numbered P12/P13/M3 after the remote link kept P11/M2; merged after #12 (owner's decision). |
 | 2026-11-13 | #83 | PR #12 `remote-link` (`cf7fbbc`; PR run 43268590932) | P11 (milestone M2): remote link — a second iPhone pairs with a Line scan phone over peer-to-peer Wi-Fi, starts/stops recordings, shows status and copies scans; encrypted, authenticated link, reconnection, resumable copy. Review cycles until no new findings. Merged by the P12/P13 orchestrator at the owner's request. |
