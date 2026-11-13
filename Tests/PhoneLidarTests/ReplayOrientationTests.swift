@@ -66,12 +66,23 @@ final class ReplayOrientationTests: XCTestCase {
         }
     }
 
-    func testReplacingOneAngleKeepsTheOthers() {
-        let o = ReplayOrientation(turn: 30, tilt: 20, roll: -10).with(tilt: -50)
-        let a = o.angles
-        XCTAssertEqual(a.turn, 30, accuracy: 0.01)
-        XCTAssertEqual(a.tilt, -50, accuracy: 0.01)
-        XCTAssertEqual(a.roll, -10, accuracy: 0.01)
+    func testSliderAnglesFollowTheOrientation() {
+        let angles = ReplayAngles(ReplayOrientation(turn: 30, tilt: 20, roll: -10))
+        XCTAssertEqual(angles.turn, 30, accuracy: 0.01)
+        XCTAssertEqual(angles.tilt, 20, accuracy: 0.01)
+        XCTAssertEqual(angles.roll, -10, accuracy: 0.01)
+        assertSameRotation(angles.orientation, ReplayOrientation(turn: 30, tilt: 20, roll: -10))
+    }
+
+    func testRollSliderStraightAboveTurnsByTheSliderAngle() {
+        // R1: straight above, roll reads back as 0. Slider steps 1…10° must give a 10° roll, not 1 + 2 + … + 10.
+        var angles = ReplayAngles(turn: 25, tilt: 90, roll: 0)
+        for step in 1...10 {
+            angles.roll = Double(step)
+        }
+        XCTAssertEqual(angles.roll, 10)
+        assertSameRotation(angles.orientation, ReplayOrientation(turn: 35, tilt: 90, roll: 0))
+        assertSameRotation(angles.orientation, ReplayOrientation(turn: 25, tilt: 90, roll: 10))
     }
 
     // MARK: - Gestures

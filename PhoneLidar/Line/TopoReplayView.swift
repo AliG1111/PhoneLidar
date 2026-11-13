@@ -487,8 +487,8 @@ private struct ReplaySceneView: UIViewRepresentable {
             guard side > 0, recognizer.state == .began || recognizer.state == .changed else { return }
             let move = recognizer.translation(in: view)
             recognizer.setTranslation(.zero, in: view)
-            model.orientation = model.orientation.dragged(dx: Double(move.x), dy: Double(move.y),
-                                                          radiansPerPoint: Double.pi / side)
+            model.setOrientation(model.orientation.dragged(dx: Double(move.x), dy: Double(move.y),
+                                                           radiansPerPoint: Double.pi / side))
         }
 
         /// Two-finger twist: roll about the line of sight, without limits.
@@ -496,7 +496,7 @@ private struct ReplaySceneView: UIViewRepresentable {
             guard model.mode == .threeD, recognizer.state == .began || recognizer.state == .changed else { return }
             let angle = Double(recognizer.rotation)
             recognizer.rotation = 0
-            model.orientation = model.orientation.twisted(by: angle)
+            model.setOrientation(model.orientation.twisted(by: angle))
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
@@ -784,18 +784,17 @@ private struct ReplaySettingsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    let angles = model.orientation.angles
-                    sliderRow(String(format: "Tilt %.0f° (90° = from above, −90° = from below)", angles.tilt),
-                              value: Binding(get: { model.orientation.angles.tilt },
-                                             set: { model.orientation = model.orientation.with(tilt: $0) }),
+                    sliderRow(String(format: "Tilt %.0f° (90° = from above, −90° = from below)", model.angles.tilt),
+                              value: Binding(get: { model.angles.tilt },
+                                             set: { var a = model.angles; a.tilt = $0; model.setAngles(a) }),
                               range: -90...90)
-                    sliderRow(String(format: "Turn %.0f°", angles.turn),
-                              value: Binding(get: { model.orientation.angles.turn },
-                                             set: { model.orientation = model.orientation.with(turn: $0) }),
+                    sliderRow(String(format: "Turn %.0f°", model.angles.turn),
+                              value: Binding(get: { model.angles.turn },
+                                             set: { var a = model.angles; a.turn = $0; model.setAngles(a) }),
                               range: -180...180)
-                    sliderRow(String(format: "Roll %.0f°", angles.roll),
-                              value: Binding(get: { model.orientation.angles.roll },
-                                             set: { model.orientation = model.orientation.with(roll: $0) }),
+                    sliderRow(String(format: "Roll %.0f°", model.angles.roll),
+                              value: Binding(get: { model.angles.roll },
+                                             set: { var a = model.angles; a.roll = $0; model.setAngles(a) }),
                               range: -180...180)
                     sliderRow(String(format: "Slant %.2f", model.shear), value: $model.shear, range: -1.2...1.2)
                     sliderRow(String(format: "Zoom %.1f×", model.zoom), value: $model.zoom,

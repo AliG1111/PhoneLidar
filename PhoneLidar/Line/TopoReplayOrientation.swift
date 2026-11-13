@@ -52,11 +52,6 @@ struct ReplayOrientation: Equatable {
         return (turn, tilt, roll)
     }
 
-    /// The same orientation with one angle replaced (settings sliders).
-    func with(turn: Double? = nil, tilt: Double? = nil, roll: Double? = nil) -> ReplayOrientation {
-        let a = angles
-        return ReplayOrientation(turn: turn ?? a.turn, tilt: tilt ?? a.tilt, roll: roll ?? a.roll)
-    }
 
     /// Trackball drag: the strip turns the way the finger moves, about the screen's axes, by `radiansPerPoint` per
     /// point of finger travel (`dx` + = right, `dy` + = down, as in UIKit). Unlimited and the same in every
@@ -82,4 +77,27 @@ struct ReplayOrientation: Equatable {
     static func == (a: ReplayOrientation, b: ReplayOrientation) -> Bool {
         a.rotation.vector == b.rotation.vector
     }
+}
+
+/// Angles on the settings sliders (degrees). The replay model keeps them as set while a slider moves and builds the
+/// orientation from them; gestures and reset replace them with `ReplayOrientation.angles`. Reading them back from
+/// the orientation after every slider step would jump straight above or below, where turn and roll describe the
+/// same rotation (roll reads back as 0).
+struct ReplayAngles: Equatable {
+    var turn: Double
+    var tilt: Double
+    var roll: Double
+
+    init(turn: Double, tilt: Double, roll: Double) {
+        self.turn = turn
+        self.tilt = tilt
+        self.roll = roll
+    }
+
+    init(_ orientation: ReplayOrientation) {
+        let a = orientation.angles
+        self.init(turn: a.turn, tilt: a.tilt, roll: a.roll)
+    }
+
+    var orientation: ReplayOrientation { ReplayOrientation(turn: turn, tilt: tilt, roll: roll) }
 }

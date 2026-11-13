@@ -654,6 +654,12 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
             pending = nil
             onEvent?(.recordingStartFailed("the calibration does not match the camera format. Calibrate again"))
         }
+        // Auto: the detection changed after the screen read it (LaserRecording.json already holds the old one).
+        if let request = pending, recorder == nil, settings.direction == .auto,
+           let current = detector.detected, current != request.direction {
+            pending = nil
+            onEvent?(.recordingStartFailed("the travel direction just changed to \(current.label). Tap Record again"))
+        }
         if let request = pending, recorder == nil {
             pending = nil
             if request.direction.bufferSign != estimator.travelSign {

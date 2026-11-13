@@ -657,6 +657,13 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         }
 
         // Recording.
+        // Auto: the detection changed after the screen read it (e.g. the line reversed just before Record). Refuse
+        // rather than lock the recording to a direction against the movement.
+        if let pending = pendingRecording, recorder == nil, directionSetting == .auto,
+           let current = detector.detected, current != pending.direction {
+            pendingRecording = nil
+            onEvent?(.recordingStartFailed("the travel direction just changed to \(current.label). Tap Record again"))
+        }
         if let pending = pendingRecording, recorder == nil {
             pendingRecording = nil
             // The recording keeps its direction: the screen passes the direction in use (set by hand or detected).

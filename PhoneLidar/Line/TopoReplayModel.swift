@@ -46,8 +46,11 @@ final class TopoReplayModel {
     var mode: Mode = .threeD
     var smooth = true
     var showPlanes = true
-    /// 3D camera orientation: any, no limits (FR-RPL-06).
-    var orientation = ReplayOrientation.standard
+    /// 3D camera orientation: any, no limits (FR-RPL-06). Changed through `setOrientation` (gestures, reset) or
+    /// `setAngles` (settings sliders).
+    private(set) var orientation = ReplayOrientation.standard
+    /// Angles shown on the settings sliders (`ReplayAngles`).
+    private(set) var angles = ReplayAngles(ReplayOrientation.standard)
     var shear = TopoReplayModel.defaultShear
     var zoom = 1.0
     /// Height of the value range (base → top) as a fraction of the strip width.
@@ -211,8 +214,19 @@ final class TopoReplayModel {
         tolerance = defaultTolerance
     }
 
+    func setOrientation(_ value: ReplayOrientation) {
+        orientation = value
+        angles = ReplayAngles(value)
+    }
+
+    /// A slider changed one angle; the others stay as shown.
+    func setAngles(_ value: ReplayAngles) {
+        angles = value
+        orientation = value.orientation
+    }
+
     func resetView() {
-        orientation = .standard
+        setOrientation(.standard)
         shear = Self.defaultShear
         zoom = 1
     }
