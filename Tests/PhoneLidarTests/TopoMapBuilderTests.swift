@@ -7,8 +7,8 @@ import XCTest
 /// Geometry of the synthetic camera: depth map 64 × 48 pixels, focal length 100 px, principal point at the
 /// centre, flat reference surface 1000 mm away (one pixel = 10 mm on the surface = one map cell).
 final class TopoMapBuilderTests: XCTestCase {
-    private let referenceDistance = 1000.0
-    private var folder: URL!
+    let referenceDistance = 1000.0
+    var folder: URL!
 
     override func setUpWithError() throws {
         folder = try makeTempFolder()
@@ -22,7 +22,7 @@ final class TopoMapBuilderTests: XCTestCase {
     /// - `mask(u, v)`: which depth pixels return data at all.
     /// - `perturb(frameIndex, &depth)`: last edit of each frame's depth map (mm, row-major) before it is written.
     @discardableResult
-    private func writeRecording(width: Int = 64, height: Int = 48, frameCount: Int = 80,
+    func writeRecording(width: Int = 64, height: Int = 48, frameCount: Int = 80,
                                 depthFrameCount: Int? = nil, travelStep: Double = 7.3,
                                 direction: TravelDirection = .rightToLeft, withBaseline: Bool = false,
                                 baselineSize: (Int, Int)? = nil,
@@ -70,7 +70,7 @@ final class TopoMapBuilderTests: XCTestCase {
                                  filteredDepth: true, shortShutter: true, direction: direction, frames: frames)
     }
 
-    private func loadGrid() throws -> TopoGridFile {
+    func loadGrid() throws -> TopoGridFile {
         try XCTUnwrap(TopoGridFile.load(from: folder))
     }
 
@@ -703,7 +703,7 @@ final class TopoMapBuilderTests: XCTestCase {
 
     // MARK: - Text output
 
-    private func makeStats(heightMode: Bool?, speed: Bool) -> TopoStats {
+    func makeStats(heightMode: Bool?, speed: Bool) -> TopoStats {
         TopoStats(cellSize: 10, columns: 120, rows: 60, lengthMM: 1200, widthMM: 600, coveragePercent: 85,
                   cellsWithData: 6120, meanHitsPerCell: 12.34,
                   mean: heightMode == true ? 2.5 : 1000, variance: 6.25, stdDev: 2.5, cvPercent: 0.25,
