@@ -448,24 +448,34 @@ final class LaserScanModel {
     }
 
     private func setCameraHeight(_ H: Double, source: LaserCalibration.HeightSource) {
-        appliedCameraHeight = H
-        cameraHeightSource = source
-        cameraHeightText = String(format: "%.0f", H)
         guard var c = calibration else {
+            appliedCameraHeight = H
+            cameraHeightSource = source
+            cameraHeightText = String(format: "%.0f", H)
             pushSettings()
             return
         }
         if c.isSideWalls {
-            // The wall fit depends on H: refit from the stored wall rows (same walls, K and wall height).
-            if var refit = LaserWalls.refit(c, cameraHeight: H) {
-                refit.cameraHeightSource = source
-                saveCalibration(refit)
-            } else {
-                notice = "The wall calibration could not be refitted for this camera height: calibrate on the side "
-                    + "walls again."
+            // The wall fit depends on H: refit from the stored wall rows (same walls, K and wall height). The new
+            // height is applied only when the refit works (M2T-4).
+            guard var refit = LaserWalls.refit(c, cameraHeight: H) else {
+                notice = "The wall calibration could not be refitted for this camera height (it must be well above the "
+                    + "wall tops): the previous height stays in use. Check it, or calibrate on the side walls again."
+                appliedCameraHeight = c.cameraHeight
+                cameraHeightSource = c.cameraHeightSource
+                cameraHeightText = String(format: "%.0f", c.cameraHeight)
+                return
             }
+            refit.cameraHeightSource = source
+            appliedCameraHeight = H
+            cameraHeightSource = source
+            cameraHeightText = String(format: "%.0f", H)
+            saveCalibration(refit)
             return
         }
+        appliedCameraHeight = H
+        cameraHeightSource = source
+        cameraHeightText = String(format: "%.0f", H)
         c.cameraHeight = H
         c.cameraHeightSource = source
         // A shim scale depends on H (A = d·(H − t)/t): recompute K from the stored shim shift and its baseline row.
@@ -563,6 +573,7 @@ final class LaserScanModel {
             c.shimShift = old.shimShift
             c.shimBaselineRow = old.shimBaselineRow
             c.laserAngle = old.laserAngle
+            c.cameraTilt = old.cameraTilt       // K contains the tilt; the effective height needs it too (M2T-2)
         }
         saveCalibration(c)
         notice = String(format: "Baseline calibrated: %.0f %% of the line measured. ", result.coverage)

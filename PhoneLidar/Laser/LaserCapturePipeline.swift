@@ -526,7 +526,9 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
                                                                     focal: info.fy)
                 }
                 let scale = calibrated.bandScale ?? info.fy
-                let H = calibrated.cameraHeight > 0 ? calibrated.cameraHeight : max(settings.cameraHeight, 300)
+                // The smallest effective camera height gives the largest shift (tilted angle scales, M2T-3).
+                let smallest = effectiveHeights.min() ?? calibrated.cameraHeight
+                let H = calibrated.cameraHeight > 0 ? smallest : max(settings.cameraHeight, 300)
                 band = LaserGeometry.band(baseline: calibrated.baselineRows, maxHeight: settings.maxHeight,
                                           cameraHeight: H, scale: scale, height: height)
             }

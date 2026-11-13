@@ -241,6 +241,89 @@ final class LaserWallsTests: XCTestCase {
         XCTAssertEqual(detection.left, Array(0..<60))
     }
 
+    /// Rows of a ray-traced line across a mat (20 mm) between two walls with lit inner faces (M2T-1): walls' inner
+    /// faces at x = ±1830 mm, tops `top` mm wide at h_w = 300 mm, camera at 3.3 m (f = 1512, 1920 wide), untilted, belt
+    /// row v0 = c_y + `offset`.
+    private func facedRows(top: Double, theta: Double, side: LaserSide,
+                           offset: Double) -> (rows: [Float], v0: Double, k: Double) {
+        let f = 1512.0, cx = 960.0, cy = 540.0, H = 3300.0, hw = 300.0, mat = 20.0, xw = 1830.0
+        let wide = LaserColumns.make(width: 1920)
+        let v0 = cy + offset
+        let k = f * tan(side.sign * theta * Double.pi / 180)
+        let a = k + (v0 - cy)
+        func row(_ h: Double) -> Float { Float(v0 + a * h / (H - h)) }
+        let rows: [Float] = (0..<wide.count).map { c in
+            let x = abs(Double(wide.u(c)) - cx)
+            if x < f * xw / (H - mat) { return row(mat) }                       // mat inside the walls
+            if x < f * xw / (H - hw) { return row(H - f * xw / x) }             // the lit inner face
+            if x <= f * (xw + top) / (H - hw) { return row(hw) }                // the wall top
+            return .nan                                                         // outside: not lit
+        }
+        return (rows, v0, k)
+    }
+
+    /// Mat height (20 mm traced) in the middle column after a side-wall calibration on `traced`; nil when refused.
+    private func matHeight(_ traced: (rows: [Float], v0: Double, k: Double)) throws -> Double? {
+        let f = 1512.0, cy = 540.0, H = 3300.0
+        let wide = LaserColumns.make(width: 1920)
+        let a = traced.k + (traced.v0 - cy)
+        guard let detection = LaserWalls.detect(frames: [traced.rows, traced.rows],
+                                                raisedSign: a > 0 ? 1 : -1) else { return nil }
+        let fit = try XCTUnwrap(LaserWalls.fit(detection, columns: wide, cameraHeight: H, wallHeight: 300,
+                                               laserTerm: traced.k, fx: f, cx: 960, cy: cy))
+        let column = wide.count / 2
+        let base = Double(fit.rows[column])
+        return try XCTUnwrap(LaserGeometry.height(shift: Double(traced.rows[column]) - base, cameraHeight: H,
+                                                  scale: traced.k + (base - cy)))
+    }
+
+    func testWallTopsBesideALitInnerFaceGiveTheRightHeights() throws {
+        // Line 150 px either side of the centre (|A| ≥ 400 px), tops 10–40 mm, lasers 20–45°, both sides.
+        for offset in [150.0, -150] {
+            for side in LaserSide.allCases {
+                for theta in [20.0, 30.0, 45.0] {
+                    for top in [10.0, 20.0, 40.0] {
+                        let label = "\(offset) px \(side) \(theta)° \(top) mm"
+                        let measured = try XCTUnwrap(matHeight(facedRows(top: top, theta: theta, side: side,
+                                                                         offset: offset)), label)
+                        XCTAssertEqual(measured, 20, accuracy: 0.5, label)
+                    }
+                }
+            }
+        }
+    }
+
+    func testAShallowInnerFaceIsRefusedOrNearlyRight() throws {
+        // |A| = 250 px (a 20° laser against a 300 px line offset): the face climbs only 0.3 px per pixel, so its top
+        // columns can join the plateau; the mat stays within 1.5 mm (0.1 px at 13 mm/px) or the calibration is refused.
+        for (side, offset) in [(LaserSide.left, -300.0), (.right, 300)] {
+            for top in [10.0, 20.0, 40.0] {
+                let traced = facedRows(top: top, theta: 20, side: side, offset: offset)
+                XCTAssertEqual(abs(traced.k + (traced.v0 - 540)), 250, accuracy: 1)
+                guard let measured = try matHeight(traced) else { continue }
+                XCTAssertEqual(measured, 20, accuracy: 1.5, "\(side) \(top) mm")
+            }
+        }
+    }
+
+    func testARolledLineKeepsWholeWallTops() throws {
+        // A 5° roll moves the raw wall-top rows 2 px across 10 columns; with the roll removed they stay one plateau.
+        let detection = try XCTUnwrap(LaserWalls.detect(frames: frames(tilt: 0.0875), raisedSign: 1))
+        XCTAssertEqual(detection.left, Array(0...9))
+        XCTAssertEqual(detection.right, Array(190...199))
+    }
+
+    func testAnAngleScaleNeedsItsStoredTiltForTheEffectiveHeight() {
+        // M2T-2: a baseline that keeps an angle scale keeps its camera tilt; without it the effective height is H.
+        var c = makeLaserCalibration(width: 1920, height: 1080, cameraHeight: 3300, scale: 1400, baselineRow: 840,
+                                     fx: 1512, fy: 1512, cx: 960, cy: 540)
+        c.scaleSource = .angle
+        c.laserAngle = 45
+        XCTAssertEqual(c.effectiveHeight(column: 10), 3300)                    // no tilt stored
+        c.cameraTilt = 1
+        XCTAssertLessThan(c.effectiveHeight(column: 10), 3300 * 0.985)         // ≈ −2 % for 1°
+    }
+
     // MARK: - Refit and persistence (M2S-2, M2S-9)
 
     func testRefitForANewCameraHeightMatchesAFreshCalibration() throws {

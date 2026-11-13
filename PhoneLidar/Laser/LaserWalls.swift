@@ -7,8 +7,17 @@ import Foundation
 enum LaserWalls {
     /// Outer share of the detected columns searched for each wall.
     static let outerShare = 0.25
-    /// Rows within this distance of the most raised row of a side belong to its wall top, px.
-    static let plateauTolerance: Float = 3
+    /// Rows within `plateauShare` of the wall's rise (between `minimumTolerance` and `plateauTolerance`) of the
+    /// wall-top level belong to the wall top: ≈ 1 % of the wall height, so the top of the lit inner face, which climbs
+    /// only A·H/(f_x·|X_w|) px per pixel (small when |A| is small), adds at most a few millimetres there (M2T-1).
+    static let plateauShare: Float = 0.01
+    /// Smallest plateau tolerance (detection noise), px.
+    static let minimumTolerance: Float = 0.5
+    /// Largest plateau tolerance, px.
+    static let plateauTolerance: Float = 2
+    /// Largest row spread of a window of `minimumColumns` adjacent wall-top columns, px; a 1–2-column spike cannot
+    /// fill a flat window.
+    static let flatSpread: Float = 1.5
     /// Wall-top columns needed per side.
     static let minimumColumns = 3
     /// A wall top must be raised at least this much above the middle half of the line (median rows), px.
@@ -52,11 +61,13 @@ enum LaserWalls {
         var columns: [Int] { left + right }
     }
 
-    /// Finds both wall tops in calibration frames: per column the median row (detected in at least half of the
-    /// frames); in the outer quarter of the detected columns on each side, the most raised row (largest
-    /// `raisedSign`·row: + for a laser on the left) and the contiguous run of columns within `plateauTolerance` of it.
-    /// Nil unless both sides have at least `minimumColumns` columns raised at least `minimumRise` above the median row
-    /// of the middle half (so a flat mat edge is not taken for a wall).
+    /// Finds both wall tops in calibration frames (design §14.9): per column the median row (detected in at least half
+    /// of the frames), with the roll of the line across the image (from the middle half) removed; raised columns are
+    /// at least `minimumRise` above the median row of the middle half (larger `raisedSign`·row: + when A > 0), so a
+    /// flat mat edge is not a wall. On each side the widest raised run reaching
+    /// into the outer quarter; its level is the most raised flat window of `minimumColumns` columns (spread ≤
+    /// `flatSpread`), and the wall top is the run's columns within `plateauShare` of the rise of it (0.5–2 px). Nil
+    /// unless both sides have at least `minimumColumns` wall-top columns.
     static func detect(frames: [[Float]], raisedSign: Double) -> Detection? {
         guard let count = frames.first?.count, count > 0, frames.allSatisfy({ $0.count == count }),
               raisedSign != 0 else { return nil }
@@ -74,11 +85,27 @@ enum LaserWalls {
         let reach = max(minimumColumns, Int(Double(last - first) * outerShare))
         let sign = Float(raisedSign > 0 ? 1 : -1)
         let quarter = (last - first) / 4
-        let middle = ((first + quarter)...(last - quarter)).map { medians[$0] }.filter { $0.isFinite }
-        guard let middleRow = LaserGeometry.median(middle) else { return nil }
+        let middleRange = (first + quarter)...(last - quarter)
+        // Roll of the line across the image (px per column): from the median column and row of each half of the
+        // middle half. Selection works on rows with the roll removed, so the wall tops of a rolled line stay flat
+        // within the plateau tolerance; the fit uses the measured rows.
+        func centre(_ range: ClosedRange<Int>) -> (column: Float, row: Float)? {
+            let finite = range.filter { medians[$0].isFinite }
+            guard let column = LaserGeometry.median(finite.map { Float($0) }),
+                  let row = LaserGeometry.median(finite.map { medians[$0] }) else { return nil }
+            return (column, row)
+        }
+        let split = middleRange.lowerBound + middleRange.count / 2
+        var roll: Float = 0
+        if split > middleRange.lowerBound, let a = centre(middleRange.lowerBound...(split - 1)),
+           let b = centre(split...middleRange.upperBound), b.column > a.column {
+            roll = (b.row - a.row) / (b.column - a.column)
+        }
+        let levelled = medians.indices.map { medians[$0] - roll * Float($0 - first) }
+        guard let middleRow = LaserGeometry.median(middleRange.map { levelled[$0] }) else { return nil }
         // Raised columns: at least `minimumRise` above the middle. A wall top is the widest raised run that reaches
         // into the outer quarter of its side (it may extend past the quarter); a 1–2-column spike cannot win.
-        func isRaised(_ k: Int) -> Bool { medians[k].isFinite && sign * (medians[k] - middleRow) >= minimumRise }
+        func isRaised(_ k: Int) -> Bool { levelled[k].isFinite && sign * (levelled[k] - middleRow) >= minimumRise }
         func wall(_ region: ClosedRange<Int>) -> [Int]? {
             var runs: [ClosedRange<Int>] = []
             var k = first
@@ -90,14 +117,26 @@ enum LaserWalls {
                 k = end + 1
             }
             guard let run = runs.max(by: { $0.count < $1.count }), run.count >= minimumColumns else { return nil }
-            // Plateau: columns within `plateauTolerance` of the run's 80th-percentile level (robust to spikes and to
-            // the inner face's ramp); gaps of up to 2 columns (a bolt, a glint) are bridged, so the wall's inner edge
-            // is kept; the longest such stretch wins.
-            let levels = run.map { sign * medians[$0] }.sorted()
-            let level = levels[min(levels.count - 1, Int((Double(levels.count - 1) * 0.8).rounded()))]
+            // Wall-top level: the most raised window of `minimumColumns` adjacent columns that is flat (spread ≤
+            // `flatSpread`). A 1–2-column spike cannot fill one; the inner face is always less raised than the top
+            // (M2T-1).
+            var level: Float?
+            var lo = run.lowerBound
+            while lo + minimumColumns - 1 <= run.upperBound {
+                let window = (lo..<(lo + minimumColumns)).map { sign * levelled[$0] }
+                if let wMin = window.min(), let wMax = window.max(), wMax - wMin <= flatSpread,
+                   level.map({ wMin > $0 }) ?? true {
+                    level = wMin
+                }
+                lo += 1
+            }
+            guard let level else { return nil }
+            // Plateau: the run's columns within the tolerance of that level; gaps of up to 2 columns (a bolt, a
+            // glint) are bridged so the wall's inner edge is kept; the longest stretch wins.
+            let tolerance = min(plateauTolerance, max(minimumTolerance, plateauShare * (level - sign * middleRow)))
             var best: [Int] = []
             var current: [Int] = []
-            for j in run where abs(sign * medians[j] - level) <= plateauTolerance {
+            for j in run where abs(sign * levelled[j] - level) <= tolerance {
                 if let previous = current.last, j - previous > 3 {
                     if current.count > best.count { best = current }
                     current = []
