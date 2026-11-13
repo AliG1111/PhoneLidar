@@ -78,10 +78,11 @@ final class ParallaxGeometryTests: XCTestCase {
         XCTAssertEqual(centre.y, 75, accuracy: 1e-9)
         // Corner (r = r_max): +2 %; half way: +1 %.
         let corner = lens.distort(x: 200, y: 150, width: 200, height: 150)
-        XCTAssertEqual(corner.x, 100 + 100 * 1.02, accuracy: 1e-9)
-        XCTAssertEqual(corner.y, 75 + 75 * 1.02, accuracy: 1e-9)
+        // Tables are Float: 0.02 is stored as 0.0199999996.
+        XCTAssertEqual(corner.x, 100 + 100 * 1.02, accuracy: 1e-5)
+        XCTAssertEqual(corner.y, 75 + 75 * 1.02, accuracy: 1e-5)
         let half = lens.distort(x: 150, y: 112.5, width: 200, height: 150)
-        XCTAssertEqual(half.x, 100 + 50 * 1.01, accuracy: 1e-9)
+        XCTAssertEqual(half.x, 100 + 50 * 1.01, accuracy: 1e-5)
         let back = lens.undistort(x: half.x, y: half.y, width: 200, height: 150)
         XCTAssertEqual(back.x, 150, accuracy: 0.05)
         XCTAssertFalse(LensCalibration(referenceWidth: 0, referenceHeight: 1, centerX: 0, centerY: 0,

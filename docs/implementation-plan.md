@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | P11 remote link merged (PR #12, `cf7fbbc`, build #83; milestone M2, [reviews/2026-11-12-M2.md](reviews/2026-11-12-M2.md)). P12 flake topography (single-reading LiDAR map, laser line scan) and P13 side-wall calibration merged (PR #13, `df07d43`, build #85; milestone M3, [reviews/2026-11-12-M3.md](reviews/2026-11-12-M3.md)). Both review cycles ran until a review yielded no new findings. P14 automatic travel direction and free replay rotation merged (PR #15, `447f2a6`, build #91; review [reviews/2026-11-13-P14.md](reviews/2026-11-13-P14.md), no new findings at the end). P15 laser calibration watchdog merged (PR #17, `5449242`, build #96; review [reviews/2026-11-13-P15.md](reviews/2026-11-13-P15.md)). Next: P15.5 and P9 on-device validation (V1–V18). |
+| State | P11 remote link merged (PR #12, `cf7fbbc`, build #83; milestone M2, [reviews/2026-11-12-M2.md](reviews/2026-11-12-M2.md)). P12 flake topography (single-reading LiDAR map, laser line scan) and P13 side-wall calibration merged (PR #13, `df07d43`, build #85; milestone M3, [reviews/2026-11-12-M3.md](reviews/2026-11-12-M3.md)). Both review cycles ran until a review yielded no new findings. P14 automatic travel direction and free replay rotation merged (PR #15, `447f2a6`, build #91; review [reviews/2026-11-13-P14.md](reviews/2026-11-13-P14.md), no new findings at the end). P15 laser calibration watchdog merged (PR #17, `5449242`, build #96; review [reviews/2026-11-13-P15.md](reviews/2026-11-13-P15.md)). P16 (owner, 2026-11-13: no external line laser): Laser line scan removed, camera-parallax map and the camera-height / side-wall height references, branch `camera-parallax`. Next: P16 review and merge, then P9 on-device validation (V1–V13, V16, V18–V21). |
 | Date | 2026-11-13 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
@@ -30,7 +30,8 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P12 | Flake topography: single-frame LiDAR map and laser line scan (milestone M3) | Done (PR #13, build #85) |
 | P13 | Laser side-wall calibration and wall re-zero | Done (PR #13, build #85) |
 | P14 | Automatic travel direction with manual override; unlimited rotation of the replay's 3D strip | Done (PR #15, build #91) |
-| P15 | Laser calibration watchdog, Cancel/Close while calibrating, camera format restore after the LiDAR probe | Done (PR #17, build #96); on-device check open |
+| P15 | Laser calibration watchdog, Cancel/Close while calibrating, camera format restore after the LiDAR probe | Done (PR #17, build #96); superseded by P16 (mode removed) |
+| P16 | Laser line scan removed; camera-parallax map; height references camera height and side walls | In progress (branch `camera-parallax`) |
 
 Build numbers are GitHub Actions run numbers of the `Build iOS app` workflow on `main` (artifact `PhoneLidar-unsigned-ipa-<n>`).
 
@@ -230,6 +231,8 @@ Gaps between the requirements and the code that the M1 fixes do not cover, plus 
 - [ ] Windows reader script for `Depth.bin`, `TopoGrid.bin` and `Recording.json` (Python, `lzfse`) to support P9 analysis (R-14) (Sonnet 5.5 / high)
 - [ ] Storage use per scan and in total on the library screen; low-storage warning (R-15) (Sonnet 5.5 / high)
 - [ ] Optionally save viewer measurements with the scan (FR-LIB-04 note) (Sonnet 5.5 / high)
+- [ ] Playback probe and overlay in heights above the belt for camera-height and side-wall recordings (they show distances today; design §16.4) (Opus 5.5 / high)
+- [ ] Camera-parallax heights measured live while recording (uncompressed frames, design §15.8 X-01) if P9 V19 shows the HEVC video limits σ_d (Opus 5.5 / max for the design)
 
 #### Deferred review findings
 
@@ -282,8 +285,8 @@ Review plan for M3 (token budget): P12 is a new subsystem, so its first review i
 - [x] P12.11 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator; local sync Haiku 5.5 / low)
 
 P9 additions (owner runs on the device; analysis assignment in brackets):
-- [ ] **V14 Laser height on shims** — camera at 0.5 m and 1.0 m; shim-calibrate with a 10 mm gauge; then gauges of 0.5, 1, 2, 5 mm (calliper-measured) on the belt, stationary 5 s and moving at 100 and 1000 mm/s. Pass (*proposed*, NFR-ACC-08): single readings within ±0.2 mm at 0.5 m and ±0.3 mm at 1 m (Opus 5.5 / high)
-- [ ] **V15 Laser frame rate** — 60 s at 240 fps on moving material. From `LaserRecording.json` and `LaserFrames.csv`: active fps, dropped frames, frame intervals. Pass: dropped ≤ 2 % (NFR-PERF-09) (Sonnet 5.5 / high)
+- [ ] ~~**V14 Laser height on shims**~~ (withdrawn with the mode, P16) — camera at 0.5 m and 1.0 m; shim-calibrate with a 10 mm gauge; then gauges of 0.5, 1, 2, 5 mm (calliper-measured) on the belt, stationary 5 s and moving at 100 and 1000 mm/s. Pass (*proposed*, NFR-ACC-08): single readings within ±0.2 mm at 0.5 m and ±0.3 mm at 1 m (Opus 5.5 / high)
+- [ ] ~~**V15 Laser frame rate**~~ (withdrawn with the mode, P16) — 60 s at 240 fps on moving material. From `LaserRecording.json` and `LaserFrames.csv`: active fps, dropped frames, frame intervals. Pass: dropped ≤ 2 % (NFR-PERF-09) (Sonnet 5.5 / high)
 - [ ] **V16 Single-frame vs averaged LiDAR map** — one Line recording with Map = Single frame on a strand mat; rebuild as Averaged; compare `TopoStats` and profiles; report the repeated-frame share from the summary and `ScanLineProfiles.csv` (Opus 5.5 / high)
 
 ### P13 — Laser side-wall calibration and wall re-zero
@@ -297,7 +300,7 @@ Owner's request (2026-11-12): calibrate without clearing the belt, from the side
 - [x] P13.5 Change review until no new findings; guide; PR with P12
 
 P9 addition:
-- [ ] **V17 Side-wall calibration on the line** — measure h_w (±1 mm), H (tape, ±5 mm), the laser angle (digital gauge, ±0.1°), zero the level; calibrate on the walls with flakes on the belt; compare mat heights with an empty-belt shim calibration made at a shutdown, and with a known board on the belt. Pass: within ±5 mm (FR-LAS-15) (Opus 5.5 / high)
+- [ ] ~~**V17 Side-wall calibration on the line**~~ (laser; withdrawn, replaced by V21) — measure h_w (±1 mm), H (tape, ±5 mm), the laser angle (digital gauge, ±0.1°), zero the level; calibrate on the walls with flakes on the belt; compare mat heights with an empty-belt shim calibration made at a shutdown, and with a known board on the belt. Pass: within ±5 mm (FR-LAS-15) (Opus 5.5 / high)
 
 ### P14 — Automatic travel direction and free replay rotation (owner's request, 2026-11-13)
 
@@ -324,7 +327,27 @@ The owner's first Laser line scan test stayed on "Calibrating baseline (keep the
 - [x] P15.2 Screen: calibration token, **Cancel calibration**, Close available while calibrating, progress % in the status, stop-reason notices, lens restored after the LiDAR probe (Opus 5.5 / high)
 - [x] P15.3 Unit tests `LaserCaptureWatchTests` (written with the code)
 - [x] P15.4 CI green, 0 warnings (branch runs 43487895634, 43489100049; PR run 43490810844); change review W1 (Medium), W2, W3 (Low) fixed; re-review R1, R2 (Low, wording) fixed; PR #17 merged (`5449242`, build #96)
-- [ ] P15.5 On device: repeat the baseline calibration; if it stops, the message names the cause (no frames / slow camera / interruption)
+- [ ] ~~P15.5 On device: repeat the baseline calibration~~ (withdrawn: the laser mode is removed in P16)
+
+### P16 — Camera parallax and height references; Laser line scan removed (owner, 2026-11-13)
+
+The owner cannot supply an external line laser. Decisions: build "Method A" (camera parallax on the Line scan video, scaled by the LiDAR), offer both height references that need no empty belt (camera height + tilt; side-wall tops measured by the LiDAR), remove the Laser line scan. Requirements FR-PAR-01…06, FR-HREF-01…08, NFR-PERF-10, NFR-ACC-08 (replaced); FR-LAS withdrawn. Design §14 (removal), §15, §16, §7.9, §7.21. Branch `camera-parallax`, one PR. One session (token budget): the orchestrator (Opus 5.5) writes code, tests and docs (capture + UI → the higher assignment); one fresh change reviewer.
+
+- [x] P16.1 Options analysis (parallax, TrueDepth, LiDAR, dual camera), requirements, design §15–§16, this phase (Opus 5.5 / max)
+- [x] P16.2 Remove `PhoneLidar/Laser/`, its tests, Home row, scan-detail section, laser branches of `MapRebuild` and the map screen; old laser scans open as `.unknown`, `laserLine` maps read as LiDAR (Haiku 5.5 / low for the mechanical part; done by the orchestrator in the same pass)
+- [x] P16.3 `HeightReference` (plane maths, wall capture, closest cluster, `MapHeightModel`); plane heights and wall crop in `TopoMapBuilder`; live plane heights and wall capture in the pipeline (Opus 5.5 / high)
+- [x] P16.4 Height-reference sheet and Line scan wiring (copy into recordings, warnings, remote status) (capture + UI → Opus 5.5 / high)
+- [x] P16.5 `ParallaxMath`, `ParallaxProcessor`, `ParallaxMapBuilder`; lens tables and 40 Mbit/s video in recordings; async `MapRebuild`; map-method picker and progress (Opus 5.5 / high)
+- [x] P16.6 Unit tests `HeightReferenceTests`, `ParallaxTests` (synthetic textured ridge), updated map-method tests (Sonnet 5.5 / high; written with the code by the orchestrator)
+- [ ] P16.7 CI green: app build and unit tests, 0 warnings (Sonnet 5.5 / medium for compile-error triage)
+- [ ] P16.8 Change review of the PR diff and its callers (fresh Opus 5.5 / high), fixes, re-reviews until no new findings; record in `docs/reviews/2026-11-13-P16.md`
+- [ ] P16.9 Build guide (`README.md`), `CLAUDE.md` repo map (Sonnet 5.5 / medium; written by the orchestrator with the code)
+- [ ] P16.10 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator)
+
+P9 additions (owner runs on the device; analysis assignment in brackets):
+- [ ] **V19 Camera-parallax heights** — Line scan at 1.0 m (and 1.5 m), Map = Camera parallax, short shutter, good light; boards of 2, 5, 10, 20 mm (calliper) on the moving belt at 100, 500 and 1000 mm/s, then a strand mat. Pass (*proposed*, NFR-ACC-08): step heights within ±1 mm at 1 m; report the share of patches matched, σ of a flat board, the LiDAR scale ratio and the build time per minute (NFR-PERF-10) (Opus 5.5 / high)
+- [ ] **V20 Camera-height reference** — tape H (±5 mm), zero the level on the belt, record a board of known thickness and an empty stretch if possible. Pass: board and belt heights within ±5 mm (FR-HREF-08) (Opus 5.5 / high)
+- [ ] **V21 Side-wall reference** — measure h_w (±1 mm), mark both wall tops, calibrate with flakes on the belt; compare with an empty-belt baseline made at a shutdown and with a known board. Pass: within ±5 mm; report the wall disagreement and readings per band (FR-HREF-03, FR-HREF-08) (Opus 5.5 / high)
 
 ## 7. Change log
 
