@@ -2,7 +2,7 @@
 
 You need a Windows PC, a LiDAR iPhone (12 Pro / Pro Max or a newer **Pro** model, iOS 17+), a USB cable and a free GitHub account. The app is compiled on Apple hardware rented by GitHub Actions (`macos-26` runner with Xcode 26).
 
-**Status (Nov 11, 2026):** the code is at github.com/AliG1111/PhoneLidar (public). This version adds the M1 review fixes, unit tests in CI and the developer docs (build #61, `PhoneLidar-unsigned-ipa-61`). It builds on build #23: the **Line scan** mode with baseline calibration, bubble level, local speeds (fastest on screen, speed at a point), playback touch probe and the **Topographic replay** (real-time scrolling 3D strip, 0.1×–20×). Step 1 is done. Start at Step 2 or Step 3.
+**Status (Nov 13, 2026):** the code is at github.com/AliG1111/PhoneLidar (public). Build #85 (`PhoneLidar-unsigned-ipa-85`) adds the **Laser line scan** (camera + line laser, a height reading per frame for single strands, empty-belt or side-wall calibration) and the single-reading LiDAR map; build #83 added the **Remote link** (a second phone controls a Line scan phone). Earlier: build #61 added the M1 review fixes, unit tests in CI and the developer docs; build #23 the **Line scan** mode with baseline calibration, bubble level, local speeds, playback touch probe and the **Topographic replay** (real-time scrolling 3D strip, 0.1×–20×). Step 1 is done. Start at Step 2 or Step 3.
 
 ## What the app does
 
@@ -263,6 +263,7 @@ A second iPhone running Phone LiDAR controls a mounted Line scan phone, for moun
 - **Partly copied scans** lists partial copies the paired scanner does not offer now (deleted there, a different scanner paired, or not in its list); **Discard** frees their space.
 
 **Security**: after pairing, the phones only talk to the phone they are paired with. Every connection is checked with the 256-bit pairing key and all traffic is encrypted, so other phones nearby cannot start or stop a scan or copy files. Limit of the pairing step: a phone running modified software that pretends to be the scanner while you pair can work out the 6-digit code from that one attempt and pair in your place. So pair where no such phone is around. After pairing, your phone must show **Connected to** the scanner with its readouts; if your phone reports that pairing failed while the scanner shows a paired remote, tap **Forget** on the scanner and pair again. The paired-remote name on the scanner is only a weak check: a modified phone can copy your phone's name.
+
 ## Laser line scan (flake topography)
 
 A line laser draws a thin line across the belt at an angle; the phone's main camera looks straight down and finds the line in every frame. Where the surface is higher, the line moves along the picture. The shift gives the height of each point on the line, frame by frame, with no averaging. This resolves single strands, which the LiDAR cannot.

@@ -3,6 +3,8 @@
 iPhone LiDAR scanner (SwiftUI, iOS 17+, iPhone only; target iPhone 17 Pro Max). Modes: Room (RoomPlan),
 Equipment mesh (ARKit), Object capture (RealityKit), and Line scan: a fixed phone above moving material (OSB mat or
 board) recording LiDAR depth + video, measuring speed, and building a topographic map, statistics and a real-time replay.
+Laser line scan: the main camera finds a line laser on the belt (sheet-of-light triangulation) for per-frame strand
+heights, calibrated on the empty belt or on the side walls.
 Remote link (Line scan only): a second iPhone controls the scanner over direct peer-to-peer Wi-Fi and copies its scans.
 
 ## Hard constraints
@@ -149,7 +151,7 @@ Claude-Session: https://claude.ai/code/session_014WLjMvrCLDLxVAm3jLG84p
 - docs/requirements.md — FR/NFR IDs, acceptance criteria, traceability and status.
 - docs/design.md — architecture, concurrency, algorithms, byte-exact file formats, technology choices, risks, guide
   vs code discrepancies.
-- docs/implementation-plan.md — model matrix, workflow, self-review checklist, phases P0–P11, change log.
+- docs/implementation-plan.md — model matrix, workflow, self-review checklist, phases P0–P13, change log.
 - docs/reviews/ — milestone review records.
 - User guide: `README.md` (repo), the same content as the project copy on claude.ai; the orchestrator syncs the copies,
   and the owner's local `phone-lidar-build-guide.md` is replaced from it. Update README for every user-visible change.
