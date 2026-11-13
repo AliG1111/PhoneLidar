@@ -328,10 +328,17 @@ final class LaserMapBuilderTests: XCTestCase {
         }
         let cell = LaserMapBuilder.cellSize(acrossSpacing: 1, steps: [], length: 10_000, width: 5_000)
         XCTAssertLessThanOrEqual(count(cell), Double(TopoGridFile.maxCells))
-        XCTAssertGreaterThan(count(cell / 1.25), Double(TopoGridFile.maxCells))
-        let steps = (log(cell) / log(1.25)).rounded()
-        XCTAssertEqual(cell, pow(1.25, steps), accuracy: 1e-9)
-        XCTAssertGreaterThan(steps, 0)
+        // Each ×1.25 step is rounded up to 0.1 mm (M2R-1): 1 → 1.3 → 1.7 → 2.2 → 2.8 → 3.5 → 4.4.
+        var expected = 1.0
+        var previous = expected
+        while count(expected) > Double(TopoGridFile.maxCells) {
+            previous = expected
+            expected = ((expected * 1.25 * 10) - 1e-6).rounded(.up) / 10
+        }
+        XCTAssertEqual(cell, expected, accuracy: 1e-9)
+        XCTAssertEqual(cell, 4.4, accuracy: 1e-9)
+        XCTAssertGreaterThan(count(previous), Double(TopoGridFile.maxCells))
+        XCTAssertEqual((cell * 10).rounded(), cell * 10, accuracy: 1e-9)      // a multiple of 0.1 mm
     }
 
     // MARK: - Text
