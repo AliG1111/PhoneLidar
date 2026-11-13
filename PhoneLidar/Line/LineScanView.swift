@@ -295,6 +295,15 @@ struct LineScanView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    // Single frame: one reading per map cell, no averaging between frames (FR-SFM-01).
+                    Picker("Map", selection: Binding(
+                        get: { model.mapMethod },
+                        set: { model.setMapMethod($0) })) {
+                        ForEach(MapMethod.allCases) { method in
+                            Text(method == .averaged ? "Map: averaged" : "Map: single frame").tag(method)
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 }
                 .disabled(model.calibrating)
             }
@@ -439,6 +448,8 @@ final class LineScanModel {
     var filteredDepth = true
     var shortShutter = true
     var direction: TravelDirection = .rightToLeft
+    /// Map built after Stop (stored in Recording.json); single frame turns raw depth on (FR-SFM-01).
+    var mapMethod: MapMethod = .averaged
     var overlayOpacity: Double = 0.55
     var thermal: ProcessInfo.ThermalState = .nominal
     var speedHistory: [Double] = []
@@ -740,6 +751,15 @@ final class LineScanModel {
         pipeline.setFiltering(filtered)
     }
 
+    /// Single frame needs Apple's temporal filter off, so it switches raw depth on.
+    func setMapMethod(_ method: MapMethod) {
+        guard !calibrating else { return }
+        mapMethod = method
+        if method == .singleReading && filteredDepth {
+            setFiltered(false)
+        }
+    }
+
     func setShortShutter(_ enabled: Bool) {
         guard !calibrating else { return }
         shortShutter = enabled
@@ -828,7 +848,7 @@ final class LineScanModel {
             phase = .arming
             onRecordingStart()
             pipeline.startRecording(folder: folder.url, filtered: filteredDepth,
-                                    shortShutter: shortShutter, direction: direction)
+                                    shortShutter: shortShutter, direction: direction, mapMethod: mapMethod)
         } catch {
             notice = "Recording not started: the scan folder could not be created (\(error.localizedDescription))."
         }

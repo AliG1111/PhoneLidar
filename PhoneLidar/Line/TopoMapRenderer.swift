@@ -54,9 +54,10 @@ enum TopoMapRenderer {
             nearText.draw(at: CGPoint(x: 20 + barWidth - nearSize.width, y: barY + 32), withAttributes: body)
 
             let line1 = String(format: heights
-                               ? "Mean height %.2f mm   Std dev %.2f mm   Variance %.2f mm²   Range %.1f mm   Cells %.0f mm"
-                               : "Mean %.1f mm   Std dev %.2f mm   Variance %.2f mm²   Range %.1f mm   Cells %.0f mm",
-                               stats.mean, stats.stdDev, stats.variance, stats.range, stats.cellSize)
+                               ? "Mean height %.2f mm   Std dev %.2f mm   Variance %.2f mm²   Range %.1f mm   Cells %@ mm"
+                               : "Mean %.1f mm   Std dev %.2f mm   Variance %.2f mm²   Range %.1f mm   Cells %@ mm",
+                               stats.mean, stats.stdDev, stats.variance, stats.range,
+                               TopoMapBuilder.cellText(stats.cellSize))
             var line2 = String(format: "Across std dev %.2f mm   Along std dev %.2f mm   Length %.2f m",
                                stats.acrossStdDev, stats.alongStdDev, stats.lengthMM / 1000)
             if let speed = stats.speedMean {

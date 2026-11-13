@@ -49,6 +49,15 @@ enum ReplayPalette {
 
 // MARK: - Replay source
 
+/// Per-frame inputs of a replay: frame times (s), travel (mm), raw speeds (mm/s) and the reveal position (travel
+/// coordinate p of the newest complete line, NaN = unknown; made non-decreasing by `TopoReplaySource.make`).
+struct ReplayFrames: Sendable {
+    var times: [Double]
+    var travel: [Double]
+    var speeds: [Double?]
+    var reveal: [Double]
+}
+
 /// Everything the replay needs, prepared once when the screen opens: the topographic grid re-ordered so that
 /// column 0 is the oldest material and the last column the newest, and the position of the newest complete
 /// line at every frame.
@@ -98,10 +107,37 @@ struct TopoReplaySource: Sendable {
     static let fallbackRunOut = 3.0
 
     static func make(grid: TopoGridFile, info: LineRecordingInfo) throws -> TopoReplaySource {
+        try make(grid: grid, direction: info.direction, frames: replayFrames(info: info))
+    }
+
+    /// Per-frame replay inputs of a LiDAR recording: the reveal position is the material at the downstream edge
+    /// of the LiDAR's view.
+    static func replayFrames(info: LineRecordingInfo) -> ReplayFrames {
         let sign = info.direction.bufferSign
+        let frames = info.frames
+        let border = TopoMapBuilder.border(width: info.depthWidth, height: info.depthHeight)
+        let depths = frames.map(\.medianDepth).filter { $0 > 0 }.sorted()
+        let zTypical = depths.isEmpty ? 1000 : depths[depths.count / 2]
+        var reveal = [Double](repeating: .nan, count: frames.count)
+        for (i, f) in frames.enumerated() where f.fy > 0 {
+            let z = f.medianDepth > 0 ? f.medianDepth : zTypical
+            let row = sign > 0 ? Double(info.depthHeight - 1 - border) : Double(border)
+            let yDown = (row - Double(f.cy)) * z / Double(f.fy)
+            reveal[i] = f.travel - Double(sign) * yDown
+        }
+        return ReplayFrames(times: frames.map(\.time), travel: frames.map(\.travel), speeds: frames.map(\.speed),
+                            reveal: reveal)
+    }
+
+    /// Builds the replay from a grid and per-frame inputs (LiDAR or laser, design §6.10, §14.7).
+    static func make(grid: TopoGridFile, direction: TravelDirection, frames input: ReplayFrames)
+        throws -> TopoReplaySource {
+        let sign = direction.bufferSign
         let srcColumns = grid.columns
         let srcRows = grid.rows
-        guard !info.frames.isEmpty, srcColumns >= 2, srcRows >= 2 else { throw LineError.notEnoughData }
+        let frameCount = input.times.count
+        guard frameCount > 0, input.travel.count == frameCount, input.speeds.count == frameCount,
+              input.reveal.count == frameCount, srcColumns >= 2, srcRows >= 2 else { throw LineError.notEnoughData }
 
         // Distances become relative heights (+ = closer to the camera than the typical surface).
         var reference = 0.0
@@ -161,38 +197,30 @@ struct TopoReplaySource: Sendable {
             : -(grid.qMin + Double(c1 + 1) * grid.cell)
         let acrossStart = grid.xMin + Double(r0) * grid.cell
 
-        // Newest complete line per frame: the downstream edge of the LiDAR's view.
-        let frames = info.frames
-        let border = TopoMapBuilder.border(width: info.depthWidth, height: info.depthHeight)
-        let depths = frames.map(\.medianDepth).filter { $0 > 0 }.sorted()
-        let zTypical = depths.isEmpty ? 1000 : depths[depths.count / 2]
-        var reveal = [Double](repeating: .nan, count: frames.count)
+        // Reveal position per frame, never decreasing.
+        var reveal = [Double](repeating: .nan, count: frameCount)
         var running = -Double.infinity
-        for (i, f) in frames.enumerated() {
-            if f.fy > 0 {
-                let z = f.medianDepth > 0 ? f.medianDepth : zTypical
-                let row = sign > 0 ? Double(info.depthHeight - 1 - border) : Double(border)
-                let yDown = (row - Double(f.cy)) * z / Double(f.fy)
-                running = max(running, f.travel - Double(sign) * yDown)
-            }
+        for i in 0..<frameCount {
+            let value = input.reveal[i]
+            if value.isFinite { running = max(running, value) }
             reveal[i] = running
         }
         guard let firstValid = reveal.firstIndex(where: { $0.isFinite }) else { throw LineError.notEnoughData }
         for i in 0..<firstValid { reveal[i] = reveal[firstValid] }
 
-        let times = frames.map(\.time)
+        let times = input.times
+        let travel = input.travel
         let recordingDuration = max(times.last ?? 0, 0.01)
 
         // Speed for the run-out: travel over the last second, else over the whole recording.
         var measured = 0.0
-        if let last = frames.last {
-            let startIndex = LineMath.frameIndex(for: last.time - 1.0, in: frames)
-            let a = frames[startIndex]
-            if last.time - a.time > 0.2 {
-                measured = (last.travel - a.travel) / (last.time - a.time)
+        if let lastTime = times.last, let lastTravel = travel.last {
+            let startIndex = LineMath.frameIndex(for: lastTime - 1.0, inTimes: times)
+            if lastTime - times[startIndex] > 0.2 {
+                measured = (lastTravel - travel[startIndex]) / (lastTime - times[startIndex])
             }
-            if !(measured > 1), last.time - frames[0].time > 0.2 {
-                measured = (last.travel - frames[0].travel) / (last.time - frames[0].time)
+            if !(measured > 1), lastTime - times[0] > 0.2 {
+                measured = (lastTravel - travel[0]) / (lastTime - times[0])
             }
             if !(measured > 1) || !measured.isFinite { measured = 0 }
         }
@@ -231,7 +259,7 @@ struct TopoReplaySource: Sendable {
         return TopoReplaySource(heightMode: heightMode, referenceDistance: reference, cell: grid.cell,
                                 rows: rows, columns: columns, values: values, pStart: pStart,
                                 acrossStart: acrossStart, frameTimes: times, revealP: reveal,
-                                speeds: LineMath.smoothed(frames.map(\.speed), radius: 7),
+                                speeds: LineMath.smoothed(input.speeds, radius: 7),
                                 recordingDuration: recordingDuration, runOutSpeed: runOut, duration: duration,
                                 median: median, robustStdDev: robust,
                                 p01: percentile(0.01), p99: percentile(0.99))

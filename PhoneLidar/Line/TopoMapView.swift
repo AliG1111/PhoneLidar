@@ -11,6 +11,11 @@ struct TopoMapView: View {
     @State private var profiles: TopoProfiles?
     @State private var mapImage: UIImage?
     @State private var direction: TravelDirection = .rightToLeft
+    /// Method chosen in the picker for the next rebuild (nil = the method of the map on screen).
+    @State private var methodChoice: MapMethod?
+    /// Method chosen when the recording was made.
+    @State private var recordedMethod: MapMethod = .averaged
+    @State private var isLaser = false
     @State private var loaded = false
     @State private var building = false
     /// Last rebuild failure; shown even when an older map is still on screen.
@@ -77,13 +82,17 @@ struct TopoMapView: View {
                     row("Along-travel profile std dev", "%.3f mm", stats.alongStdDev)
                     row("Along-travel profile range", "%.2f mm", stats.alongRange)
                     row("Local residual std dev", "%.3f mm", stats.residualStdDev)
-                    row("Repeat-reading noise (std dev)", "%.3f mm", stats.repeatStdDev)
+                    if stats.isSingleReading {
+                        row("Repeat-reading noise (std dev)", "—")
+                    } else {
+                        row("Repeat-reading noise (std dev)", "%.3f mm", stats.repeatStdDev)
+                    }
                 } header: {
                     Text("Variation components")
                 } footer: {
                     Text("Across = lane-to-lane differences. Along = waves in the travel direction. "
                          + "Residual = what remains after removing both. Repeat-reading noise = scatter of the "
-                         + "LiDAR readings that landed in the same cell.")
+                         + "readings that landed in the same cell (none for a single-reading map).")
                 }
                 if let profiles, profiles.across.count >= 2 {
                     Section(heightMode ? "Across-width profile (height above baseline)"
@@ -108,18 +117,29 @@ struct TopoMapView: View {
                     if let lo = stats.speedMin, let hi = stats.speedMax {
                         row("Min / max", String(format: "%.0f / %.0f mm/s", lo, hi))
                     }
-                    row("Frames with texture lock", "%.0f %%", stats.speedTrackedPercent)
+                    row(stats.sensor == .laserLine ? "Tracked frames with texture lock" : "Frames with texture lock",
+                        "%.0f %%", stats.speedTrackedPercent)
                 }
                 Section("Scan") {
                     row("Length × width", String(format: "%.2f × %.2f m", stats.lengthMM / 1000, stats.widthMM / 1000))
-                    row("Cell size", "%.0f mm", stats.cellSize)
+                    row("Cell size", TopoMapBuilder.cellText(stats.cellSize) + " mm")
                     row("Coverage", "%.1f %%", stats.coveragePercent)
+                    row("Map method", (stats.mapMethod ?? .averaged).label)
                     row("Readings per cell", "%.1f", stats.meanHitsPerCell)
                     row("Frames / duration", String(format: "%ld / %.1f s", stats.frames, stats.duration))
                 }
             }
 
             Section {
+                Picker("Map method", selection: Binding(
+                    get: { methodChoice ?? stats?.mapMethod ?? recordedMethod },
+                    set: { methodChoice = $0 })) {
+                    ForEach(MapMethod.allCases) { method in
+                        Text(method == .averaged ? "Averaged" : "Single reading").tag(method)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(building)
                 Button {
                     rebuild()
                 } label: {
@@ -127,9 +147,7 @@ struct TopoMapView: View {
                 }
                 .disabled(building)
             } footer: {
-                Text(heightMode
-                     ? "Values are heights above the flat-surface baseline saved with this recording (Baseline.bin). TopoMap.png, TopoMap.csv, TopoStats.csv and the profile CSV files are in the scan's file list."
-                     : "No baseline was saved with this recording, so values are distances from the camera. TopoMap.png, TopoMap.csv, TopoStats.csv and the profile CSV files are in the scan's file list.")
+                Text(footerText)
             }
         }
         .navigationTitle("Topographic map")
@@ -138,6 +156,21 @@ struct TopoMapView: View {
     }
 
     private var heightMode: Bool { stats?.heightMode == true }
+
+    private var footerText: String {
+        let files = "TopoMap.png, TopoMap.csv, TopoStats.csv and the profile CSV files are in the scan's file list."
+        let method = "Single reading: each cell holds one reading, nothing is averaged"
+            + (isLaser ? " (the laser reading nearest the cell centre). " : " (the reading taken closest to the "
+               + "scan line, ScanLineProfiles.csv). ")
+            + "Averaged: the mean of every reading in the cell. "
+        if isLaser {
+            return method + "Values are heights above the belt from the laser line (calibration in "
+                + "LaserRecording.json). " + files
+        }
+        return method + (heightMode
+            ? "Values are heights above the flat-surface baseline saved with this recording (Baseline.bin). "
+            : "No baseline was saved with this recording, so values are distances from the camera. ") + files
+    }
 
     private func row(_ title: String, _ format: String, _ value: Double) -> some View {
         row(title, String(format: format, value))
@@ -151,6 +184,8 @@ struct TopoMapView: View {
 
     private struct Loaded {
         var direction: TravelDirection?
+        var recordedMethod: MapMethod?
+        var isLaser = false
         var stats: TopoStats?
         var profiles: TopoProfiles?
         var image: UIImage?
@@ -163,12 +198,19 @@ struct TopoMapView: View {
             var out = Loaded()
             // Only the direction is needed here: a cut-off file is repaired in memory (Rebuild map repairs it on
             // disk and notes that in the summary).
-            if let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
+            if LaserRecordingInfo.exists(in: folder) {
+                out.isLaser = true
+                if let info = try? LaserRecordingInfo.load(from: folder) {
+                    out.direction = info.direction
+                    out.recordedMethod = info.mapMethod
+                }
+            } else if let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
                let info = (try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data))
                 ?? LineRecordingRepair.repairedData(data).flatMap({
                     try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: $0)
                 }) {
                 out.direction = info.direction
+                out.recordedMethod = info.mapMethod ?? .averaged
             }
             if let data = try? Data(contentsOf: folder.appendingPathComponent("TopoStats.json")) {
                 out.stats = try? JSONDecoder.iso.decode(TopoStats.self, from: data)
@@ -180,6 +222,8 @@ struct TopoMapView: View {
             return out
         }.value
         if let value = result.direction { direction = value }
+        if let value = result.recordedMethod { recordedMethod = value }
+        isLaser = result.isLaser
         stats = result.stats
         profiles = result.profiles
         mapImage = result.image
@@ -191,28 +235,25 @@ struct TopoMapView: View {
         building = true
         message = nil
         let folder = self.folder
+        let method = methodChoice ?? stats?.mapMethod ?? recordedMethod
         Task { @MainActor in
             let result = await Task.detached(priority: .userInitiated) {
-                () -> Result<(info: LineRecordingInfo, output: TopoMapBuilder.Output), Error> in
+                () -> Result<(recording: MapRecording, output: TopoMapBuilder.Output), Error> in
                 do {
-                    // Repairs a Recording.json that was cut short, as Line scan does after recording.
-                    guard let loaded = try? LineRecordingRepair.loadInfo(folder: folder) else {
+                    guard let recording = try? MapRebuild.load(folder: folder) else {
                         throw RebuildError.recordingMissing
                     }
-                    let info = loaded.info
                     // TopoMap.png is rendered here, off the main thread, and staged with the other files.
-                    var output = try TopoMapBuilder.build(folder: folder, info: info) { image, stats in
-                        try TopoMapRenderer.compositePNG(map: image, stats: stats, direction: info.direction)
-                    }
-                    if loaded.repaired { output.summary.insert(TopoMapBuilder.recordingRepairedNote, at: 0) }
-                    return .success((info: info, output: output))
+                    let output = try MapRebuild.build(folder: folder, recording: recording, method: method)
+                    return .success((recording: recording, output: output))
                 } catch {
                     return .failure(error)
                 }
             }.value
             switch result {
             case .success(let built):
-                message = updateScanRecord(info: built.info, mapSummary: built.output.summary)
+                message = updateScanRecord(recording: built.recording, mapSummary: built.output.summary)
+                methodChoice = nil
             case .failure(let error):
                 message = "Map not rebuilt: \(error.localizedDescription)"
             }
@@ -223,11 +264,11 @@ struct TopoMapView: View {
 
     /// New and replaced files appear in the scan's file list and the summary shows the new statistics.
     /// Returns a message when the scan record could not be saved, nil otherwise.
-    private func updateScanRecord(info: LineRecordingInfo, mapSummary: [String]) -> String? {
+    private func updateScanRecord(recording: MapRecording, mapSummary: [String]) -> String? {
         let target = folder.standardizedFileURL.path
         guard var record = store.scans.first(where: { store.folderURL(for: $0).standardizedFileURL.path == target })
         else { return nil }
-        record.summary = TopoMapBuilder.recordSummary(existing: record.summary, info: info, map: mapSummary)
+        record.summary = recording.recordSummary(existing: record.summary, map: mapSummary)
         do {
             try store.save(record)
             return nil
@@ -239,7 +280,7 @@ struct TopoMapView: View {
     private enum RebuildError: LocalizedError {
         case recordingMissing
 
-        var errorDescription: String? { "Recording.json is missing or damaged." }
+        var errorDescription: String? { "The recording file (Recording.json or LaserRecording.json) is missing or damaged." }
     }
 
     private static func thinned(_ points: [ProfilePoint], to limit: Int) -> [ProfilePoint] {

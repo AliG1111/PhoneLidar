@@ -6,6 +6,7 @@ enum ScanKind: String, Codable, CaseIterable, Identifiable {
     case mesh
     case object
     case line
+    case laser
     /// A kind written by a newer version of the app. The scan still opens and its files can be shared.
     case unknown
 
@@ -22,6 +23,7 @@ enum ScanKind: String, Codable, CaseIterable, Identifiable {
         case .mesh: return "Equipment scan (LiDAR mesh)"
         case .object: return "Object capture"
         case .line: return "Line scan (moving material)"
+        case .laser: return "Laser line scan (flake topography)"
         case .unknown: return "Scan"
         }
     }
@@ -32,6 +34,7 @@ enum ScanKind: String, Codable, CaseIterable, Identifiable {
         case .mesh: return "cube.transparent"
         case .object: return "cube.fill"
         case .line: return "barcode.viewfinder"
+        case .laser: return "rays"
         case .unknown: return "questionmark.folder"
         }
     }

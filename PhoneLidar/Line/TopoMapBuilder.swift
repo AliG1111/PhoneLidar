@@ -68,6 +68,15 @@ struct TopoStats: Codable {
     /// True when values are heights above a flat-surface baseline (colorFar = dark-blue/low end,
     /// colorNear = dark-red/high end). False/nil: distances from the camera.
     var heightMode: Bool? = nil
+    /// How readings in a cell were combined (design §13.2); absent in maps before P12 = averaged.
+    var mapMethod: MapMethod? = nil
+    /// Sensor of the values (design §14.6); absent in maps before P12 = LiDAR.
+    var sensor: MapSensor? = nil
+}
+
+extension TopoStats {
+    /// One reading per cell: no repeat-reading noise exists (FR-SFM-05).
+    var isSingleReading: Bool { mapMethod == .singleReading }
 }
 
 /// Stitches the recorded depth frames into a top-down distance map using the measured travel,
@@ -90,7 +99,8 @@ enum TopoMapBuilder {
     /// Builds the map and writes its files. `composite` encodes TopoMap.png (title, legend, statistics) from the
     /// map image; when given, TopoMap.png is staged with the other files, so it never pairs an old picture with
     /// new statistics.
-    static func build(folder: URL, info: LineRecordingInfo,
+    /// `method` overrides the recording's `mapMethod` (nil = the recording's, else averaged; design §13.2).
+    static func build(folder: URL, info: LineRecordingInfo, method: MapMethod? = nil,
                       composite: ((CGImage, TopoStats) throws -> Data)? = nil) throws -> Output {
         let reader = try DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
         let frames = Array(info.frames.prefix(reader.frameCount))
@@ -149,53 +159,68 @@ enum TopoMapBuilder {
             cols = Int(((qMax - qMin) / cell).rounded(.up)) + 1
             rows = Int(((xMax - xMin) / cell).rounded(.up)) + 1
         }
-        let cellCount = cols * rows
-
-        // Per-cell running mean and variance (Welford) of distance − zRef.
-        var means = [Float](repeating: 0, count: cellCount)
-        var m2s = [Float](repeating: 0, count: cellCount)
-        var hits = [UInt16](repeating: 0, count: cellCount)
         let zRef: Float = heightMode ? 0 : Float(zTypical)
-        baseValues.withUnsafeBufferPointer { baseBuf in
-            means.withUnsafeMutableBufferPointer { meanBuf in
-                m2s.withUnsafeMutableBufferPointer { m2Buf in
-                    hits.withUnsafeMutableBufferPointer { hitBuf in
-                        for (i, f) in frames.enumerated() {
-                            guard let depth = reader.frame(i) else { continue }
-                            let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
-                            guard fx > 0, fy > 0 else { continue }
-                            let offset = sign * f.travel
-                            depth.withUnsafeBufferPointer { zBuf in
-                                for v in border..<(h - border) {
-                                    let yFactor = (Double(v) - cy) / fy
-                                    let rowBase = v * w
-                                    for u in border..<(w - border) {
-                                        let z = zBuf[rowBase + u]
-                                        if z <= 0 { continue }
-                                        var value = z
-                                        if heightMode {
-                                            let b = baseBuf[rowBase + u]
-                                            if !(b > 0 && b.isFinite) { continue }   // no NaN/inf from a damaged baseline
-                                            value = b - z
-                                        }
-                                        let zd = Double(z)
-                                        let q = offset - yFactor * zd
-                                        let x = (Double(u) - cx) / fx * zd
-                                        // floor, not truncation: readings just below qMin/xMin are outside.
-                                        let col = Int(((q - qMin) / cell).rounded(.down))
-                                        let row = Int(((x - xMin) / cell).rounded(.down))
-                                        if col < 0 || col >= cols || row < 0 || row >= rows { continue }
-                                        let idx = row * cols + col
-                                        let n = hitBuf[idx]
-                                        if n == UInt16.max { continue }
-                                        let k = Float(n) + 1
-                                        let d = value - zRef
-                                        let delta = d - meanBuf[idx]
-                                        meanBuf[idx] += delta / k
-                                        m2Buf[idx] += delta * (d - meanBuf[idx])
-                                        hitBuf[idx] = n + 1
-                                    }
+        let method = method ?? info.mapMethod ?? .averaged
+        let single = method == .singleReading
+        var cells = MapCells(method: method, columns: cols, rows: rows, cell: cell, qMin: qMin, xMin: xMin, zRef: zRef)
+
+        // Single reading: each cell keeps the reading whose depth row was closest to the scan line (design §13.3);
+        // frames that repeat the previous depth frame add nothing (§13.4). The scan rows feed ScanLineProfiles.csv.
+        var scanRows: [ScanRowSample] = []
+        var usedFrames = 0
+        var repeatedFrames = 0
+        var previous: [Float]?
+        cells.withAccumulator { acc in
+            baseValues.withUnsafeBufferPointer { baseBuf in
+                for (i, f) in frames.enumerated() {
+                    guard let depth = reader.frame(i) else { continue }
+                    let repeated = single && previous.map { ScanLineMath.isRepeat(depth, previous: $0) } == true
+                    if single { previous = depth }
+                    let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
+                    guard fx > 0, fy > 0 else { continue }
+                    let offset = sign * f.travel
+                    let scanRow = ScanLineMath.scanRow(cy: f.cy, height: h, border: border)
+                    if single {
+                        var sample = ScanRowSample(frame: f.index, time: f.time, travel: f.travel, repeated: repeated)
+                        let rowBase = scanRow * w
+                        for u in border..<(w - border) {
+                            let z = depth[rowBase + u]
+                            if z <= 0 { continue }
+                            var value = z
+                            if heightMode {
+                                let b = baseValues[rowBase + u]
+                                if !(b > 0 && b.isFinite) { continue }
+                                value = b - z
+                            }
+                            sample.across.append(Float((Double(u) - cx) / fx * Double(z)))
+                            sample.values.append(value)
+                        }
+                        scanRows.append(sample)
+                        if repeated {
+                            repeatedFrames += 1
+                            continue
+                        }
+                    }
+                    usedFrames += 1
+                    depth.withUnsafeBufferPointer { zBuf in
+                        for v in border..<(h - border) {
+                            let yFactor = (Double(v) - cy) / fy
+                            let rowBase = v * w
+                            let score = Float(abs(v - scanRow))
+                            for u in border..<(w - border) {
+                                let z = zBuf[rowBase + u]
+                                if z <= 0 { continue }
+                                var value = z
+                                if heightMode {
+                                    let b = baseBuf[rowBase + u]
+                                    if !(b > 0 && b.isFinite) { continue }   // no NaN/inf from a damaged baseline
+                                    value = b - z
                                 }
+                                let zd = Double(z)
+                                let q = offset - yFactor * zd
+                                let x = (Double(u) - cx) / fx * zd
+                                guard let idx = acc.index(q: q, x: x) else { continue }
+                                acc.add(value, at: idx, score: score)
                             }
                         }
                     }
@@ -203,6 +228,65 @@ enum TopoMapBuilder {
             }
         }
 
+        var extraLines: [String] = []
+        if single {
+            extraLines.append(Self.singleReadingLine(used: usedFrames, total: frames.count, repeated: repeatedFrames))
+        }
+        let samples = scanRows
+        scanRows = []
+        let output = try finish(cells: cells, heightMode: heightMode, sensor: .lidar, speeds: frames.map(\.speed),
+                                frameCount: frames.count, duration: frames.last?.time ?? 0,
+                                travel: Self.travelRange(frames), extraLines: extraLines, folder: folder,
+                                composite: composite) { geometry in
+            guard single else { return [] }
+            return [(ScanLineProfiles.fileName, { url in
+                try ScanLineProfiles.write(samples, geometry: geometry, to: url)
+            })]
+        }
+        if !single {
+            // A profile file from an earlier single-reading build no longer matches this map. It is derived data
+            // (rebuilt from Depth.bin by a single-reading rebuild), so removing it loses no measurement.
+            let stale = folder.appendingPathComponent(ScanLineProfiles.fileName)
+            if FileManager.default.fileExists(atPath: stale.path) { try? FileManager.default.removeItem(at: stale) }
+        }
+        return output
+    }
+
+    /// The trimmed grid a map was written with (for files that need its rows or columns).
+    struct Geometry {
+        var columns: Int
+        var rows: Int
+        var cell: Double
+        var qMin: Double
+        var xMin: Double
+    }
+
+    /// Summary line of a single-reading LiDAR map (design §13.6); a map line, replaced on rebuild.
+    static func singleReadingLine(used: Int, total: Int, repeated: Int) -> String {
+        String(format: "Map method: one reading per cell (no averaging); %ld of %ld frames used, "
+               + "%ld repeated depth frames skipped", used, total, repeated)
+    }
+
+    /// Trims the accumulated grid to the observed extent, computes statistics and profiles, renders the map image
+    /// and writes every map file (staged, renamed together). Shared by the LiDAR builds and the laser builder.
+    /// `speeds` holds one entry per frame that could have a speed (nil = no reading); `extraFiles` adds files that
+    /// depend on the trimmed grid, written in the same staged set.
+    static func finish(cells: MapCells, heightMode: Bool, sensor: MapSensor, speeds: [Double?], frameCount: Int,
+                       duration: Double, travel: Double, extraLines: [String], folder: URL,
+                       composite: ((CGImage, TopoStats) throws -> Data)?,
+                       extraFiles: (Geometry) -> [(name: String, write: (URL) throws -> Void)] = { _ in [] })
+        throws -> Output {
+        var cols = cells.columns
+        var rows = cells.rows
+        let cell = cells.cell
+        var qMin = cells.qMin
+        var xMin = cells.xMin
+        let zRef = cells.zRef
+        var means = cells.means
+        var m2s = cells.m2s.isEmpty ? [Float](repeating: 0, count: cells.count) : cells.m2s
+        var hits = cells.hits
+        guard cols > 0, rows > 0, means.count == cols * rows, hits.count == cols * rows,
+              m2s.count == cols * rows else { throw LineError.notEnoughData }
         // Trim the empty margin around the data (the padding above only leaves room for relief), so the map,
         // its length, width and coverage describe the observed material only.
         var rLo = rows, rHi = -1, cLo = cols, cHi = -1
@@ -333,13 +417,13 @@ enum TopoMapBuilder {
             }
         }
 
-        let speeds = frames.compactMap(\.speed)
+        let readings = speeds.compactMap { $0 }
         var speedMean: Double?
         var speedStd: Double?
-        if !speeds.isEmpty {
-            let m = speeds.reduce(0, +) / Double(speeds.count)
+        if !readings.isEmpty {
+            let m = readings.reduce(0, +) / Double(readings.count)
             speedMean = m
-            speedStd = (speeds.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(speeds.count)).squareRoot()
+            speedStd = (readings.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(readings.count)).squareRoot()
         }
 
         let p1Value = percentile(0.01)
@@ -370,11 +454,11 @@ enum TopoMapBuilder {
             residualStdDev: residualN > 0 ? (residualSq / Double(residualN)).squareRoot() : 0,
             repeatStdDev: repeatN > 0 ? (repeatVarianceSum / Double(repeatN)).squareRoot() : 0,
             speedMean: speedMean, speedStdDev: speedStd,
-            speedMin: speeds.min(), speedMax: speeds.max(),
-            speedTrackedPercent: 100 * Double(speeds.count) / Double(frames.count),
+            speedMin: readings.min(), speedMax: readings.max(),
+            speedTrackedPercent: speeds.isEmpty ? 0 : 100 * Double(readings.count) / Double(speeds.count),
             colorNear: near, colorFar: far,
-            frames: frames.count, duration: frames.last?.time ?? 0,
-            heightMode: heightMode)
+            frames: frameCount, duration: duration,
+            heightMode: heightMode, mapMethod: cells.method, sensor: sensor)
         let profiles = TopoProfiles(across: across, along: along)
         let gridFile = TopoGridFile(columns: cols, rows: rows, cell: cell, qMin: qMin, xMin: xMin,
                                     heightMode: heightMode, values: grid)
@@ -443,9 +527,11 @@ enum TopoMapBuilder {
             let png = try composite(image, stats)
             files.append(("TopoMap.png", { url in try png.write(to: url) }))
         }
+        let extras = extraFiles(Geometry(columns: cols, rows: rows, cell: cell, qMin: qMin, xMin: xMin))
+        files.append(contentsOf: extras)
         try Self.writeAll(in: folder, files)
 
-        return Output(stats: stats, profiles: profiles, summary: summaryLines(stats, travel: Self.travelRange(frames)),
+        return Output(stats: stats, profiles: profiles, summary: summaryLines(stats, travel: travel) + extraLines,
                       mapImage: image, grid: gridFile)
     }
 
@@ -568,8 +654,8 @@ enum TopoMapBuilder {
     /// 2 s old at Record, Y-1, or any held speed in recordings from builds before Z-1).
     static func summaryLines(_ s: TopoStats, travel: Double = 0) -> [String] {
         var lines = [
-            String(format: "Scanned %.2f m long × %.2f m wide, %.0f mm cells, %.0f%% coverage",
-                   s.lengthMM / 1000, s.widthMM / 1000, s.cellSize, s.coveragePercent),
+            String(format: "Scanned %.2f m long × %.2f m wide, %@ mm cells, %.0f%% coverage",
+                   s.lengthMM / 1000, s.widthMM / 1000, cellText(s.cellSize), s.coveragePercent),
             String(format: s.heightMode == true
                    ? "Height above baseline mean %.2f mm, std dev %.2f mm, variance %.2f mm²"
                    : "Distance mean %.1f mm, std dev %.2f mm, variance %.2f mm²",
@@ -578,8 +664,11 @@ enum TopoMapBuilder {
                    s.range, s.minimum, s.maximum, s.p95 - s.p5),
             String(format: "Across-width profile: std dev %.2f mm, range %.1f mm", s.acrossStdDev, s.acrossRange),
             String(format: "Along-travel profile: std dev %.2f mm, range %.1f mm", s.alongStdDev, s.alongRange),
-            String(format: "Local residual std dev %.2f mm; repeat-reading noise %.2f mm; %.1f readings per cell",
-                   s.residualStdDev, s.repeatStdDev, s.meanHitsPerCell)
+            s.isSingleReading
+                ? String(format: "Local residual std dev %.2f mm; %.1f reading per cell", s.residualStdDev,
+                         s.meanHitsPerCell)
+                : String(format: "Local residual std dev %.2f mm; repeat-reading noise %.2f mm; %.1f readings per cell",
+                         s.residualStdDev, s.repeatStdDev, s.meanHitsPerCell)
         ]
         if let m = s.speedMean, let sd = s.speedStdDev {
             lines.append(String(format: "Speed mean %.0f mm/s (%.2f m/min), std dev %.1f mm/s, tracked %.0f%% of frames",
@@ -605,7 +694,7 @@ enum TopoMapBuilder {
     private static let mapSummaryPrefixes = [
         "Scanned ", "Height above baseline mean", "Distance mean", "Range ", "Across-width profile",
         "Along-travel profile", "Local residual", "Speed mean", "Speed: no texture lock", "Colours:",
-        "Map not built",
+        "Map not built", "Map method:", "Laser line:", "Wall re-zero:",
         // Written by Line scan when Recording.json could not be read; obsolete once a map builds from it.
         "Recording.json could not be read back"
     ]
@@ -672,7 +761,7 @@ enum TopoMapBuilder {
             ["along_profile_std_dev", f(s.alongStdDev, 3), "mm"],
             ["along_profile_range", f(s.alongRange, 2), "mm"],
             ["residual_std_dev", f(s.residualStdDev, 3), "mm"],
-            ["repeat_reading_std_dev", f(s.repeatStdDev, 3), "mm"],
+            ["repeat_reading_std_dev", s.isSingleReading ? "" : f(s.repeatStdDev, 3), "mm"],
             ["speed_mean", f(s.speedMean, 1), "mm/s"],
             ["speed_std_dev", f(s.speedStdDev, 2), "mm/s"],
             ["speed_min", f(s.speedMin, 1), "mm/s"],
@@ -682,6 +771,11 @@ enum TopoMapBuilder {
             ["colour_dark_blue", f(s.colorFar, 1), "mm"]
         ]
         return CSV.make(rows)
+    }
+
+    /// Cell size for text: whole millimetres as "10", finer cells (laser maps) as "1.3".
+    static func cellText(_ cell: Double) -> String {
+        abs(cell - cell.rounded()) < 0.05 ? String(format: "%.0f", cell) : String(format: "%.1f", cell)
     }
 
     static func profileCSV(_ points: [ProfilePoint], header: String, valueName: String) -> String {
@@ -701,19 +795,22 @@ enum TopoMapBuilder {
 
     /// Rows = across (top → bottom of the screen, mm from the image centre line), columns = along (left → right,
     /// mm from the left edge of the map). Blank = no data. Same cells as TopoGrid.bin.
-    private static func writeGridCSV(_ grid: TopoGridFile, to url: URL) throws {
+    static func writeGridCSV(_ grid: TopoGridFile, to url: URL) throws {
         let rows = grid.rows
         let cols = grid.columns
         let writer = try TextFileWriter(url: url)
+        // Whole-millimetre cells keep their whole-millimetre labels; finer cells (laser maps) get 0.01 mm labels so
+        // neighbouring labels stay distinct.
+        let label = abs(grid.cell - grid.cell.rounded()) < 1e-9 ? "%.0f" : "%.2f"
         var header = ["across_mm \\ along_mm"]
         header.reserveCapacity(cols + 1)
-        for c in 0..<cols { header.append(String(format: "%.0f", (Double(c) + 0.5) * grid.cell)) }
+        for c in 0..<cols { header.append(String(format: label, (Double(c) + 0.5) * grid.cell)) }
         try writer.line(header.joined(separator: ","))
         var fields = [String]()
         fields.reserveCapacity(cols + 1)
         for r in 0..<rows {
             fields.removeAll(keepingCapacity: true)
-            fields.append(String(format: "%.0f", grid.xMin + (Double(r) + 0.5) * grid.cell))
+            fields.append(String(format: label, grid.xMin + (Double(r) + 0.5) * grid.cell))
             for c in 0..<cols {
                 let v = grid.values[r * cols + c]
                 fields.append(v.isFinite ? tenths(v) : "")

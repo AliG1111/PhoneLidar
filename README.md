@@ -11,7 +11,8 @@ You need a Windows PC, a LiDAR iPhone (12 Pro / Pro Max or a newer **Pro** model
 | **Room scan** | RoomPlan | `Room.usdz` (walls/doors/windows/furniture as boxes), `RoomMesh.usdz`, `CapturedRoom.json`, `RoomReport.csv` (every wall, door, window, opening, floor and object with W × H × D in m and ft-in, plus a totals block: wall count, total wall length, maximum wall height, floor area) |
 | **Equipment scan (LiDAR mesh)** | ARKit scene reconstruction | `Mesh.usdz`, `Mesh.obj`, `Mesh.ply` (world-space, metres, Y up), `Measurements.csv` from live point-to-point measuring |
 | **Object capture** | RealityKit Object Capture + on-device photogrammetry | `Model.usdz` (photo-textured, real scale), `Images/` folder with the source photos (kept even when the model cannot be built) |
-| **Line scan (moving material)** | AVFoundation LiDAR depth camera + synchronized video | `Video.mov`, `Depth.bin`, `Recording.json`, `Frames.csv` (per-frame speed, fastest zone, travel, distance, tilt), `ZoneSpeeds.csv`, `Baseline.bin` / `Baseline.json` (when calibrated), `TopoMap.png`, `TopoMapGrid.png`, `TopoMap.csv`, `TopoGrid.bin`, `TopoStats.csv`, `TopoStats.json`, `TopoProfiles.json`, `AcrossProfile.csv`, `AlongProfile.csv`, `TopoReplay_<time>s.png` (saved replay images) |
+| **Line scan (moving material)** | AVFoundation LiDAR depth camera + synchronized video | `Video.mov`, `Depth.bin`, `Recording.json`, `Frames.csv` (per-frame speed, fastest zone, travel, distance, tilt), `ZoneSpeeds.csv`, `Baseline.bin` / `Baseline.json` (when calibrated), `TopoMap.png`, `TopoMapGrid.png`, `TopoMap.csv`, `TopoGrid.bin`, `TopoStats.csv`, `TopoStats.json`, `TopoProfiles.json`, `AcrossProfile.csv`, `AlongProfile.csv`, `ScanLineProfiles.csv` (single-frame maps), `TopoReplay_<time>s.png` (saved replay images) |
+| **Laser line scan (flake topography)** | AVFoundation main camera at up to 240 fps + your line laser (laser-line triangulation) | `Profiles.bin` (raw sub-pixel line position per column and frame), `LaserFrames.csv`, `LaserRecording.json` (settings and calibration), and the same map files as Line scan (`TopoMap.png`, `TopoMap.csv`, `TopoGrid.bin`, `TopoStats.csv`, …) |
 
 Room, equipment and object scans can be:
 - opened in the built-in 3D viewer (orbit, zoom, pan, tap two points to measure on the model),
@@ -36,6 +37,8 @@ PhoneLidar/Object/              Object Capture + photogrammetry
 PhoneLidar/Line/                Line scan: LiDAR + video capture, speed tracking, recording and recovery of
                                 interrupted recordings, playback, topographic map builder and statistics,
                                 real-time topographic replay (TopoReplay*.swift, TopoGridFile.swift)
+PhoneLidar/Laser/               Laser line scan: wide-camera capture, line detection, calibration, LiDAR height probe,
+                                Profiles.bin recording, laser map builder
 PhoneLidar/Viewer/              SceneKit 3D viewer with measuring
 PhoneLidar/Library/             Scan detail / share / rename / delete, incomplete scans
 PhoneLidar/Storage/             Scan storage, unit formatting, CSV
@@ -156,7 +159,8 @@ The signing step uses Codemagic's open-source CLI tools (`codemagic-cli-tools` o
 - Live speed in mm/s, m/min and ft/min (half-second average), texture **lock %**, distance to the surface, travel angle and a speed sparkline.
 - **Fastest** (mm/s): fastest of 24 speed zones (6 across × 4 along the travel, each scaled by its own LiDAR distance), marked on the picture with an orange box. **Tap the picture** to place a crosshair and read **At point** speed (mm/s) for the zone under it; ✕ clears it.
 - Depth overlay: dark blue = farthest, dark red = closest; the legend shows the current range. The slider sets overlay strength.
-- Before recording: **Raw LiDAR depth (unfiltered)** (default off = Apple's filtered depth), **Short shutter (1/1000 s) for sharp texture** (default on), **Direction**. These three are locked while a baseline is being calibrated, so a baseline always uses one depth setting.
+- Before recording: **Raw LiDAR depth (unfiltered)** (default off = Apple's filtered depth), **Short shutter (1/1000 s) for sharp texture** (default on), **Direction**, **Map: averaged / single frame**. These are locked while a baseline is being calibrated, so a baseline always uses one depth setting.
+  - **Map: single frame** builds the map from one LiDAR reading per cell, with no averaging between frames, and switches **Raw LiDAR depth** on (Apple's filter smooths over time, which smears moving material). Each cell takes the reading from the frame in which that spot passed closest to the centre row of the LiDAR view. A single-frame map shows the LiDAR's real per-reading noise and its laser-spot spacing (≈ 5 cm at 1 m); it does not resolve individual strands. For strand-level heights use the **Laser line scan**.
   - The short shutter is an **auto-exposure limit**: the camera keeps adapting to the light but never exposes longer than 1/1000 s, and raises ISO instead. Add light if the picture is dark or noisy. Switching it off returns to the camera's normal exposure limit.
 - **Bubble level** (camera-down mount): the bubble moves toward the high edge; green ≤ 0.5°, yellow ≤ 2°, red above; rim = 3°. The two rings mark **0.5° and 2°** at the same scale the bubble moves, so the bubble's centre sits on a ring at exactly that tilt. Readout ↔ = left/right edge, ↕ = top/bottom edge, + = right/top edge high, from the gravity sensor. **Zero here** saves the current orientation as level (lay the phone flat on the floor or conveyor first, tap Zero here, then mount it); **Reset** returns to gravity. The orange ring / *Phone vs surface (LiDAR)* readout is the tilt relative to the surface below, from a plane fitted to the depth map.
 - **Baseline calibration** (flat-surface zero): with the surface below empty, tap **Calibrate baseline on the empty flat surface**. About 90 frames (~3 s): the per-pixel trimmed mean of the first 60 becomes the baseline, the last 30 check it. This removes phone tilt and the LiDAR's fixed pattern across its field of view, which otherwise make a flat surface read different distances in different areas. The screen shows the distance to the surface, the flat-surface spread before (σ and P1–P99 range) and after correction (σ), and the **coverage**: the share of the view that had steady LiDAR readings (the rest is filled from a plane fitted to the rest).
@@ -197,6 +201,7 @@ If the app is killed anyway (iOS closes it, the battery dies), the files already
 - Statistics: distance mean, variance, std dev, CV, min/max/range, P1/P5/median/P95/P99; across-width profile and along-travel profile std dev and range; local residual std dev; repeat-reading noise; readings per cell; coverage; speed mean/std dev/min/max and % of frames with texture lock. Profile charts plot distance with "up = closer to the camera".
 - With a baseline saved in the recording, every value is **height above the flat surface** (map, statistics prefixed `height_` in TopoStats.csv, profiles, TopoMap.png legend Low → High); without one, values are distances from the camera. **The CV is only defined for distances**: in height mode the mean is near zero, so the CV row is hidden on screen, `height_cv` is blank in `TopoStats.csv` and `cvPercent` is absent from `TopoStats.json`.
 - **Rebuild map** reprocesses the saved recording (repairing a cut-off `Recording.json` first and noting it in the summary), keeps the old map on screen while it works, shows "Map not rebuilt: …" if it fails, and updates the scan's summary and file list when it is done ("Map rebuilt, but the scan summary was not updated: …" if that last step fails). All map files are written under temporary names and renamed together at the end, so a failed rebuild never leaves new statistics next to an old picture.
+- **Map method** (above **Rebuild map**): *Averaged* (the mean of every reading in a cell) or *Single reading* (one reading per cell, nothing averaged). Pick one and tap **Rebuild map**; the replay then uses that map. A single-reading LiDAR map also writes `ScanLineProfiles.csv` (one row per frame: the reading on the centre row of the view at each across position; an averaged rebuild removes it) and skips depth frames that only repeat the previous frame (the summary says how many). For single-reading maps the repeat-reading noise is shown as "—" and readings per cell is 1.
 
 ## Topographic replay (real time)
 
@@ -258,6 +263,56 @@ A second iPhone running Phone LiDAR controls a mounted Line scan phone, for moun
 - **Partly copied scans** lists partial copies the paired scanner does not offer now (deleted there, a different scanner paired, or not in its list); **Discard** frees their space.
 
 **Security**: after pairing, the phones only talk to the phone they are paired with. Every connection is checked with the 256-bit pairing key and all traffic is encrypted, so other phones nearby cannot start or stop a scan or copy files. Limit of the pairing step: a phone running modified software that pretends to be the scanner while you pair can work out the 6-digit code from that one attempt and pair in your place. So pair where no such phone is around. After pairing, your phone must show **Connected to** the scanner with its readouts; if your phone reports that pairing failed while the scanner shows a paired remote, tap **Forget** on the scanner and pair again. The paired-remote name on the scanner is only a weak check: a modified phone can copy your phone's name.
+## Laser line scan (flake topography)
+
+A line laser draws a thin line across the belt at an angle; the phone's main camera looks straight down and finds the line in every frame. Where the surface is higher, the line moves along the picture. The shift gives the height of each point on the line, frame by frame, with no averaging. This resolves single strands, which the LiDAR cannot.
+
+**What you need**
+- A line laser (Class 2 or lower where people can look into it; follow plant rules). Red (650 nm) or green (520–532 nm). A thin, bright line works best.
+- Optional but recommended: an optical band-pass filter for the laser's colour in front of the phone camera (blocks plant lighting).
+- A rigid mount that holds the phone and the laser in fixed positions relative to each other.
+- A shim or gauge block of known thickness (for example 10.0 mm, measured with a calliper).
+
+**Mounting**
+- Phone in **portrait**, camera pointing straight down (level it with a bubble level), on USB-C power.
+- Laser line **across** the belt, from the left or right side of the screen at about 30–45° from vertical. A larger angle gives more height resolution and more shadowing behind tall strands.
+- Put the line near one side of the picture (not the middle): the speed is measured from the rest of the picture.
+- Height: 0.5 m gives 0.33 mm per camera pixel and 0.64 m of width; 1 m gives 0.66 mm per pixel and 1.27 m of width. The line is read on every 2nd pixel column, so a profile point every 0.66 mm across at 0.5 m and every 1.3 mm at 1 m; the smallest map cell is that spacing rounded up to 0.1 mm (0.7 mm and 1.4 mm).
+
+**Calibration (once per mount; the app keeps it)**
+1. **Camera height**: lens to belt in mm. Type it and tap **Set**, or tap **LiDAR** to measure it (check against a tape measure). Recording is not offered while a typed height has not been set.
+2. **Calibrate baseline** with the belt empty and the laser on: 60 frames over about 1 s; focus and white balance are locked. The line must be found on at least half of the width. A new baseline keeps the earlier height scale of the same camera format, with its laser side, angle and tilt; to change the side, tap **Use** or measure a shim again.
+3. **Measure shim**: put the shim on the belt under part of the line (at least a tenth of the width), type its thickness, tap **Measure shim**, then remove it. This sets the height scale. If you cannot use a shim, type the laser angle from vertical, pick its side and tap **Use** (less accurate: the angle is hard to measure exactly). Either way the app corrects each column for the line's distance from the picture centre. With **Use**, the camera tilt along the travel (read from the phone, see the level zero below) is taken into account.
+- Recalibrate after moving the phone, the laser or the focus. A calibration made with another camera format (picture size, crop or binning, which can differ between frame rates) is not used; the screen says so.
+
+**Side-wall calibration (when the belt cannot be cleared)**
+- Pick **Side walls** under Calibration. The laser line must cross both side-wall tops, and both must be in the picture: the width seen at wall-top height is 1.27 × (camera height − wall height), so a 12 ft line with 300 mm walls needs the camera at about 3.3 m. Make the wall tops matte where the line crosses them (paint or tape).
+- Enter: **camera height** (lens to belt; Set or LiDAR), **wall top above belt** (mm, measured to ±1 mm), **laser angle** from vertical measured with a digital angle gauge on the laser (±0.1°) and its side. Lay the phone flat (screen up) on a surface checked with a spirit level and tap **Zero here** once; the camera tilt is then read from the phone (this zero is separate from Line scan's conveyor zero). The camera must be level across the belt within 0.5° (the screen warns otherwise); a tilt along the travel is allowed and corrected.
+- Tap **Calibrate on the side walls** (about 1 s, focus locked). The wall tops are drawn in orange; the app assumes a flat belt and draws the belt line straight between the walls.
+- **Wall re-zero every frame** (on by default): the walls are measured in every frame and the belt line follows them, which removes drift and mount vibration. The map and the height readouts leave out the walls.
+- Accuracy (worst case over 0–200 mm mat height): laser angle ±0.1°, camera height ±5 mm, wall height ±1 mm → within 2.5 mm; ±0.2° / ±10 mm / ±2 mm → within 5 mm; a ±1° angle gives up to 12 mm. An error in the camera tilt reading (for example a zero made on a surface that is not level) adds like an error in the laser angle. The wall height error passes straight into every height.
+- A new camera height (Set or LiDAR) refits the wall calibration from the stored wall rows. After moving the phone or the laser, or after a new wall height or laser angle, calibrate on the side walls again; **Measure shim** and **Use** are not offered on a side-wall calibration.
+
+**Recording screen**
+- Green dots = the line found in each frame; yellow = the calibrated baseline.
+- Speed, % of the line found, median and maximum height on the line, picture size, actual fps and dropped frames, and a live across-width height profile.
+- Speed is measured about 60 times a second from the part of the picture on the far side of the laser band; it needs at least 216 pixel rows there. If the band takes too much of the picture, the screen says "No room for speed tracking": move the line toward an edge or lower **Max height**.
+- Settings: **frame rate** 240 / 120 / 60 fps (if a rate is not available the highest available is used and the screen says so), **shutter** limit 1/1000–1/4000 s, **exposure** bias (lower it until only the line is bright), **max height above belt** (sets the search band), **direction**, **map** single reading (default) or averaged.
+- Profile spacing along the belt = speed ÷ frame rate:
+
+| Speed | 240 fps | 120 fps | 60 fps |
+|---|---|---|---|
+| 100 mm/s | 0.4 mm | 0.8 mm | 1.7 mm |
+| 500 mm/s | 2.1 mm | 4.2 mm | 8.3 mm |
+| 1000 mm/s | 4.2 mm | 8.3 mm | 16.7 mm |
+
+**Saved files and map**
+- `scan.json` is written when recording starts, so a recording cut short by a crash stays in the library; open its map and tap **Rebuild map**.
+- Recording stops and saves when the app goes to the background, the camera is interrupted, the phone is critically hot, storage falls below 300 MB or a write fails. It does not start with less than 1 GB free.
+- After Stop the map is built: heights above the belt, one laser reading per cell (the one nearest the cell centre) or averaged. Cell = the larger of the across column spacing and the travel per frame. Very long runs at fine cells are coarsened so the map stays under 3,000,000 cells; `Profiles.bin` always keeps every reading.
+- The scan opens to **Topographic map + variance statistics** (with the map-method picker and Rebuild map) and **Topographic replay**.
+
+**Expected performance** (untested on the device yet): height per single reading ≈ 0.05–0.15 mm at 0.5 m and 0.1–0.3 mm at 1 m once shim-calibrated (laser speckle on wood limits it); strand edges facing away from the laser can be shadowed (no reading there).
 
 ## Opening scans on Windows
 
@@ -273,6 +328,10 @@ A second iPhone running Phone LiDAR controls a mounted Line scan phone, for moun
 - `.mov`: any video player (HEVC). It is written in 5-second movie fragments, so a video cut off by a crash plays up to its last complete fragment.
 - `Depth.bin`: header `PLDP`, version, width, height (UInt32 LE), then per frame a UInt32 byte count + LZFSE-compressed UInt16 distances in 0.1 mm (0 = no data, also 0 for 6.5 m and farther). A cut-off last frame is ignored; a header with a width or height above 8192 is refused. Frame times, speeds and depth intrinsics are in `Recording.json`.
 - `Recording.json`: plain JSON, one object per frame. It is written while recording, so it is compact (not pretty-printed, keys not sorted): the first line holds the settings (`depthWidth`, `depthHeight`, `videoWidth`, `videoHeight`, `filteredDepth`, `shortShutter`, `direction`, `tileColumns`, `tileRows`) followed by `"frames":[`, then one frame per line, and `]}` at the end. Any JSON parser (Python `json`) reads it; recordings from earlier versions are pretty-printed with the same keys. A cut-off file is repaired by the app (complete frame lines kept, `]}` added).
+- `ScanLineProfiles.csv` (single-reading LiDAR maps): `frame,time_s,travel_mm,repeated`, then one column per map row (across position in mm). Each row is one frame's reading on the centre row of the LiDAR view at each across position (height or distance, mm; blank = none); `repeated` = 1 for a depth frame identical to the previous one (not used in the map).
+- `LaserRecording.json`: laser scan settings (picture size, requested and active frame rate, columns, camera intrinsics, shutter, exposure, max height, map method), the calibration (camera height, height scale and how it was set, baseline row per column, lens position) and, after Stop, frame count, duration and dropped frames.
+- `Profiles.bin`: header (little endian) `PLLP`, version (UInt32 = 1), columns N, first column, column step, row scale (32), two reserved UInt32; then one 24 + 2·N-byte record per frame: time (Float64, s), travel (Float64, mm), speed (Float32, mm/s, NaN = none), flags (UInt32: 1 = tracked frame, 2 = speed valid), and N UInt16 line rows in 1/32 pixel (65535 = line not found). Height h = H·d / (A + d) with d = row − baseline row and H, A from `LaserRecording.json`. A cut-off last record is ignored.
+- `LaserFrames.csv`: `frame,time_s,speed_mm_s,travel_mm,detected_pct,median_height_mm,max_height_mm`.
 - `scan.json`: scan metadata (name, date, summary, file list); keys unchanged.
 - `.recording-in-progress` (hidden, empty): marks a Line recording that has not been saved yet. It is removed once the recording has been saved and `Recording.json` reads back; you only find it in the folder of an interrupted recording. Hidden `.<name>.partial` files exist only while a map is being written (and can be deleted if the app was killed then).
 - Object-capture photos (`Images/`) can be shared from the scan screen (**Share photos**) and reprocessed on a PC with photogrammetry software such as RealityCapture or Meshroom for higher detail.

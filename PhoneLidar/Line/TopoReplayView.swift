@@ -58,13 +58,12 @@ struct TopoReplayView: View {
     }
 
     /// Refreshes the file list and, after a map rebuild, replaces the map lines of the summary.
-    private func updateScanRecord(summary: (info: LineRecordingInfo, map: [String])?) {
+    private func updateScanRecord(summary: (recording: MapRecording, map: [String])?) {
         let target = folder.standardizedFileURL.path
         guard var record = store.scans.first(where: { store.folderURL(for: $0).standardizedFileURL.path == target })
         else { return }
         if let summary {
-            record.summary = TopoMapBuilder.recordSummary(existing: record.summary, info: summary.info,
-                                                          map: summary.map)
+            record.summary = summary.recording.recordSummary(existing: record.summary, map: summary.map)
         }
         do {
             try store.save(record)
@@ -74,10 +73,10 @@ struct TopoReplayView: View {
     }
 
     private struct Opened {
-        var info: LineRecordingInfo
+        var recording: MapRecording
         var grid: TopoGridFile?
-        /// Recording.json had to be repaired before it could be read.
-        var repaired: Bool
+        /// The map on disk holds one reading per cell (its replay starts without 3 × 3 smoothing).
+        var singleReading: Bool
     }
 
     private struct Prepared {
@@ -91,7 +90,7 @@ struct TopoReplayView: View {
 
         var errorDescription: String? {
             switch self {
-            case .recording: return "Recording.json is missing or damaged."
+            case .recording: return "The recording file (Recording.json or LaserRecording.json) is missing or damaged."
             case .build(let reason): return "The topographic map could not be built: \(reason)"
             }
         }
@@ -104,25 +103,27 @@ struct TopoReplayView: View {
         let folder = self.folder
         let opened = await Task.detached(priority: .userInitiated) { () -> Opened? in
             // Repairs a Recording.json that was cut short, as Line scan does after recording.
-            guard let loaded = try? LineRecordingRepair.loadInfo(folder: folder) else { return nil }
-            return Opened(info: loaded.info, grid: TopoGridFile.load(from: folder), repaired: loaded.repaired)
+            guard let recording = try? MapRebuild.load(folder: folder) else { return nil }
+            let stats = (try? Data(contentsOf: folder.appendingPathComponent("TopoStats.json")))
+                .flatMap { try? JSONDecoder.iso.decode(TopoStats.self, from: $0) }
+            return Opened(recording: recording, grid: TopoGridFile.load(from: folder),
+                          singleReading: stats?.isSingleReading == true)
         }.value
         guard !Task.isCancelled else { return }
         guard let opened else {
             failure = LoadError.recording.localizedDescription
             return
         }
-        let info = opened.info
+        let recording = opened.recording
         var gridFile = opened.grid
+        var singleReading = opened.singleReading
         if gridFile == nil {
             // Recordings made before the replay existed: build the map once (this also writes TopoGrid.bin).
             status = "Building the topographic grid…"
             let built = await Task.detached(priority: .userInitiated) { () -> Result<TopoMapBuilder.Output, Error> in
                 do {
                     // TopoMap.png is rendered here, off the main thread, and staged with the other files.
-                    return .success(try TopoMapBuilder.build(folder: folder, info: info) { image, stats in
-                        try TopoMapRenderer.compositePNG(map: image, stats: stats, direction: info.direction)
-                    })
+                    return .success(try MapRebuild.build(folder: folder, recording: recording, method: nil))
                 } catch {
                     return .failure(error)
                 }
@@ -130,10 +131,9 @@ struct TopoReplayView: View {
             switch built {
             case .success(let output):
                 // The files were written whether or not the screen is still open; keep the record current.
-                let mapSummary = opened.repaired ? [TopoMapBuilder.recordingRepairedNote] + output.summary
-                    : output.summary
-                updateScanRecord(summary: (info: info, map: mapSummary))
+                updateScanRecord(summary: (recording: recording, map: output.summary))
                 gridFile = output.grid
+                singleReading = output.stats.isSingleReading
             case .failure(let error):
                 failure = LoadError.build(error.localizedDescription).localizedDescription
                 return
@@ -144,7 +144,8 @@ struct TopoReplayView: View {
         status = "Preparing replay…"
         let result = await Task.detached(priority: .userInitiated) { () -> Result<Prepared, Error> in
             do {
-                let source = try TopoReplaySource.make(grid: grid, info: info)
+                let frames = try MapRebuild.replayFrames(folder: folder, recording: recording)
+                let source = try TopoReplaySource.make(grid: grid, direction: recording.direction, frames: frames)
                 let factor = TopoReplayModel.displayFactor(
                     source: source, lengthMM: source.widthMM * TopoReplayModel.defaultLengthFactor)
                 return .success(Prepared(source: source, grid: TopoDisplayGrid.make(source: source, factor: factor)))
@@ -157,6 +158,8 @@ struct TopoReplayView: View {
         case .success(let prepared):
             let replay = TopoReplayModel(folder: folder, title: title, created: created, source: prepared.source,
                                          grid: prepared.grid)
+            // A single-reading map is shown as measured: no 3 × 3 smoothing unless the user turns it on.
+            if singleReading { replay.smooth = false }
             model = replay
             if visible {
                 replay.start()
