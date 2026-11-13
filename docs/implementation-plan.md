@@ -27,6 +27,7 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P9 | On-device validation on the iPhone 17 Pro Max | Not started |
 | P10 | Backlog | Open |
 | P11 | Flake topography: single-frame LiDAR map and laser line scan (milestone M2) | In progress (branch `flake-topography`) |
+| P12 | Laser side-wall calibration and wall re-zero | In progress (branch `flake-topography`) |
 
 Build numbers are GitHub Actions run numbers of the `Build iOS app` workflow on `main` (artifact `PhoneLidar-unsigned-ipa-<n>`).
 
@@ -231,6 +232,19 @@ P9 additions (owner runs on the device; analysis assignment in brackets):
 - [ ] **V12 Laser height on shims** — camera at 0.5 m and 1.0 m; shim-calibrate with a 10 mm gauge; then gauges of 0.5, 1, 2, 5 mm (calliper-measured) on the belt, stationary 5 s and moving at 100 and 1000 mm/s. Pass (*proposed*, NFR-ACC-08): single readings within ±0.2 mm at 0.5 m and ±0.3 mm at 1 m (Opus 5.5 / high)
 - [ ] **V13 Laser frame rate** — 60 s at 240 fps on moving material. From `LaserRecording.json` and `LaserFrames.csv`: active fps, dropped frames, frame intervals. Pass: dropped ≤ 2 % (NFR-PERF-08) (Sonnet 5.5 / high)
 - [ ] **V14 Single-frame vs averaged LiDAR map** — one Line recording with Map = Single frame on a strand mat; rebuild as Averaged; compare `TopoStats` and profiles; report the repeated-frame share from the summary and `ScanLineProfiles.csv` (Opus 5.5 / high)
+
+### P12 — Laser side-wall calibration and wall re-zero
+
+Owner's request (2026-11-12): calibrate without clearing the belt, from the side walls (known wall-top height), 5 mm tolerance accepted. FR-LAS-11…15, design §14.9. Same branch and PR as P11; reviewed together with the M2 re-review fixes (one fresh Opus 5.5 / high change review of the diff since the previous review, repeated until no new findings).
+
+- [x] P12.1 Requirements, design §14.9, error budget (Opus 5.5 / max)
+- [x] P12.2 `LaserWalls` (laser term with tilt, detection, fit, re-zero shift, map crop), `LaserCalibration` fields, re-zero in `LaserMapBuilder` and the pipeline (Opus 5.5 / high)
+- [x] P12.3 Laser screen: method picker, wall inputs, level readout and zero, wall overlay, re-zero switch (capture + UI → Opus 5.5 / high)
+- [x] P12.4 Unit tests `LaserWallsTests` incl. the 5 mm budget (orchestrator, Opus 5.5, written with the code)
+- [ ] P12.5 Change review until no new findings; guide; PR with P11
+
+P9 addition:
+- [ ] **V15 Side-wall calibration on the line** — measure h_w (±1 mm), H (tape, ±5 mm), the laser angle (digital gauge, ±0.1°), zero the level; calibrate on the walls with flakes on the belt; compare mat heights with an empty-belt shim calibration made at a shutdown, and with a known board on the belt. Pass: within ±5 mm (FR-LAS-15) (Opus 5.5 / high)
 
 ### P10 — Backlog
 

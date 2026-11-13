@@ -128,6 +128,8 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
     /// The camera was interrupted or failed; the next frame reports that it runs again.
     private var awaitingResume = false
     private var trackingAvailable = true
+    /// Last line shift measured on the wall tops (side-wall calibration), held while the walls are hidden.
+    private var lastWallShift: (offset: Double, slope: Double)?
 
     private struct PendingRecording {
         var token: Int
@@ -385,6 +387,7 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
                 travel.clearHeldSpeed()
                 lastTrackTime = nil
             }
+            if newSettings.calibration != settings.calibration { lastWallShift = nil }
             settings = newSettings
         }
     }
@@ -548,13 +551,22 @@ final class LaserCapturePipeline: NSObject, AVCaptureVideoDataOutputSampleBuffer
             heights = [Float](repeating: .nan, count: columns.count)
             var finite: [Float] = []
             finite.reserveCapacity(columns.count)
+            // Side walls: the baseline follows the line shift on the wall tops; readouts use the columns between them.
+            if calibration.isSideWalls && calibration.wallTracking != false,
+               let shift = LaserWalls.shift(rows: detection.rows, calibration: calibration) {
+                lastWallShift = shift
+            }
+            let wallShift = calibration.isSideWalls && calibration.wallTracking != false ? lastWallShift : nil
+            let readout = calibration.isSideWalls ? LaserWalls.matColumns(calibration: calibration) : nil
             for k in 0..<columns.count {
                 let row = detection.rows[k]
+                var base = calibration.baselineRows[k]
+                if let wallShift { base += Float(wallShift.offset + wallShift.slope * Double(columns.u(k))) }
                 guard row.isFinite, let scale = calibration.shiftScale(column: k),
-                      let h = LaserGeometry.height(shift: Double(row - calibration.baselineRows[k]),
+                      let h = LaserGeometry.height(shift: Double(row - base),
                                                    cameraHeight: calibration.cameraHeight, scale: scale) else { continue }
                 heights[k] = Float(h)
-                finite.append(Float(h))
+                if readout?.contains(k) ?? true { finite.append(Float(h)) }
             }
             if !finite.isEmpty {
                 finite.sort()

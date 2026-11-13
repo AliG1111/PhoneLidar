@@ -20,7 +20,8 @@ struct LaserScanView: View {
                 ZStack {
                     CameraPreview(session: model.pipeline.session)
                         .id(model.pipelineID)
-                    LaserLineOverlay(live: model.live, baseline: model.displayBaseline, picture: picture)
+                    LaserLineOverlay(live: model.live, baseline: model.displayBaseline, walls: model.displayWalls,
+                                     picture: picture)
                         .allowsHitTesting(false)
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
@@ -160,6 +161,30 @@ struct LaserScanView: View {
                         .disabled(model.calibrating)
                 }
             }
+            Picker("Method", selection: $model.calibrationMethod) {
+                Text("Empty belt").tag(LaserCalibration.Method.emptyBelt)
+                Text("Side walls").tag(LaserCalibration.Method.sideWalls)
+            }
+            .pickerStyle(.segmented)
+            .disabled(model.calibrating)
+            if model.calibrationMethod == .sideWalls {
+                wallControls
+            } else {
+                emptyBeltControls
+            }
+            ForEach(model.calibrationLines, id: \.self) { line in
+                Text(line).font(.caption).foregroundStyle(.secondary)
+            }
+            if model.calibration != nil {
+                Button("Clear calibration", role: .destructive) { model.clearCalibration() }
+                    .font(.caption)
+                    .disabled(model.calibrating)
+            }
+        }
+    }
+
+    private var emptyBeltControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Button {
                 model.calibrateBaseline()
             } label: {
@@ -187,26 +212,69 @@ struct LaserScanView: View {
                     .keyboardType(.decimalPad)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 60)
-                Picker("Side", selection: $model.laserSide) {
-                    ForEach(LaserSide.allCases) { side in
-                        Text(side == .left ? "Left" : "Right").tag(side)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 120)
+                laserSidePicker
                 Button("Use") { model.useAngle() }
                     .buttonStyle(.bordered)
                     .disabled(model.calibrating || model.calibration == nil)
             }
-            ForEach(model.calibrationLines, id: \.self) { line in
-                Text(line).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Side walls (design §14.9): wall-top height, laser angle from a digital gauge, camera tilt from the phone.
+    private var wallControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Wall top above belt")
+                TextField("mm", text: $model.wallHeightText)
+                    .keyboardType(.decimalPad)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 80)
+                Text("mm")
             }
-            if model.calibration != nil {
-                Button("Clear calibration", role: .destructive) { model.clearCalibration() }
+            HStack {
+                Text("Laser angle")
+                TextField("°", text: $model.angleText)
+                    .keyboardType(.decimalPad)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 60)
+                Text("° from vertical")
+                laserSidePicker
+            }
+            HStack {
+                Text(model.tiltAlong.map { String(format: "Camera tilt along travel %+.2f°", $0) }
+                     ?? "Camera tilt: no sensor reading")
+                    .font(.caption.monospacedDigit())
+                Spacer()
+                Button(model.levelZeroed ? "Re-zero" : "Zero here") { model.zeroLevel() }
+                    .buttonStyle(.bordered)
                     .font(.caption)
                     .disabled(model.calibrating)
             }
+            Button {
+                model.calibrateOnWalls()
+            } label: {
+                Label("Calibrate on the side walls", systemImage: "rectangle.split.3x1")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.calibrating || model.format == nil)
+            if model.calibration?.isSideWalls == true {
+                Toggle("Wall re-zero every frame", isOn: Binding(
+                    get: { model.calibration?.wallTracking != false },
+                    set: { model.setWallTracking($0) }))
+                    .disabled(model.calibrating)
+            }
         }
+    }
+
+    private var laserSidePicker: some View {
+        Picker("Side", selection: $model.laserSide) {
+            ForEach(LaserSide.allCases) { side in
+                Text(side == .left ? "Left" : "Right").tag(side)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 110)
     }
 
     private var settingsPanel: some View {
@@ -270,6 +338,8 @@ struct LaserScanView: View {
 struct LaserLineOverlay: View {
     let live: LaserLiveUpdate?
     let baseline: (columns: LaserColumns, rows: [Float])?
+    /// Wall-top points of a side-wall calibration (orange).
+    let walls: [(u: Int, v: Float)]
     let picture: CGRect
 
     var body: some View {
@@ -287,6 +357,13 @@ struct LaserLineOverlay: View {
                     path.addEllipse(in: CGRect(origin: point(u: baseline.columns.u(k), v: v), size: CGSize(width: 2, height: 2)))
                 }
                 context.fill(path, with: .color(.yellow.opacity(0.8)))
+            }
+            if !walls.isEmpty {
+                var wallPath = Path()
+                for p in walls where p.v.isFinite {
+                    wallPath.addEllipse(in: CGRect(origin: point(u: p.u, v: p.v), size: CGSize(width: 4, height: 4)))
+                }
+                context.fill(wallPath, with: .color(.orange))
             }
             var path = Path()
             for (k, v) in live.lineRows.enumerated() where v.isFinite {

@@ -694,7 +694,7 @@ enum TopoMapBuilder {
     private static let mapSummaryPrefixes = [
         "Scanned ", "Height above baseline mean", "Distance mean", "Range ", "Across-width profile",
         "Along-travel profile", "Local residual", "Speed mean", "Speed: no texture lock", "Colours:",
-        "Map not built", "Map method:", "Laser line:",
+        "Map not built", "Map method:", "Laser line:", "Wall re-zero:",
         // Written by Line scan when Recording.json could not be read; obsolete once a map builds from it.
         "Recording.json could not be read back"
     ]

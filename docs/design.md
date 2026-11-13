@@ -896,3 +896,19 @@ Pass 1 over `Profiles.bin`: bounds of q and x over all valid readings, the acros
 | L-05 | Lens distortion (R-01) bends the line across the width. | The baseline is per column, so a flat belt reads 0 everywhere; heights use the per-column shift and A_k. |
 | L-06 | Laser safety. | Guide: use a Class 2 (or lower) line laser where people can look into it; follow plant rules. |
 
+### 14.9 Side-wall calibration and wall re-zero (P12)
+
+The belt of a running forming line cannot always be cleared. The side walls on both sides are always visible and their tops stand at a known height h_w above the belt.
+
+**Unknowns and why one wall height is not enough on its own.** With a flat belt the empty-belt line is straight: offset a, slope b. With the laser term K that is three unknowns; two wall tops give two equations (v_w = v₀ + A·r, A = K + (v₀ − c_y), r = h_w/(H − h_w)), and a change of K is absorbed by a change of v₀ of −ΔK·r/(1 + r). K therefore comes from the measured laser angle and camera tilt: K = f_y·tan(side·θ − φ) (`LaserWalls.laserTerm`). φ is `LineMotionMath.gravityTilt(g.x)` minus the level zero (UserDefaults `lineLevelZeroX`, shared with Line scan); + = right edge of the portrait screen high, which leans the optical axis toward −row.
+
+**Detection** (`LaserWalls.detect`): 60 frames (every round(fps/60)-th, full-frame search), per-column median (≥ half the frames). In the outer quarter of the detected columns on each side: the most raised row (`raisedSign` = sign of K; + = larger rows), grown into the contiguous run within 3 px; ≥ 3 columns; the run's median must be ≥ 10 px more raised than the median of the middle half.
+
+**Fit** (`LaserWalls.fit`): v₀ = (v_w − (K − c_y)·r)/(1 + r) per wall column; least-squares line v₀ = a + b·u through both walls; `baselineRows` = that line for every column; residual = RMS of the wall columns about the line; inner faces x_inner = (u_inner − c_x)(H − h_w)/f_x at the innermost wall column of each side. Stored in `LaserCalibration`: `method = sideWalls`, `wallHeight`, `wallColumns`, `wallRows` (median rows at calibration), `wallInnerX`, `wallTracking`, `cameraTilt`, `scale` = K, `scaleSource = angle`, `laserAngle`; `coverage` = wall columns ÷ columns.
+
+**Wall re-zero** (`LaserWalls.shift`): per frame, per side the median of (row − wallRows) over the wall columns detected (≥ 2) at the side's median u; both sides → line c(u) through them, one side → constant, none → hold the last value. The baseline of that frame is `baselineRows + c(u)`; A_k stays from the calibration. Live in `LaserCapturePipeline`, per frame in `LaserMapBuilder` (`wallShifts`), summary line `Wall re-zero:` (a map line). A camera rotation shifts wall and belt rows equally; a translation shifts the wall rows H/(H − h_w) times more (10 % at 3.3 m / 300 mm), a second-order error.
+
+**Map and readouts**: readings with x ≤ x_inner,left + 10 mm or ≥ x_inner,right − 10 mm are dropped from the map (`isInsideWalls`; the inner faces map to x_inner because each face point's height is computed); live median and maximum use the columns whose u lies between the faces' feet c_x + f_x·x_inner/H (`matColumns`). The search band includes the wall tops (max height ≥ h_w + 20 mm).
+
+**Error budget** (owner's tolerance 5 mm; 12 ft line, 300 mm walls, camera 3.3 m so the wall tops are in view: 1.27·(H − h_w) ≥ line width; 45° laser, f_y ≈ 1512 px, belt line 300 px from c_y; worst sign combination over 0–200 mm): θ ±0.1°, H ±5 mm, h_w ±1 mm → 2.5 mm; θ ±0.2°, H ±10 mm, h_w ±2 mm → 5.0 mm; θ ±0.5° → 7.6 mm; θ ±1° → 12.1 mm. The angle error is largest at the belt and zero at wall-top height; h_w error passes through ≈ 1.1 : 1. Not included: belt sag, wall-top flatness, lens-distortion curvature between the walls (least with the line near the middle row), per-reading noise (0.36–0.91 mm at 3.3 m). `LaserWallsTests.testFiveMillimetreBudget` reproduces the 5.0 mm case.
+

@@ -57,8 +57,17 @@ enum LaserMapBuilder {
         guard calibration.isComplete else { throw calibrationIncomplete }
         guard reader.frameCount >= 2 else { throw LineError.notEnoughData }
         let H = calibration.cameraHeight
-        let baseline = calibration.baselineRows
         let scales = calibration.shiftScales
+        let walls = calibration.isSideWalls
+        let tracking = walls && calibration.wallTracking != false
+        // Per-frame baseline: the calibration's, moved by the line shift seen on the wall tops (design §14.9).
+        let wallShifts = tracking ? Self.wallShifts(reader: reader, calibration: calibration) : nil
+        func baseline(frame i: Int) -> [Float] {
+            guard let shift = wallShifts?.shifts[i] else { return calibration.baselineRows }
+            return (0..<columns.count).map {
+                calibration.baselineRows[$0] + Float(shift.offset + shift.slope * Double(columns.u($0)))
+            }
+        }
         let sign = Double(info.direction.bufferSign)
         let frames = reader.frameCount
         let method = method ?? info.mapMethod
@@ -82,8 +91,9 @@ enum LaserMapBuilder {
                     travelHi = max(travelHi, travel)
                 }
                 if records.flags(i) & ProfilesFile.trackedFlag != 0 { speeds.append(records.speed(i)) }
-                readings(records, index: i, columns: columns, baseline: baseline, calibration: H, scales: scales,
-                         fx: info.fx, fy: info.fy, cx: info.cx, cy: info.cy, sign: sign) { r in
+                readings(records, index: i, columns: columns, baseline: baseline(frame: i), calibration: H,
+                         scales: scales, fx: info.fx, fy: info.fy, cx: info.cx, cy: info.cy, sign: sign) { r in
+                    guard !walls || LaserWalls.isInsideWalls(x: r.x, calibration: calibration) else { return }
                     qMin = min(qMin, r.q)
                     qMax = max(qMax, r.q)
                     xMin = min(xMin, r.x)
@@ -110,9 +120,10 @@ enum LaserMapBuilder {
         cells.withAccumulator { acc in
             reader.withRecords { records in
                 for i in 0..<frames {
-                    readings(records, index: i, columns: columns, baseline: baseline, calibration: H, scales: scales,
-                             fx: info.fx, fy: info.fy, cx: info.cx, cy: info.cy, sign: sign) { r in
-                        guard let idx = acc.index(q: r.q, x: r.x) else { return }
+                    readings(records, index: i, columns: columns, baseline: baseline(frame: i), calibration: H,
+                             scales: scales, fx: info.fx, fy: info.fy, cx: info.cx, cy: info.cy, sign: sign) { r in
+                        guard !walls || LaserWalls.isInsideWalls(x: r.x, calibration: calibration),
+                              let idx = acc.index(q: r.q, x: r.x) else { return }
                         var score: Float = 0
                         if single {
                             let qc = acc.qMin + (Double(idx % acc.columns) + 0.5) * acc.cell
@@ -127,6 +138,7 @@ enum LaserMapBuilder {
 
         let detected = 100 * Double(valid) / Double(frames * columns.count)
         var lines = [laserLine(info: info, frames: frames, detectedPercent: detected)]
+        if let wallShifts { lines.append(wallLine(wallShifts, frames: frames)) }
         if single {
             lines.append("Map method: one reading per cell (no averaging), the laser reading nearest the cell centre")
         }
@@ -134,6 +146,46 @@ enum LaserMapBuilder {
         return try TopoMapBuilder.finish(cells: cells, heightMode: true, sensor: .laserLine, speeds: speeds,
                                          frameCount: frames, duration: duration, travel: travelRange,
                                          extraLines: lines, folder: folder, composite: composite)
+    }
+
+    /// Line shift of every frame from the wall tops (`LaserWalls.shift`); a frame without one holds the last value
+    /// (the first frames before any value use none). `measured` counts frames with their own value.
+    struct WallShifts {
+        var shifts: [(offset: Double, slope: Double)?]
+        var measured: Int
+        /// Shift at the middle profile column of each measured frame, px.
+        var middle: [Double]
+    }
+
+    static func wallShifts(reader: ProfilesFileReader, calibration: LaserCalibration) -> WallShifts {
+        var out = WallShifts(shifts: [], measured: 0, middle: [])
+        out.shifts.reserveCapacity(reader.frameCount)
+        let uMiddle = Double(calibration.columns.u(calibration.columns.count / 2))
+        var last: (offset: Double, slope: Double)?
+        reader.withRecords { records in
+            let wallColumns = calibration.wallColumns ?? []
+            var rows = [Float](repeating: .nan, count: calibration.columns.count)
+            for i in 0..<reader.frameCount {
+                for k in wallColumns where k >= 0 && k < rows.count { rows[k] = records.row(i, k) }
+                if let shift = LaserWalls.shift(rows: rows, calibration: calibration) {
+                    last = shift
+                    out.measured += 1
+                    out.middle.append(shift.offset + shift.slope * uMiddle)
+                }
+                out.shifts.append(last)
+            }
+        }
+        return out
+    }
+
+    /// "Wall re-zero: 98 % of frames measured, line shift −0.4…+0.6 px (mean +0.1 px)" (a map line).
+    static func wallLine(_ w: WallShifts, frames: Int) -> String {
+        guard let lo = w.middle.min(), let hi = w.middle.max(), frames > 0 else {
+            return "Wall re-zero: the wall tops were not found in any frame (calibration rows used)"
+        }
+        let mean = w.middle.reduce(0, +) / Double(w.middle.count)
+        return String(format: "Wall re-zero: %.0f %% of frames measured, line shift %+.1f…%+.1f px (mean %+.1f px)",
+                      100 * Double(w.measured) / Double(frames), lo, hi, mean)
     }
 
     /// Cell (mm): max(across column spacing, 90th-percentile travel step, `minimumCell`), rounded up to 0.1 mm,

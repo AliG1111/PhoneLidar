@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import CoreMotion
 import UIKit
 
 /// State and actions of the laser line scan screen (design §14). Main actor; the pipeline does the frame work.
@@ -45,6 +46,13 @@ final class LaserScanModel {
     var shimText = "10.0"
     var angleText = "45"
     var laserSide: LaserSide = .left
+    /// Calibration method chosen on screen (design §14.9).
+    var calibrationMethod: LaserCalibration.Method = .emptyBelt
+    var wallHeightText = ""
+    /// Camera tilt along the travel / across (degrees, level zero applied; + = right / top edge high).
+    private(set) var tiltAlong: Double?
+    private(set) var tiltAcross: Double?
+    private(set) var levelZeroed = false
 
     @ObservationIgnored var onSaved: ((UUID) -> Void)?
 
@@ -58,6 +66,9 @@ final class LaserScanModel {
     @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored private var probe: LidarDistanceProbe?
     @ObservationIgnored private let defaults = UserDefaults.standard
+    @ObservationIgnored private let motion = CMMotionManager()
+    @ObservationIgnored private var levelZeroX = 0.0
+    @ObservationIgnored private var levelZeroY = 0.0
 
     // MARK: - Derived values
 
@@ -160,6 +171,14 @@ final class LaserScanModel {
                     + "baseline. 3. Put a shim of known thickness under part of the line and tap Measure shim "
                     + "(or enter the laser angle)."]
         }
+        if c.isSideWalls {
+            var lines = [String(format: "Side walls: %.0f mm wall tops, %ld wall columns; focus locked",
+                                c.wallHeight ?? 0, c.wallColumns?.count ?? 0)]
+            lines.append(String(format: "Laser %.1f° (%@), camera tilt %+.2f°, K = %.0f px", c.laserAngle ?? 0,
+                                c.laserSide == .left ? "left" : "right", c.cameraTilt ?? 0, c.scale ?? 0))
+            lines.append(c.wallTracking == false ? "Wall re-zero off" : "Wall re-zero on: every frame follows the walls")
+            return lines
+        }
         var lines = [String(format: "Baseline: %.0f %% of the line measured, %ld columns filled; focus locked",
                             c.coverage, c.filledColumns)]
         if let scale = c.scale, let source = c.scaleSource {
@@ -204,7 +223,11 @@ final class LaserScanModel {
         self.store = store
         loadPreferences()
         calibration = LaserCalibration.loadStandard()
+        loadLevelZero()
+        startMotion()
         if let c = calibration {
+            calibrationMethod = c.method ?? .emptyBelt
+            if let hw = c.wallHeight { wallHeightText = String(format: "%.0f", hw) }
             cameraHeightText = String(format: "%.0f", c.cameraHeight)
             appliedCameraHeight = c.cameraHeight
             cameraHeightSource = c.cameraHeightSource
@@ -257,7 +280,45 @@ final class LaserScanModel {
         if phase == .recording || phase == .arming { stop(reason: "the Laser line scan screen was closed") }
         pipeline.cancelCollection()
         if phase != .saving && phase != .building { pipeline.stop() }
+        if motion.isDeviceMotionActive { motion.stopDeviceMotionUpdates() }
         UIApplication.shared.isIdleTimerDisabled = false
+    }
+
+    // MARK: - Level (camera tilt, shared zero with Line scan)
+
+    private func startMotion() {
+        guard motion.isDeviceMotionAvailable, !motion.isDeviceMotionActive else { return }
+        motion.deviceMotionUpdateInterval = 0.1
+        motion.startDeviceMotionUpdates(to: .main) { [weak self] data, _ in
+            guard let g = data?.gravity else { return }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let x = LineMotionMath.gravityTilt(g.x)
+                let y = LineMotionMath.gravityTilt(g.y)
+                self.rawTilt = (x, y)
+                self.tiltAlong = x - (self.levelZeroed ? self.levelZeroX : 0)
+                self.tiltAcross = y - (self.levelZeroed ? self.levelZeroY : 0)
+            }
+        }
+    }
+
+    @ObservationIgnored private var rawTilt: (x: Double, y: Double)?
+
+    private func loadLevelZero() {
+        levelZeroed = defaults.bool(forKey: "lineLevelZeroed")
+        levelZeroX = defaults.double(forKey: "lineLevelZeroX")
+        levelZeroY = defaults.double(forKey: "lineLevelZeroY")
+    }
+
+    /// Lay the phone flat (screen up) on a level surface first; the zero is shared with Line scan.
+    func zeroLevel() {
+        guard let raw = rawTilt else { return }
+        levelZeroX = raw.x
+        levelZeroY = raw.y
+        levelZeroed = true
+        defaults.set(true, forKey: "lineLevelZeroed")
+        defaults.set(raw.x, forKey: "lineLevelZeroX")
+        defaults.set(raw.y, forKey: "lineLevelZeroY")
     }
 
     func scenePhaseChanged(_ newPhase: ScenePhase) {
@@ -323,7 +384,13 @@ final class LaserScanModel {
 
     private func pushSettings() {
         pipeline.setSettings(LaserProcessingSettings(calibration: calibration, cameraHeight: appliedCameraHeight ?? 0,
-                                                     maxHeight: maxHeight, direction: direction))
+                                                     maxHeight: searchHeight, direction: direction))
+    }
+
+    /// Search band height: the wall tops must stay inside it with a side-wall calibration.
+    private var searchHeight: Double {
+        guard let c = calibration, c.isSideWalls, let hw = c.wallHeight else { return maxHeight }
+        return max(maxHeight, hw + 20)
     }
 
     /// A new frame rate needs a new capture session: the pipeline is replaced.
@@ -537,20 +604,120 @@ final class LaserScanModel {
 
     func useAngle() {
         guard phase == .ready, !calibrating, var c = activeCalibration, let format else { return }
+        let tilt = tiltAlong ?? 0
         guard let degrees = Double(angleText.replacingOccurrences(of: ",", with: ".")),
-              let scale = LaserGeometry.scaleFromAngle(degrees: degrees, side: laserSide, focal: format.fy) else {
+              let scale = LaserWalls.laserTerm(laserAngle: degrees, side: laserSide, cameraTilt: tilt,
+                                               fy: format.fy) else {
             notice = "Enter the laser angle from vertical in degrees (1–80)."
             return
         }
         c.scale = scale
         c.scaleSource = .angle
         c.laserAngle = degrees
+        c.cameraTilt = tilt
         c.laserSide = laserSide
         c.shimThickness = nil
         c.shimShift = nil
         c.shimBaselineRow = nil
         saveCalibration(c)
         notice = "Height scale set from the laser angle. A shim measurement is more accurate."
+    }
+
+    /// Side-wall calibration (design §14.9): no need to clear the belt. Needs the camera height (Set), the wall-top
+    /// height, the laser angle from a digital gauge and its side; the camera tilt comes from the gravity sensor.
+    func calibrateOnWalls() {
+        guard phase == .ready, !calibrating, let format else { return }
+        guard let H = appliedCameraHeight, !cameraHeightPending else {
+            notice = "Enter the camera height (lens to belt, 100–5000 mm) and tap Set first."
+            return
+        }
+        guard let hw = Double(wallHeightText.replacingOccurrences(of: ",", with: ".")), hw >= 10, hw < 0.7 * H else {
+            notice = "Enter the wall-top height above the belt in mm (at least 10 mm, below 70 % of the camera height)."
+            return
+        }
+        guard let theta = Double(angleText.replacingOccurrences(of: ",", with: ".")), theta >= 1, theta <= 80 else {
+            notice = "Enter the laser angle from vertical in degrees (1–80), measured with a digital angle gauge."
+            return
+        }
+        guard let tilt = tiltAlong else {
+            notice = "The camera tilt is not available (motion sensor)."
+            return
+        }
+        guard let k = LaserWalls.laserTerm(laserAngle: theta, side: laserSide, cameraTilt: tilt, fy: format.fy) else {
+            notice = "The laser angle to the camera axis is under 1° or the camera tilt is over 10°: check both."
+            return
+        }
+        calibrating = true
+        calibrationStep = "Locking focus…"
+        notice = nil
+        // Full-frame search, band large enough for the walls.
+        pipeline.setSettings(LaserProcessingSettings(calibration: nil, cameraHeight: H, maxHeight: max(maxHeight, hw + 20),
+                                                     direction: direction))
+        let pipeline = self.pipeline
+        let side = laserSide
+        pipeline.lockFocusAndWhiteBalance { lens in
+            Task { @MainActor in
+                self.calibrationStep = "Finding the side walls…"
+                let every = max(1, Int((format.activeFrameRate / 60).rounded()))
+                pipeline.collectRows(frames: 60, every: every) { frames in
+                    Task { @MainActor in
+                        self.wallsCollected(frames, cameraHeight: H, wallHeight: hw, angle: theta, side: side,
+                                            tilt: tilt, laserTerm: k, lens: lens)
+                    }
+                }
+            }
+        }
+    }
+
+    private func wallsCollected(_ frames: [[Float]], cameraHeight H: Double, wallHeight hw: Double, angle: Double,
+                                side: LaserSide, tilt: Double, laserTerm k: Double, lens: Float?) {
+        calibrating = false
+        calibrationStep = nil
+        guard !frames.isEmpty, let current = format else {
+            notice = "Calibration cancelled. Tap Calibrate again when the phone is steady."
+            pushSettings()
+            return
+        }
+        let columns = current.columns
+        guard let detection = LaserWalls.detect(frames: frames, raisedSign: k > 0 ? 1 : -1) else {
+            notice = "Side walls not found: the laser line must cross both wall tops, and both must be in the picture. "
+                + "Check the laser side, the exposure and that the wall tops are matte, then try again."
+            pushSettings()
+            return
+        }
+        guard let fit = LaserWalls.fit(detection, columns: columns, cameraHeight: H, wallHeight: hw, laserTerm: k,
+                                       fx: current.fx, cx: current.cx, cy: current.cy) else {
+            notice = "The wall calibration could not be computed (check the camera and wall heights)."
+            pushSettings()
+            return
+        }
+        let wallCount = fit.wallColumns.count
+        let c = LaserCalibration(date: Date(), cameraHeight: H, cameraHeightSource: cameraHeightSource, scale: k,
+                                 scaleSource: .angle, shimThickness: nil, shimShift: nil, laserAngle: angle,
+                                 laserSide: side, videoWidth: current.width, videoHeight: current.height,
+                                 columns: columns, baselineRows: fit.rows,
+                                 coverage: 100 * Double(wallCount) / Double(max(1, columns.count)),
+                                 filledColumns: columns.count - wallCount, lensPosition: lens, fx: current.fx,
+                                 fy: current.fy, cx: current.cx, cy: current.cy, shimBaselineRow: nil,
+                                 binned: current.binned, method: .sideWalls, wallHeight: hw,
+                                 wallColumns: fit.wallColumns, wallRows: fit.wallRows, wallInnerX: fit.innerX,
+                                 wallTracking: true, cameraTilt: tilt)
+        saveCalibration(c)
+        notice = String(format: "Calibrated on the side walls: %ld + %ld wall columns, fit residual %.2f px.",
+                        detection.left.count, detection.right.count, fit.residual)
+    }
+
+    func setWallTracking(_ on: Bool) {
+        guard var c = calibration, c.isSideWalls, !calibrating else { return }
+        c.wallTracking = on
+        saveCalibration(c)
+    }
+
+    /// Wall-top points of the calibration (orange on the picture).
+    var displayWalls: [(u: Int, v: Float)] {
+        guard let c = activeCalibration, let columns = c.wallColumns, let rows = c.wallRows,
+              columns.count == rows.count else { return [] }
+        return zip(columns, rows).map { (c.columns.u($0.0), $0.1) }
     }
 
     func clearCalibration() {

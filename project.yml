@@ -57,6 +57,7 @@ targets:
       - path: PhoneLidar/Laser/LaserLineDetector.swift
       - path: PhoneLidar/Laser/LaserMapBuilder.swift
       - path: PhoneLidar/Laser/LaserRecording.swift
+      - path: PhoneLidar/Laser/LaserWalls.swift
       - path: PhoneLidar/Storage/Formatting.swift
       - path: PhoneLidar/Storage/ScanStore.swift
     settings:

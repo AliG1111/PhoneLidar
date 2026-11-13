@@ -63,6 +63,33 @@ struct LaserCalibration: Codable, Equatable, Sendable {
     var shimBaselineRow: Double? = nil
     /// The camera format was binned at calibration.
     var binned: Bool? = nil
+    /// How the baseline was found (nil = empty belt, every calibration before P12).
+    var method: Method? = nil
+    /// Side walls: wall-top height above the belt, mm.
+    var wallHeight: Double? = nil
+    /// Side walls: profile columns of both wall tops, ascending (left wall first).
+    var wallColumns: [Int]? = nil
+    /// Side walls: line row of each wall column at calibration (the reference for the wall re-zero), px.
+    var wallRows: [Float]? = nil
+    /// Across position (mm) of the inner face of the left and right wall (the map keeps what lies between).
+    var wallInnerX: [Double]? = nil
+    /// Correct every frame for the line shift measured on the wall tops (side walls only).
+    var wallTracking: Bool? = nil
+    /// Camera tilt along the travel (degrees, + = right edge of the portrait screen high, level zero applied)
+    /// used in an angle scale.
+    var cameraTilt: Double? = nil
+
+    enum Method: String, Codable, Sendable {
+        case emptyBelt
+        case sideWalls
+
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Method(rawValue: raw) ?? .emptyBelt
+        }
+    }
+
+    var isSideWalls: Bool { method == .sideWalls }
 
     static let fileName = "LaserCalibration.json"
 

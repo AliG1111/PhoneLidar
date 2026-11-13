@@ -249,6 +249,12 @@ A line laser draws a thin line across the belt at an angle; the phone's main cam
 1. **Camera height**: lens to belt in mm. Type it and tap **Set**, or tap **LiDAR** to measure it (check against a tape measure). Recording is not offered while a typed height has not been set.
 2. **Calibrate baseline** with the belt empty and the laser on: 60 frames over about 1 s; focus and white balance are locked. The line must be found on at least half of the width.
 3. **Measure shim**: put the shim on the belt under part of the line (at least a tenth of the width), type its thickness, tap **Measure shim**, then remove it. This sets the height scale. If you cannot use a shim, type the laser angle from vertical, pick its side and tap **Use** (less accurate: the angle is hard to measure exactly). Either way the app corrects each column for the line's distance from the picture centre.
+**Side-wall calibration (when the belt cannot be cleared)**
+- Pick **Side walls** under Calibration. The laser line must cross both side-wall tops, and both must be in the picture: the width seen at wall-top height is 1.27 × (camera height − wall height), so a 12 ft line with 300 mm walls needs the camera at about 3.3 m. Make the wall tops matte where the line crosses them (paint or tape).
+- Enter: **camera height** (lens to belt; Set or LiDAR), **wall top above belt** (mm, measured to ±1 mm), **laser angle** from vertical measured with a digital angle gauge on the laser (±0.1°) and its side. Lay the phone flat on a level surface and tap **Zero here** once (shared with Line scan); the camera tilt is then read from the phone.
+- Tap **Calibrate on the side walls** (about 1 s, focus locked). The wall tops are drawn in orange; the app assumes a flat belt and draws the belt line straight between the walls.
+- **Wall re-zero every frame** (on by default): the walls are measured in every frame and the belt line follows them, which removes drift and mount vibration. The map and the height readouts leave out the walls.
+- Accuracy (worst case over 0–200 mm mat height): laser angle ±0.1°, camera height ±5 mm, wall height ±1 mm → within 2.5 mm; ±0.2° / ±10 mm / ±2 mm → within 5 mm; a ±1° angle gives up to 12 mm. The wall height error passes straight into every height.
 - Recalibrate after moving the phone, the laser or the focus. A calibration made with another camera format (picture size, crop or binning, which can differ between frame rates) is not used; the screen says so.
 
 **Recording screen**

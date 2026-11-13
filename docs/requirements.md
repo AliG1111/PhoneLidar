@@ -268,6 +268,11 @@ Laser-line triangulation with the phone's main camera for strand-level topograph
 | FR-LAS-08 | Map: heights above the belt; **single reading per cell** by default (the reading nearest the cell centre), *Averaged* selectable; cell = max(across column spacing at the belt, 90th-percentile travel per frame, 0.2 mm) rounded up to 0.1 mm, ×1.25 until ≤ 3,000,000 cells; outputs and summary as FR-TOPO-04/07. | Map files after Stop and after Rebuild map. |
 | FR-LAS-09 | The map screen (statistics, method picker, rebuild) and the replay work for laser scans; the replay uses the tracked frames and reveals material at the laser line. | Both screens open a laser scan. |
 | FR-LAS-10 | Live view: detected line (green) and baseline (yellow) over the picture, across height profile, speed, % of columns detected, median and maximum height on the line, actual fps and dropped frames. | Visible while previewing and recording. |
+| FR-LAS-11 | Calibration method on the laser screen: **Empty belt** (baseline + shim or angle, FR-LAS-04) or **Side walls** (no clearing of the belt; design §14.9). | Picker; the stored calibration records `method`. |
+| FR-LAS-12 | Side-wall calibration inputs: camera height H (Set or LiDAR), wall-top height h_w above the belt, laser angle θ from vertical (digital angle gauge) and its side; camera tilt along the travel φ from the gravity sensor with the level zero shared with Line scan. K = f_y·tan(side·θ − φ). Walls = per-column median of 60 frames over ≈ 1 s; on each side, in the outer quarter of the detected columns, the contiguous run of ≥ 3 columns within 3 px of the most raised row, raised ≥ 10 px above the median of the middle half. Belt row of each wall column v₀ = (v_w − (K − c_y)·r)/(1 + r), r = h_w/(H − h_w); least-squares straight line through both walls = baseline of every column (flat belt). Refused unless both walls are found; fit residual shown; wall points drawn in orange. The empty-belt angle path also uses φ. | Synthetic walls give the tilted belt line and the mat height exactly (unit tests). |
+| FR-LAS-13 | Wall re-zero (side walls, on by default, switchable): per frame, per side the median of (row − calibration wall row) over its wall columns with a detection (≥ 2); both sides → straight-line shift of the baseline, one side → offset, none → last value held. Applied live and in every map build. Summary line "Wall re-zero: N % of frames measured, line shift a…b px (mean c px)". | A synthetic 3 px picture shift reads 0 mm with re-zero and 7.4 mm without (unit test). |
+| FR-LAS-14 | With side walls the map keeps readings strictly between the walls' inner faces (10 mm margin), and the live median and maximum use the columns between the feet of the faces. | Map width excludes the walls (unit test). |
+| FR-LAS-15 | Accuracy budget (flat belt, one wall height per side; analysis in design §14.9): worst case over 0–200 mm ≤ 2.5 mm with θ ±0.1°, H ±5 mm, h_w ±1 mm; ≤ 5.0 mm with θ ±0.2°, H ±10 mm, h_w ±2 mm (owner's tolerance 5 mm). | Unit test reproduces the 5.0 mm case; P9 V15 on the line. |
 
 ## 6. Non-functional requirements
 
@@ -511,11 +516,17 @@ Paths are relative to `PhoneLidar/`. Status legend in §4. Review IDs name the M
 | FR-LAS-08 | Laser/LaserMapBuilder.swift; Line/MapCells.swift; Line/TopoMapBuilder.swift (`finish`) | Implemented |
 | FR-LAS-09 | Line/TopoMapView.swift; Line/TopoReplayView.swift; Line/MapRebuild.swift; Line/TopoReplayData.swift | Implemented – not verified on device |
 | FR-LAS-10 | Laser/LaserScanView.swift | Implemented – not verified on device |
+| FR-LAS-11 | Laser/LaserGeometry.swift (`LaserCalibration.method`); Laser/LaserScanView.swift | Implemented – not verified on device |
+| FR-LAS-12 | Laser/LaserWalls.swift; Laser/LaserScanModel.swift (`calibrateOnWalls`, level) | Implemented – not verified on device |
+| FR-LAS-13 | Laser/LaserWalls.swift (`shift`); Laser/LaserMapBuilder.swift; Laser/LaserCapturePipeline.swift | Implemented |
+| FR-LAS-14 | Laser/LaserWalls.swift (`isInsideWalls`, `matColumns`); Laser/LaserMapBuilder.swift; Laser/LaserCapturePipeline.swift | Implemented |
+| FR-LAS-15 | Tests/PhoneLidarTests/LaserWallsTests.swift (`testFiveMillimetreBudget`) | Analysis verified; not verified on device |
 
 ## 9. Document history
 
 | Date | Change |
 |---|---|
+| 2026-11-12 | P12: side-wall calibration and wall re-zero (FR-LAS-11…15). |
 | 2026-11-12 | P11: single-frame LiDAR map (FR-SFM-01…06), laser line scan (FR-LAS-01…10), NFR-PERF-08, NFR-ACC-08/09. |
 | 2026-11-10 | Updated for the M1 review fixes (cycles 1–2, on `process-alignment` `547de8c`): recovery of killed recordings (FR-LINE-14), incomplete scans, delete confirmation, baseline coverage thresholds, short-shutter exposure limit, trimmed map extent and cell sizing, CV in distance mode only, replay run-out, gap fill and measured-only statistics, playback without or with a short video, RoomReport totals block, Object photos kept, camera-permission handling, Photos permission. Items that were *Not implemented* moved to *Implemented – not verified on device*; NFR statuses refreshed. |
 | 2026-11-10 | First version, reconstructed from the code at `1cf693e` and the build guide (P8 process alignment). Gaps cross-referenced to the M1 cycle-1 review findings. |
