@@ -401,6 +401,7 @@ Status values: **Met** (shown by the code or CI), **Partially met**, **Not met**
 | NFR-USE-03 | Units: metric first with imperial alongside (ft-in for lengths, ft² for area, ft/min for speed); numbers use a "." decimal separator in files. | Code inspection. | Met |
 | NFR-USE-04 | Orientation per FR-APP-04; recording screen and playback in portrait matching the mount. | Code inspection. | Met |
 | NFR-USE-05 | Key controls carry accessibility labels (record, clear point, remove probe, replay transport, save image, settings). | Code inspection. | Partially met |
+| NFR-USE-06 | Line scan screen fits any text size: Close, the remote button and the status stay inside the safe area at the top, and the legend, overlay slider and record button inside it at the bottom; the panels between them scroll when they do not fit, starting at the top. Live readouts (speed, distance, height, σ, lock, angle, fastest, legend) keep fixed places and shrink instead of wrapping, so changing values do not move other content; a missing value shows "—". | Owner check on the target device at the owner's text size: no control under the camera cut-out or below the screen edge; no readout moves while the values change. | Met (design); owner check Unverified |
 
 ### 6.7 Maintainability and testability
 
