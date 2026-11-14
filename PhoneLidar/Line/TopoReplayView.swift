@@ -288,8 +288,12 @@ private struct TopoReplayContent: View {
                     .padding(4)
                     .allowsHitTesting(false)
             }
+            .overlay(alignment: .topLeading) {
+                ResetViewButton(model: model)
+                    .padding(4)
+            }
             .overlay(alignment: .bottomLeading) {
-                Text(String(format: "window %.2f m  ·  drag to turn any way, twist to roll, pinch to zoom, double-tap to reset",
+                Text(String(format: "window %.2f m  ·  drag to turn any way, twist to roll, pinch to zoom, double-tap or Reset view to reset",
                             model.stripLengthMM / 1000))
                     .font(.system(size: 9))
                     .foregroundStyle(.gray)
@@ -427,6 +431,24 @@ private struct TopoReplayContent: View {
 }
 
 // MARK: - 3D view
+
+/// Returns to the default angle (42° above, square on), slant and zoom, like a double tap (FR-RPL-06). A view of its
+/// own, so only it re-renders on every gesture step while it tracks `isDefaultView` (orientation, slant, zoom).
+private struct ResetViewButton: View {
+    let model: TopoReplayModel
+
+    var body: some View {
+        Button {
+            model.resetView()
+        } label: {
+            Label("Reset view", systemImage: "arrow.counterclockwise")
+                .font(.caption.weight(.semibold))
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(model.isDefaultView)
+    }
+}
 
 private struct ReplaySceneView: UIViewRepresentable {
     let model: TopoReplayModel

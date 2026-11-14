@@ -230,10 +230,16 @@ final class TopoReplayModel {
         orientation = value.orientation
     }
 
+    /// Default view (FR-RPL-06): 42° above the strip, square on, slant 0.36, zoom 1.
     func resetView() {
         setOrientation(.standard)
         shear = Self.defaultShear
         zoom = 1
+    }
+
+    /// True while the view is exactly the default that `resetView` sets (the Reset view button is then disabled).
+    var isDefaultView: Bool {
+        orientation == .standard && shear == Self.defaultShear && zoom == 1
     }
 
     // MARK: Rendering

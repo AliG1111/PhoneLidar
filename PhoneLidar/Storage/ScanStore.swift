@@ -192,6 +192,20 @@ struct FolderEntry: Identifiable {
     let bytes: Int64
 }
 
+/// File sizes for a saved scan's Files section (bytes).
+struct ScanSizes: Equatable, Sendable {
+    /// Each listed file that is a regular file in the scan folder, by name. A missing file has no entry.
+    var files: [String: Int64] = [:]
+    /// Every non-hidden regular file under the scan folder, sub-folders included (`scan.json`, photos and caches
+    /// too): the space the scan takes on the iPhone, counted like an incomplete scan's size.
+    var total: Int64 = 0
+
+    /// Sum of the listed files that were found.
+    func listedTotal(_ names: [String]) -> Int64 {
+        names.reduce(Int64(0)) { $0 + (files[$1] ?? 0) }
+    }
+}
+
 enum ScanError: LocalizedError {
     case noData
     case noMesh
@@ -411,6 +425,20 @@ final class ScanStore {
         return result
     }
 
+    /// Sizes of a scan's listed files (plain names directly in `folder`; other names are not looked up) and the
+    /// folder total. Reads file metadata only: safe off the main thread.
+    nonisolated static func sizes(of files: [String], in folder: URL) -> ScanSizes {
+        var sizes = ScanSizes()
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey]
+        for name in files where !name.isEmpty && name != "." && name != ".." && !name.contains("/") {
+            let url = folder.appendingPathComponent(name, isDirectory: false)
+            guard let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
+            sizes.files[name] = Int64(values.fileSize ?? 0)
+        }
+        sizes.total = allFiles(under: folder).reduce(Int64(0)) { $0 + $1.bytes }
+        return sizes
+    }
+
     // MARK: - Helpers
 
     /// The folder URL for a name, only if the name is a plain folder name and the folder is a real (non-link)
@@ -446,7 +474,7 @@ final class ScanStore {
         return values?.creationDate ?? values?.contentModificationDate ?? Date()
     }
 
-    private static func allFiles(under folder: URL) -> [(url: URL, bytes: Int64)] {
+    nonisolated private static func allFiles(under folder: URL) -> [(url: URL, bytes: Int64)] {
         let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
         guard let enumerator = FileManager.default.enumerator(
             at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return [] }

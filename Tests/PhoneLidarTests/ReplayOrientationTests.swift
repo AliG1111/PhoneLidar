@@ -31,6 +31,16 @@ final class ReplayOrientationTests: XCTestCase {
         assertVector(o.up, simd_normalize(simd_cross(SIMD3<Float>(1, 0, 0), -o.back)))
     }
 
+    func testResetTargetIsExactSoTheResetButtonCanTellTheDefaultView() {
+        // TopoReplayModel.isDefaultView compares with `.standard` exactly: the default must rebuild identically and
+        // any gesture must leave it.
+        XCTAssertEqual(ReplayOrientation(turn: 0, tilt: ReplayOrientation.defaultTilt, roll: 0), .standard)
+        XCTAssertNotEqual(ReplayOrientation.standard.dragged(dx: 3, dy: 0, radiansPerPoint: 0.01), .standard)
+        XCTAssertNotEqual(ReplayOrientation.standard.dragged(dx: 0, dy: -3, radiansPerPoint: 0.01), .standard)
+        XCTAssertNotEqual(ReplayOrientation.standard.twisted(by: 0.05), .standard)
+        XCTAssertNotEqual(ReplayOrientation.top, .standard)
+    }
+
     func testTopViewLooksStraightDownWithTheFrontEdgeAtTheBottom() {
         let o = ReplayOrientation.top
         assertVector(o.back, SIMD3<Float>(0, 1, 0))

@@ -27,6 +27,8 @@ struct ScanDetailView: View {
     @State private var deleteFailed = false
     @State private var renameError: String?
     @State private var photos: FolderEntry?
+    /// Read off the main thread when the scan appears or its record changes; nil until then.
+    @State private var sizes: ScanSizes?
     @State private var showRetry = false
 
     var body: some View {
@@ -132,9 +134,22 @@ struct ScanDetailView: View {
             }
 
             Section {
+                if let sizes {
+                    LabeledContent("Total (whole folder)", value: Units.bytes(sizes.total))
+                }
                 ForEach(scan.files, id: \.self) { name in
                     ShareLink(item: store.fileURL(name, in: scan)) {
-                        Label(name, systemImage: scanFileIcon(for: name))
+                        HStack {
+                            Label(name, systemImage: scanFileIcon(for: name))
+                            Spacer(minLength: 8)
+                            if let bytes = sizes?.files[name] {
+                                Text(Units.bytes(bytes))
+                                    .font(.callout.monospacedDigit())
+                                    .foregroundStyle(Color.secondary)
+                                    .lineLimit(1)
+                                    .layoutPriority(1)
+                            }
+                        }
                     }
                 }
                 if let photos {
@@ -145,7 +160,9 @@ struct ScanDetailView: View {
                 }
                 if scan.files.count > 1 {
                     ShareLink(items: scan.files.map { store.fileURL($0, in: scan) }) {
-                        Label("Share all files", systemImage: "square.and.arrow.up.on.square")
+                        Label(sizes.map { "Share all files (\(scan.files.count) files, \(Units.bytes($0.listedTotal(scan.files))))" }
+                                  ?? "Share all files",
+                              systemImage: "square.and.arrow.up.on.square")
                     }
                 }
             } header: {
@@ -204,9 +221,14 @@ struct ScanDetailView: View {
             Text("Try again. If it keeps failing, delete the folder in the Files app.")
         }
         .quickLookPreview($arPreviewURL)
-        .task(id: scan.files) {
+        .task(id: scan) {
             // The Images folder (Object capture photos) is not in the file list above.
             photos = store.entries(inFolderNamed: scan.folderName).first { $0.isDirectory && $0.name == "Images" }
+            let folder = store.folderURL(for: scan)
+            let files = scan.files
+            let read = await Task.detached { ScanStore.sizes(of: files, in: folder) }.value
+            guard !Task.isCancelled else { return }
+            sizes = read
         }
         .fullScreenCover(isPresented: $showRetry) {
             ObjectScanView(resume: scan, onFinish: { _ in showRetry = false })
