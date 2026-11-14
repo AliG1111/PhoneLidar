@@ -177,6 +177,10 @@ struct RemoteHomeSection: View {
             }
         } header: {
             Text("Remote link")
+        } footer: {
+            if link.mode == .scanner {
+                Text("This phone does not auto-lock while remote control is allowed and the app is open. Turn off to let it lock.")
+            }
         }
     }
 
@@ -226,7 +230,7 @@ struct PhoneLinkSheet: View {
                 } header: {
                     Text("Let the other phone connect to this one")
                 } footer: {
-                    Text("Use this on the mounted Line scan phone. The other phone can then connect and copy its saved Line scans at any time; it shows the Line scan readouts and starts and stops recordings while Line scan is open on this phone. While remote control is allowed, this phone does not auto-lock with the app open, so the link stays up.")
+                    Text("Use this on the mounted Line scan phone. The other phone can then connect and copy this phone's saved Line scans at any time; it shows the Line scan readouts and starts and stops recordings while Line scan is open on this phone. While remote control is allowed, this phone does not auto-lock with the app open, so the link stays up.")
                 }
 
                 if link.mode == .scanner {
