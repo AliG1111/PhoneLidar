@@ -183,6 +183,77 @@ struct IncompleteRoute: Hashable {
     let folderName: String
 }
 
+/// A row picked in Select mode on Home: a saved or an incomplete scan, by folder name. Saved scans are not picked
+/// by id: a folder copied in the Files app keeps the original's id, and ticking one must not delete both.
+enum LibrarySelection: Hashable {
+    case scan(String)
+    case incomplete(String)
+}
+
+/// The saved and incomplete scans a multi-select delete removes, resolved against the library when the user
+/// taps Delete, with the confirmation texts.
+struct LibraryDeletePlan: Equatable {
+    var scans: [ScanRecord] = []
+    var incomplete: [IncompleteScan] = []
+
+    /// Names listed in the confirmation before "and N more".
+    static let namesShown = 5
+
+    var count: Int { scans.count + incomplete.count }
+    var isEmpty: Bool { count == 0 }
+
+    /// Names as Home lists them: the scan name, or an incomplete scan's folder name with its size.
+    var names: [String] {
+        scans.map { $0.name } + incomplete.map { "\($0.folderName) (\(Units.bytes($0.bytes)))" }
+    }
+
+    var title: String {
+        count == 1 ? "Delete 1 scan and all of its files?" : "Delete \(count) scans and all of their files?"
+    }
+
+    var message: String {
+        var lines = names.prefix(Self.namesShown).joined(separator: "\n")
+        if count > Self.namesShown { lines += "\nand \(count - Self.namesShown) more" }
+        var text = lines + "\n\nDeleting removes the files permanently."
+        let interrupted = incomplete.filter { $0.interruptedRecording }.count
+        if interrupted == 1 {
+            text += " 1 interrupted recording is included: it can be recovered instead (open it and tap Recover recording)."
+        } else if interrupted > 1 {
+            text += " \(interrupted) interrupted recordings are included: they can be recovered instead (open each and tap Recover recording)."
+        }
+        return text
+    }
+}
+
+/// Outcome of a multi-select delete.
+struct LibraryDeleteResult: Equatable {
+    var deleted = 0
+    /// Names (as in `LibraryDeletePlan.names`) of the scans that could not be deleted.
+    var notDeleted: [String] = []
+    /// Interrupted recordings left alone because a recovery pass started after the dialog opened (G-4).
+    var leftForRecovery = 0
+
+    /// Alert text when something was left, nil when everything was deleted.
+    var failureMessage: String? {
+        guard !notDeleted.isEmpty || leftForRecovery > 0 else { return nil }
+        var parts: [String] = []
+        if !notDeleted.isEmpty {
+            let total = deleted + notDeleted.count + leftForRecovery
+            var list = notDeleted.prefix(LibraryDeletePlan.namesShown).joined(separator: "\n")
+            if notDeleted.count > LibraryDeletePlan.namesShown {
+                list += "\nand \(notDeleted.count - LibraryDeletePlan.namesShown) more"
+            }
+            parts.append("\(notDeleted.count) of \(total) could not be deleted:\n\(list)\n\nTry again. If it keeps failing, delete the folders in the Files app.")
+        }
+        if leftForRecovery == 1 {
+            parts.append("1 interrupted recording was left alone: it is being recovered and moves to Saved scans.")
+        } else if leftForRecovery > 1 {
+            parts.append("\(leftForRecovery) interrupted recordings were left alone: they are being recovered and move to Saved scans.")
+        }
+        return parts.joined(separator: "\n\n")
+    }
+}
+
 /// One item inside a scan folder: a file, or a sub-folder (for example Images) with every file inside it.
 struct FolderEntry: Identifiable {
     var id: String { name }
@@ -330,6 +401,48 @@ final class ScanStore {
     @discardableResult
     func delete(_ record: ScanRecord) -> Bool {
         defer { reload() }
+        return removeSavedScanFolder(record)
+    }
+
+    /// Deletes a folder that has no readable scan.json (an incomplete scan, or a failed save).
+    /// A folder that holds a saved scan, or that a line recording is writing to, is never removed by this call.
+    @discardableResult
+    func deleteIncomplete(folderName: String) -> Bool {
+        defer { reload() }
+        return removeIncompleteFolder(named: folderName, sparingInterruptedRecordings: false)
+    }
+
+    /// The saved and incomplete scans of a Home selection that are still in the library, in list order.
+    func deletePlan(for selection: Set<LibrarySelection>) -> LibraryDeletePlan {
+        LibraryDeletePlan(scans: scans.filter { selection.contains(.scan($0.folderName)) },
+                          incomplete: incomplete.filter { selection.contains(.incomplete($0.folderName)) })
+    }
+
+    /// Deletes every scan in `plan` with the checks of `delete(_:)` and `deleteIncomplete(folderName:)`, then
+    /// reloads the library once. While a recovery pass runs, an interrupted line recording is left alone (G-4).
+    @discardableResult
+    func delete(_ plan: LibraryDeletePlan) -> LibraryDeleteResult {
+        defer { reload() }
+        var result = LibraryDeleteResult()
+        let names = plan.names
+        for (index, record) in plan.scans.enumerated() {
+            if removeSavedScanFolder(record) { result.deleted += 1 } else { result.notDeleted.append(names[index]) }
+        }
+        for (index, item) in plan.incomplete.enumerated() {
+            if recoveryRunning, let url = validatedScanFolder(named: item.folderName), Self.isInterruptedRecording(url) {
+                result.leftForRecovery += 1
+            } else if removeIncompleteFolder(named: item.folderName, sparingInterruptedRecordings: recoveryRunning) {
+                result.deleted += 1
+            } else {
+                result.notDeleted.append(names[plan.scans.count + index])
+            }
+        }
+        return result
+    }
+
+    /// Removes a saved scan's folder (no reload). Refuses unless the folder is a direct child of the Scans folder
+    /// and its scan.json still belongs to this record.
+    private func removeSavedScanFolder(_ record: ScanRecord) -> Bool {
         guard let url = validatedScanFolder(named: record.folderName),
               let onDisk = Self.decodeRecord(in: url), onDisk.id == record.id else { return false }
         do {
@@ -340,13 +453,12 @@ final class ScanStore {
         }
     }
 
-    /// Deletes a folder that has no readable scan.json (an incomplete scan, or a failed save).
-    /// A folder that holds a saved scan, or that a line recording is writing to, is never removed by this call.
-    @discardableResult
-    func deleteIncomplete(folderName: String) -> Bool {
-        defer { reload() }
+    /// Removes a folder without a readable scan.json (no reload). Refuses a folder a line recording is writing
+    /// to and, with `sparingInterruptedRecordings`, an interrupted line recording (checked on disk).
+    private func removeIncompleteFolder(named folderName: String, sparingInterruptedRecordings: Bool) -> Bool {
         guard !activeLineFolders.contains(folderName),
               let url = validatedScanFolder(named: folderName), Self.decodeRecord(in: url) == nil else { return false }
+        if sparingInterruptedRecordings && Self.isInterruptedRecording(url) { return false }
         do {
             try FileManager.default.removeItem(at: url)
             return true

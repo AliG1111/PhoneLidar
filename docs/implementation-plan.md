@@ -249,6 +249,7 @@ All Low, from [reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md). Each needs n
 - [ ] Move `ObjectPhotos.hasCompleteModel` and the Object resume decision into a Storage file so the test target can cover them (Sonnet 5.5 / high)
 - [ ] Update every pinned action in `ios-build.yml` to a release on Node 24 (GitHub reports the Node 20 runtime as deprecated) (Sonnet 5.5 / medium)
 - [ ] Check which unit-test class takes about 83 s on CI and whether it can be made faster (Sonnet 5.5 / medium)
+- [ ] A scan folder copied in the Files app keeps the original's scan.json id: opening the copy opens the original (`ScanStore.record(id:)`, `NavigationLink(value: scan.id)`). Navigate by folder name, or give a copy a new id on reload (P19 review; Sonnet 5.5 / high)
 
 ### P11 — Remote link (owner's request, 2026-11-12)
 
@@ -371,6 +372,19 @@ Owner report: on the iPhone 17 Pro Max the bottom of the Line scan screen is cut
 - [x] P18.4 Change review of the PR diff and its callers (fresh Opus 5.5 / high): P18-1 (Medium), P18-2…P18-4 (Low) fixed; re-review 1: no new code findings (R1 no change, R2 wording fixed). Record in [reviews/2026-11-14-P18.md](reviews/2026-11-14-P18.md)
 - [x] P18.5 Build guide (`README.md`), NFR-USE-06, design §3.3 (orchestrator)
 - [x] P18.6 PR #24 merged (`e40dd5f`, build #119); change-log row, project guide copy (orchestrator)
+
+### P19 — Delete several scans at once (owner, 2026-11-14)
+
+Owner's request: select multiple files for deletion at the same time. Read as scans on Home (saved and incomplete); a
+scan's files are not deleted one by one.
+
+- [x] P19.1 Home **Select** mode: `List(selection:)` in edit mode, rows tagged `LibrarySelection`, other sections disabled, bottom bar Select all / Deselect all and Delete (N), one confirmation (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
+- [x] P19.2 `ScanStore.deletePlan(for:)`, `delete(_: LibraryDeletePlan)` with the single-delete checks per folder, interrupted recordings spared while recovery runs (G-4), one reload; `LibraryDeletePlan` / `LibraryDeleteResult` texts (storage → Sonnet 5.5 / high; done by the orchestrator)
+- [x] P19.3 Unit tests: `ScanStoreFolderTests` plan order, batch delete, changed folders, recovery and active-recording guards, texts (Sonnet 5.5 / high; written with the code)
+- [x] P19.4 CI green: app build and unit tests, 0 warnings (branch runs 43618402132 failed: body type-check, fixed; 43619140198 green)
+- [x] P19.5 Change review of the PR diff and its callers (fresh Opus 5.5 / high): MS-1 (High), MS-2 (Medium), MS-3…MS-5 (Low) fixed; re-review 1: MS-6 (Low) fixed; re-review 2: no new findings. Record in [reviews/2026-11-14-P19.md](reviews/2026-11-14-P19.md)
+- [x] P19.6 Build guide (`README.md`), requirements FR-APP-03 and traceability (orchestrator)
+- [ ] P19.7 PR merged; change-log row, project guide copy (orchestrator)
 
 ## 7. Change log
 
