@@ -219,7 +219,8 @@ struct HomeView: View {
                 Text("No scans yet.")
                     .foregroundStyle(.secondary)
             }
-            ForEach(store.scans) { scan in
+            // Keyed by folder: a copy made in the Files app has the same scan id as the original (MS-6).
+            ForEach(store.scans, id: \.folderName) { scan in
                 NavigationLink(value: scan.id) {
                     ScanRow(scan: scan)
                 }
