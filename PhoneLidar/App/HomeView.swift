@@ -11,24 +11,33 @@ struct HomeView: View {
     @State private var path = NavigationPath()
     @State private var activeScan: ScanKind?
     @State private var pendingDelete: PendingDelete?
-    @State private var deleteFailed = false
+    /// Text of the "Could not delete" alert; nil when it is not shown.
+    @State private var deleteFailure: String?
+    /// Select mode: tapping a saved or incomplete scan ticks it instead of opening it.
+    @State private var editMode: EditMode = .inactive
+    @State private var selection = Set<LibrarySelection>()
 
-    /// What the delete confirmation is asking about. One dialog serves both lists.
+    private static let singleDeleteFailure = "Try again. If it keeps failing, delete the folder in the Files app."
+
+    /// What the delete confirmation is asking about. One dialog serves both lists and Select mode.
     private enum PendingDelete {
         case scan(ScanRecord)
         case incomplete(IncompleteScan)
+        case selection(LibraryDeletePlan)
 
         var title: String {
             switch self {
             case .scan: return "Delete this scan and all of its files?"
             case .incomplete(let item):
                 return item.interruptedRecording ? "Delete this interrupted recording?" : "Delete these files?"
+            case .selection(let plan): return plan.title
             }
         }
 
         var detail: String {
             switch self {
             case .scan(let record): return record.name
+            case .selection(let plan): return plan.message
             case .incomplete(let item):
                 let name = "\(item.folderName) (\(Units.bytes(item.bytes)))"
                 return item.interruptedRecording
@@ -38,9 +47,28 @@ struct HomeView: View {
         }
     }
 
+    private var selecting: Bool { editMode.isEditing }
+
+    /// Rows that can be ticked in Select mode: every saved and incomplete scan, except an interrupted recording
+    /// while a recovery pass may be repairing it (G-4).
+    private var selectableItems: Set<LibrarySelection> {
+        var items = Set(store.scans.map { LibrarySelection.scan($0.id) })
+        for item in store.incomplete where !deleteBlocked(item) {
+            items.insert(.incomplete(item.folderName))
+        }
+        return items
+    }
+
+    /// The ticked rows that can still be deleted.
+    private var selectedItems: Set<LibrarySelection> { selection.intersection(selectableItems) }
+
+    private func deleteBlocked(_ item: IncompleteScan) -> Bool {
+        item.interruptedRecording && store.recoveryRunning
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
-            List {
+            List(selection: selecting ? $selection : nil) {
                 if let notice = store.recoveryNotice {
                     Section {
                         Label(notice, systemImage: "arrow.uturn.backward.circle.fill")
@@ -49,6 +77,7 @@ struct HomeView: View {
                     } header: {
                         Text("Line recordings")
                     }
+                    .disabled(selecting)
                 }
 
                 Section {
@@ -69,8 +98,10 @@ struct HomeView: View {
                 } footer: {
                     Text("Room, equipment, object and line scans require an iPhone with LiDAR (12 Pro / Pro Max or a newer Pro model).")
                 }
+                .disabled(selecting)
 
                 RemoteHomeSection(openRemote: { showRemote = true })
+                    .disabled(selecting)
 
                 Section("Saved scans") {
                     if store.scans.isEmpty {
@@ -81,6 +112,7 @@ struct HomeView: View {
                         NavigationLink(value: scan.id) {
                             ScanRow(scan: scan)
                         }
+                        .tag(LibrarySelection.scan(scan.id))
                         // No full-swipe delete: it would remove the scan without asking.
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button("Delete", role: .destructive) {
@@ -96,9 +128,11 @@ struct HomeView: View {
                             NavigationLink(value: IncompleteRoute(folderName: item.folderName)) {
                                 IncompleteRow(item: item)
                             }
+                            .tag(LibrarySelection.incomplete(item.folderName))
+                            .selectionDisabled(deleteBlocked(item))
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 // Not while recovery may be repairing or saving this folder (G-4).
-                                if !(item.interruptedRecording && store.recoveryRunning) {
+                                if !deleteBlocked(item) {
                                     Button("Delete", role: .destructive) {
                                         pendingDelete = .incomplete(item)
                                     }
@@ -112,7 +146,9 @@ struct HomeView: View {
                     }
                 }
             }
+            .environment(\.editMode, $editMode)
             .navigationTitle("Phone LiDAR")
+            .toolbar { selectionToolbar }
             .navigationDestination(for: UUID.self) { id in
                 ScanDetailView(scanID: id)
             }
@@ -146,11 +182,17 @@ struct HomeView: View {
                 .environment(store)
                 .environment(link)
             }
-            .alert("Could not delete", isPresented: $deleteFailed) {
+            .alert("Could not delete",
+                   isPresented: Binding(get: { deleteFailure != nil },
+                                        set: { if !$0 { deleteFailure = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("Try again. If it keeps failing, delete the folder in the Files app.")
+                Text(deleteFailure ?? "")
             }
+            // Rows can vanish while ticked (deleted, recovered, or locked by a recovery pass): untick them.
+            .onChange(of: store.scans) { _, _ in pruneSelection() }
+            .onChange(of: store.incomplete) { _, _ in pruneSelection() }
+            .onChange(of: store.recoveryRunning) { _, _ in pruneSelection() }
             .task {
                 // Library loaded: recover line recordings an earlier run left unsaved (in the background).
                 store.recoverLineRecordings()
@@ -207,17 +249,69 @@ struct HomeView: View {
         .disabled(!supported)
     }
 
+    @ToolbarContentBuilder
+    private var selectionToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            if selecting {
+                Button("Done") { endSelecting() }
+                    .bold()
+            } else if !store.scans.isEmpty || !store.incomplete.isEmpty {
+                Button("Select") {
+                    withAnimation { editMode = .active }
+                }
+            }
+        }
+        if selecting {
+            ToolbarItemGroup(placement: .bottomBar) {
+                let all = selectableItems
+                if !all.isEmpty && selection.isSuperset(of: all) {
+                    Button("Deselect all") { selection.removeAll() }
+                } else {
+                    Button("Select all") { selection = all }
+                        .disabled(all.isEmpty)
+                }
+                Spacer()
+                Button("Delete (\(selectedItems.count))", role: .destructive) { askToDeleteSelection() }
+                    .tint(.red)
+                    .disabled(selectedItems.isEmpty)
+            }
+        }
+    }
+
+    private func askToDeleteSelection() {
+        let plan = store.deletePlan(for: selectedItems)
+        guard !plan.isEmpty else { return }
+        pendingDelete = .selection(plan)
+    }
+
+    private func endSelecting() {
+        withAnimation { editMode = .inactive }
+        selection.removeAll()
+    }
+
+    private func pruneSelection() {
+        guard selecting else { return }
+        let valid = selectableItems
+        if !selection.isSubset(of: valid) { selection.formIntersection(valid) }
+        if store.scans.isEmpty && store.incomplete.isEmpty { endSelecting() }
+    }
+
     private func confirmDelete(_ item: PendingDelete) {
         switch item {
         case .scan(let record):
-            if !store.delete(record) { deleteFailed = true }
+            if !store.delete(record) { deleteFailure = Self.singleDeleteFailure }
         case .incomplete(let incomplete):
             // The dialog may have been open when a recovery pass started: refuse and leave the folder alone (G-4).
             if incomplete.interruptedRecording && store.recoveryRunning {
-                deleteFailed = true
+                deleteFailure = Self.singleDeleteFailure
                 return
             }
-            if !store.deleteIncomplete(folderName: incomplete.folderName) { deleteFailed = true }
+            if !store.deleteIncomplete(folderName: incomplete.folderName) { deleteFailure = Self.singleDeleteFailure }
+        case .selection(let plan):
+            // Each scan is checked again on disk; recovery may have started since the dialog opened (G-4).
+            let result = store.delete(plan)
+            endSelecting()
+            deleteFailure = result.failureMessage
         }
     }
 

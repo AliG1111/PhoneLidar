@@ -417,3 +417,148 @@ final class ScanStoreFolderTests: XCTestCase {
         XCTAssertTrue(store.entries(inFolderNamed: "").isEmpty)
     }
 }
+
+// MARK: - Deleting several scans at once (Select mode on Home)
+
+extension ScanStoreFolderTests {
+    @MainActor
+    func testDeletePlanKeepsTheListOrderAndSkipsItemsNoLongerListed() throws {
+        let store = ScanStore()
+        let saved = try makeScanFolder(in: store)
+        try write("{\"name\":\"Plan saved\"}", to: saved.url.appendingPathComponent("scan.json"))
+        let partial = try makeScanFolder(in: store)
+        store.reload()
+        let record = try XCTUnwrap(store.scans.first { $0.folderName == saved.name })
+
+        let plan = store.deletePlan(for: [.incomplete(partial.name), .scan(record.id),
+                                          .scan(UUID()), .incomplete("zz-unit-test-missing")])
+        XCTAssertEqual(plan.scans.map { $0.folderName }, [saved.name])
+        XCTAssertEqual(plan.incomplete.map { $0.folderName }, [partial.name])
+        XCTAssertEqual(plan.count, 2)
+        XCTAssertEqual(plan.names.first, "Plan saved")
+        XCTAssertTrue(plan.names[1].hasPrefix(partial.name + " ("))
+        XCTAssertTrue(store.deletePlan(for: []).isEmpty)
+    }
+
+    @MainActor
+    func testDeletingAPlanRemovesSavedAndIncompleteScans() throws {
+        let store = ScanStore()
+        let first = try makeScanFolder(in: store)
+        try write("{}", to: first.url.appendingPathComponent("scan.json"))
+        let second = try makeScanFolder(in: store)
+        try write("{}", to: second.url.appendingPathComponent("scan.json"))
+        let partial = try makeScanFolder(in: store)
+        try write("data", to: partial.url.appendingPathComponent("Partial.bin"))
+        let kept = try makeScanFolder(in: store)
+        try write("{}", to: kept.url.appendingPathComponent("scan.json"))
+        store.reload()
+        let ids = store.scans.filter { [first.name, second.name].contains($0.folderName) }.map { LibrarySelection.scan($0.id) }
+        XCTAssertEqual(ids.count, 2)
+
+        let result = store.delete(store.deletePlan(for: Set(ids + [.incomplete(partial.name)])))
+        XCTAssertEqual(result, LibraryDeleteResult(deleted: 3, notDeleted: []))
+        XCTAssertNil(result.failureMessage)
+        for url in [first.url, second.url, partial.url] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.url.path))
+        XCTAssertFalse(store.scans.contains { [first.name, second.name].contains($0.folderName) })
+        XCTAssertFalse(store.incomplete.contains { $0.folderName == partial.name })
+        XCTAssertTrue(store.scans.contains { $0.folderName == kept.name })
+    }
+
+    @MainActor
+    func testDeletingAPlanLeavesFoldersThatChangedAndNamesThem() throws {
+        let store = ScanStore()
+        let saved = try makeScanFolder(in: store)
+        try write("{\"name\":\"Changed scan\"}", to: saved.url.appendingPathComponent("scan.json"))
+        let partial = try makeScanFolder(in: store)
+        let other = try makeScanFolder(in: store)
+        store.reload()
+        let record = try XCTUnwrap(store.scans.first { $0.folderName == saved.name })
+        let plan = store.deletePlan(for: [.scan(record.id), .incomplete(partial.name), .incomplete(other.name)])
+        XCTAssertEqual(plan.count, 3)
+
+        // After the dialog opened: the saved folder now holds another scan, the incomplete one got its scan.json.
+        try write("{\"id\":\"\(UUID().uuidString)\",\"name\":\"Changed scan\"}", to: saved.url.appendingPathComponent("scan.json"))
+        try write("{}", to: partial.url.appendingPathComponent("scan.json"))
+
+        let result = store.delete(plan)
+        XCTAssertEqual(result.deleted, 1)
+        XCTAssertEqual(result.notDeleted.count, 2)
+        XCTAssertEqual(result.notDeleted.first, "Changed scan")
+        XCTAssertTrue(result.notDeleted[1].hasPrefix(partial.name))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: saved.url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: partial.url.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: other.url.path))
+        let message = try XCTUnwrap(result.failureMessage)
+        XCTAssertTrue(message.hasPrefix("2 of 3 could not be deleted:\nChanged scan\n"), message)
+    }
+
+    @MainActor
+    func testDeletingAPlanSparesAnInterruptedRecordingWhileRecoveryRuns() throws {
+        let store = ScanStore()
+        let interrupted = try makeScanFolder(in: store, prefix: "line_zz-unit-test")
+        try write("", to: interrupted.url.appendingPathComponent(LineRecorder.inProgressMarker))
+        try write("{\"frames\":[", to: interrupted.url.appendingPathComponent("Recording.json"))
+        let partial = try makeScanFolder(in: store)
+        store.reload()
+        XCTAssertEqual(store.incompleteScan(named: interrupted.name)?.interruptedRecording, true)
+        let plan = store.deletePlan(for: [.incomplete(interrupted.name), .incomplete(partial.name)])
+
+        store.recoveryRunning = true
+        defer { store.recoveryRunning = false }
+        let first = store.delete(plan)
+        XCTAssertEqual(first.deleted, 1)
+        XCTAssertEqual(first.notDeleted.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: interrupted.url.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: partial.url.path))
+
+        store.recoveryRunning = false
+        let second = store.delete(store.deletePlan(for: [.incomplete(interrupted.name)]))
+        XCTAssertEqual(second, LibraryDeleteResult(deleted: 1, notDeleted: []))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: interrupted.url.path))
+    }
+
+    @MainActor
+    func testDeletingAPlanSparesAFolderARecordingIsWritingTo() throws {
+        let store = ScanStore()
+        let partial = try makeScanFolder(in: store)
+        store.reload()
+        let plan = store.deletePlan(for: [.incomplete(partial.name)])
+        XCTAssertEqual(plan.count, 1)
+        store.activeLineFolders.insert(partial.name)
+        defer { store.activeLineFolders.remove(partial.name) }
+        XCTAssertEqual(store.delete(plan).deleted, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: partial.url.path))
+    }
+
+    func testDeletePlanTexts() {
+        func scan(_ name: String) -> ScanRecord {
+            ScanRecord(id: UUID(), kind: .line, name: name, created: Date(), folderName: "line_\(name)",
+                       primaryModel: nil, files: [], summary: [], measurements: [])
+        }
+        let one = LibraryDeletePlan(scans: [scan("A")])
+        XCTAssertEqual(one.title, "Delete 1 scan and all of its files?")
+        XCTAssertEqual(one.message, "A\n\nDeleting removes the files permanently.")
+
+        let many = LibraryDeletePlan(scans: ["A", "B", "C", "D", "E", "F", "G"].map(scan))
+        XCTAssertEqual(many.title, "Delete 7 scans and all of their files?")
+        XCTAssertEqual(many.message, "A\nB\nC\nD\nE\nand 2 more\n\nDeleting removes the files permanently.")
+
+        let recording = IncompleteScan(folderName: "line_x", date: Date(), bytes: 0, fileCount: 0, interruptedRecording: true)
+        let plain = IncompleteScan(folderName: "room_x", date: Date(), bytes: 0, fileCount: 0)
+        let withOne = LibraryDeletePlan(incomplete: [recording, plain])
+        XCTAssertTrue(withOne.message.hasSuffix(" 1 interrupted recording is included: it can be recovered instead (open it and tap Recover recording)."))
+        let withTwo = LibraryDeletePlan(incomplete: [recording, recording])
+        XCTAssertTrue(withTwo.message.contains(" 2 interrupted recordings are included:"))
+        XCTAssertFalse(LibraryDeletePlan(incomplete: [plain]).message.contains("interrupted"))
+    }
+
+    func testDeleteResultMessage() {
+        XCTAssertNil(LibraryDeleteResult(deleted: 4).failureMessage)
+        let result = LibraryDeleteResult(deleted: 1, notDeleted: ["A", "B", "C", "D", "E", "F"])
+        XCTAssertEqual(result.failureMessage,
+                       "6 of 7 could not be deleted:\nA\nB\nC\nD\nE\nand 1 more\n\nTry again. If it keeps failing, delete the folders in the Files app.")
+    }
+}
