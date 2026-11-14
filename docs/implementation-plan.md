@@ -386,20 +386,33 @@ scan's files are not deleted one by one.
 - [x] P19.6 Build guide (`README.md`), requirements FR-APP-03 and traceability (orchestrator)
 - [x] P19.7 PR #26 merged (`f37c5e3`, build #124); change-log row, project guide copy (orchestrator)
 
-### P20 — Camera-parallax "no frame pairs" diagnosis and replay fallback (owner's screenshot, 2026-11-14)
+### P20 — Home button to connect the two phones (owner, 2026-11-14)
+
+Owner's request: a button on the home screen to connect, and to allow being connected, with the other phone. Read as
+one Home button for both remote-link roles, keeping one role per phone (no networking change). FR-RMT-01, UC-10;
+design §3.9 (`RemoteLinkViews`). Branch `home-phone-link`, one PR. One session: the orchestrator (Opus 5.5) writes code
+and docs; one fresh change reviewer.
+
+- [x] P20.1 Home › Remote link › **Connect to the other phone** opens `PhoneLinkSheet` (*Connect phones*): Allow remote control (scanner, with pairing) and Control a scanner phone (remote, opens the Remote screen after the sheet closes); role switches confirmed; screen kept awake; Home shows the role with Turn off / Open. Scanner link and pairing sections shared with the Line scan sheet (`RemoteScannerSections`) (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
+- [x] P20.2 CI green: app build and unit tests, 0 warnings (branch runs 43641120674, 43641960261, 43642661651)
+- [x] P20.3 Change review of the PR diff and its callers (fresh Opus 5.5 / high): PL-1 (Medium), PL-2…PL-7 (Low) fixed (`ScreenAwake` holds for screens and the scanner role); re-review 1: PL-8 (Low) fixed; re-review 2: no new findings. Record in [reviews/2026-11-14-P20.md](reviews/2026-11-14-P20.md)
+- [x] P20.4 Build guide (`README.md`), FR-RMT-01, FR-RMT-12, UC-10, traceability, design §3.9 (orchestrator)
+- [x] P20.5 PR #29 merged (`a86cb8e`, build #133); change-log row, project guide copy (orchestrator)
+
+### P21 — Camera-parallax "no frame pairs" diagnosis and replay fallback (owner's screenshot, 2026-11-14)
 
 Owner's screenshot: Topographic replay showed "Cannot replay this recording … No camera-parallax heights: the material
 did not move a third of the picture between frames (no travel, or the video does not match the recording)" on a
 camera-parallax recording. The message lumped five causes together, and the replay retried the failing parallax build
 every time it opened.
 
-- [x] P20.1 `ParallaxDiagnosis` (pure): forward travel, needed travel, frame rate, one message per cause with numbers; `ParallaxMapBuilder` collects `ParallaxBuildFacts` (Opus 5.5 / high; done by the orchestrator)
-- [x] P20.2 Replay falls back to the Averaged map with a notice and a `Camera parallax:` summary line; `MapRebuild.busyMessage` not retried (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
-- [x] P20.3 Unit tests `ParallaxDiagnosisTests` (Sonnet 5.5 / high; written with the code)
-- [x] P20.4 CI green: app build and unit tests, 0 warnings (PR runs 43642113931, 43642992785, 43643703220)
-- [x] P20.5 Change review of the PR diff and its callers (fresh Opus 5.5 / high): P20-1 (Medium), P20-2…P20-4 (Low) fixed; re-review 1: P20-5 (Medium), P20-6 (Low) fixed; re-review 2: no new findings. Record in [reviews/2026-11-14-P20.md](reviews/2026-11-14-P20.md)
-- [x] P20.6 Build guide (`README.md`), design §15.9, requirements FR-PAR-06/07 (orchestrator)
-- [ ] P20.7 PR merged; change-log row, project guide copy (orchestrator)
+- [x] P21.1 `ParallaxDiagnosis` (pure): forward travel, needed travel, frame rate, one message per cause with numbers; `ParallaxMapBuilder` collects `ParallaxBuildFacts` (Opus 5.5 / high; done by the orchestrator)
+- [x] P21.2 Replay falls back to the Averaged map with a notice and a `Camera parallax:` summary line; `MapRebuild.busyMessage` not retried (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
+- [x] P21.3 Unit tests `ParallaxDiagnosisTests` (Sonnet 5.5 / high; written with the code)
+- [x] P21.4 CI green: app build and unit tests, 0 warnings (PR runs 43642113931, 43642992785, 43643703220)
+- [x] P21.5 Change review of the PR diff and its callers (fresh Opus 5.5 / high): P21-1 (Medium), P21-2…P21-4 (Low) fixed; re-review 1: P21-5 (Medium), P21-6 (Low) fixed; re-review 2: no new findings. Record in [reviews/2026-11-14-P21.md](reviews/2026-11-14-P21.md)
+- [x] P21.6 Build guide (`README.md`), design §15.9, requirements FR-PAR-06/07 (orchestrator)
+- [ ] P21.7 PR merged; change-log row, project guide copy (orchestrator)
 
 ## 7. Change log
 
@@ -407,6 +420,7 @@ Newest first. Build = run number of the `Build iOS app` workflow on `main` after
 
 | Date | Build | PR / commit | Summary |
 |---|---|---|---|
+| 2026-11-14 | #133 | PR #29 `home-phone-link` (`a86cb8e`; PR run 43643285559, branch runs 43641120674, 43641960261, 43642661651) | P20: Home › Remote link › **Connect to the other phone** opens *Connect phones* with both roles — Allow remote control (scanner, pairing code, paired remote, Forget; sections shared with the Line scan sheet) and Control a scanner phone (opens the Remote screen after the sheet closes); role switches and turning off while connected ask first; Home shows the role with Turn off / Open. `ScreenAwake` holds per screen and role; a scanner does not auto-lock while remote control is allowed and the app is open. Change review PL-1 (Medium), PL-2…PL-8 (Low) fixed; re-review 2: no new findings. FR-RMT-01, FR-RMT-12, UC-10. |
 | 2026-11-14 | #124 | PR #26 `multi-select-delete` (`f37c5e3`; PR run 43619961302, branch runs 43618402132, 43619140198) | P19: Home **Select** mode — tick saved and incomplete scans, Select all (without interrupted recordings) / Deselect all, Delete (N), one confirmation listing the first five names; `ScanStore.delete(_: LibraryDeletePlan)` applies the single-delete checks per folder, spares interrupted recordings while recovery runs (G-4), reloads once and names what was left; saved scans ticked and listed by folder name. Change review MS-1 (High), MS-2 (Medium), MS-3…MS-6 (Low) fixed; re-review 2: no new findings. FR-APP-03. |
 | 2026-11-14 | #119 | PR #24 `line-scan-layout` (`e40dd5f`; PR run 43590268531, branch runs 43589066927, 43589773414) | P18: Line scan screen fits the screen at any text size — top bar fixed below the camera cut-out, legend + overlay slider + record button fixed at the bottom, panels between scroll (top-aligned); picture taps in the gaps via a shared coordinate space; readouts in fixed cells ("—" when missing), one-line shrinking texts, three-cell legend; tilt-change warnings with hysteresis (on > 0.3°, off < 0.25°). Change review P18-1 (Medium), P18-2…P18-4 (Low) fixed; re-review 1: no new code findings. NFR-USE-06, FR-CAL-07. |
 | 2026-11-13 | #113 | PR #22 `replay-reset-file-sizes` (`1a2792a`; PR run 43556143169, branch runs 43554802605, 43555470746) | P17: topographic replay **Reset view** button (top left of the strip, default 42° / slant 0.36 / zoom 1, greyed out at the default, own view); scan screen shows each file's size, **Total (whole folder)** and the count and size on **Share all files** (`ScanStore.sizes`, read off the main thread). Change review P17-1…P17-3 (Low) fixed; re-review 1: no new findings. FR-RPL-06, FR-LIB-01. |
