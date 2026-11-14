@@ -422,7 +422,7 @@ final class ScanStoreFolderTests: XCTestCase {
 
 extension ScanStoreFolderTests {
     @MainActor
-    func testDeletePlanKeepsTheListOrderAndSkipsItemsNoLongerListed() throws {
+    func testDeletePlanTakesTheTickedFoldersAndSkipsItemsNoLongerListed() throws {
         let store = ScanStore()
         let saved = try makeScanFolder(in: store)
         try write("{\"name\":\"Plan saved\"}", to: saved.url.appendingPathComponent("scan.json"))
@@ -430,8 +430,8 @@ extension ScanStoreFolderTests {
         store.reload()
         let record = try XCTUnwrap(store.scans.first { $0.folderName == saved.name })
 
-        let plan = store.deletePlan(for: [.incomplete(partial.name), .scan(record.id),
-                                          .scan(UUID()), .incomplete("zz-unit-test-missing")])
+        let plan = store.deletePlan(for: [.incomplete(partial.name), .scan(record.folderName),
+                                          .scan("zz-unit-test-missing"), .incomplete("zz-unit-test-missing")])
         XCTAssertEqual(plan.scans.map { $0.folderName }, [saved.name])
         XCTAssertEqual(plan.incomplete.map { $0.folderName }, [partial.name])
         XCTAssertEqual(plan.count, 2)
@@ -452,10 +452,10 @@ extension ScanStoreFolderTests {
         let kept = try makeScanFolder(in: store)
         try write("{}", to: kept.url.appendingPathComponent("scan.json"))
         store.reload()
-        let ids = store.scans.filter { [first.name, second.name].contains($0.folderName) }.map { LibrarySelection.scan($0.id) }
-        XCTAssertEqual(ids.count, 2)
+        let ticked: Set<LibrarySelection> = [.scan(first.name), .scan(second.name), .incomplete(partial.name)]
+        XCTAssertEqual(store.deletePlan(for: ticked).count, 3)
 
-        let result = store.delete(store.deletePlan(for: Set(ids + [.incomplete(partial.name)])))
+        let result = store.delete(store.deletePlan(for: ticked))
         XCTAssertEqual(result, LibraryDeleteResult(deleted: 3, notDeleted: []))
         XCTAssertNil(result.failureMessage)
         for url in [first.url, second.url, partial.url] {
@@ -476,7 +476,7 @@ extension ScanStoreFolderTests {
         let other = try makeScanFolder(in: store)
         store.reload()
         let record = try XCTUnwrap(store.scans.first { $0.folderName == saved.name })
-        let plan = store.deletePlan(for: [.scan(record.id), .incomplete(partial.name), .incomplete(other.name)])
+        let plan = store.deletePlan(for: [.scan(record.folderName), .incomplete(partial.name), .incomplete(other.name)])
         XCTAssertEqual(plan.count, 3)
 
         // After the dialog opened: the saved folder now holds another scan, the incomplete one got its scan.json.
@@ -509,8 +509,9 @@ extension ScanStoreFolderTests {
         store.recoveryRunning = true
         defer { store.recoveryRunning = false }
         let first = store.delete(plan)
-        XCTAssertEqual(first.deleted, 1)
-        XCTAssertEqual(first.notDeleted.count, 1)
+        XCTAssertEqual(first, LibraryDeleteResult(deleted: 1, notDeleted: [], leftForRecovery: 1))
+        XCTAssertEqual(first.failureMessage,
+                       "1 interrupted recording was left alone: it is being recovered and moves to Saved scans.")
         XCTAssertTrue(FileManager.default.fileExists(atPath: interrupted.url.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: partial.url.path))
 
@@ -518,6 +519,24 @@ extension ScanStoreFolderTests {
         let second = store.delete(store.deletePlan(for: [.incomplete(interrupted.name)]))
         XCTAssertEqual(second, LibraryDeleteResult(deleted: 1, notDeleted: []))
         XCTAssertFalse(FileManager.default.fileExists(atPath: interrupted.url.path))
+    }
+
+    @MainActor
+    func testTickingOneOfTwoFoldersWithTheSameIDDeletesOnlyThatFolder() throws {
+        let store = ScanStore()
+        let id = UUID().uuidString
+        let original = try makeScanFolder(in: store)
+        try write("{\"id\":\"\(id)\",\"name\":\"Original\"}", to: original.url.appendingPathComponent("scan.json"))
+        let copy = try makeScanFolder(in: store)       // copied in the Files app: same scan.json
+        try write("{\"id\":\"\(id)\",\"name\":\"Original\"}", to: copy.url.appendingPathComponent("scan.json"))
+        store.reload()
+        XCTAssertEqual(store.scans.filter { $0.id.uuidString == id }.count, 2)
+
+        let plan = store.deletePlan(for: [.scan(copy.name)])
+        XCTAssertEqual(plan.scans.map { $0.folderName }, [copy.name])
+        XCTAssertEqual(store.delete(plan), LibraryDeleteResult(deleted: 1, notDeleted: []))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: original.url.path))
     }
 
     @MainActor
@@ -557,6 +576,8 @@ extension ScanStoreFolderTests {
 
     func testDeleteResultMessage() {
         XCTAssertNil(LibraryDeleteResult(deleted: 4).failureMessage)
+        XCTAssertEqual(LibraryDeleteResult(deleted: 1, notDeleted: ["A"], leftForRecovery: 2).failureMessage,
+                       "1 of 4 could not be deleted:\nA\n\nTry again. If it keeps failing, delete the folders in the Files app.\n\n2 interrupted recordings were left alone: they are being recovered and move to Saved scans.")
         let result = LibraryDeleteResult(deleted: 1, notDeleted: ["A", "B", "C", "D", "E", "F"])
         XCTAssertEqual(result.failureMessage,
                        "6 of 7 could not be deleted:\nA\nB\nC\nD\nE\nand 1 more\n\nTry again. If it keeps failing, delete the folders in the Files app.")

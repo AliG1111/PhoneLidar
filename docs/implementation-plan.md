@@ -372,6 +372,19 @@ Owner report: on the iPhone 17 Pro Max the bottom of the Line scan screen is cut
 - [x] P18.5 Build guide (`README.md`), NFR-USE-06, design §3.3 (orchestrator)
 - [x] P18.6 PR #24 merged (`e40dd5f`, build #119); change-log row, project guide copy (orchestrator)
 
+### P19 — Delete several scans at once (owner, 2026-11-14)
+
+Owner's request: select multiple files for deletion at the same time. Read as scans on Home (saved and incomplete); a
+scan's files are not deleted one by one.
+
+- [x] P19.1 Home **Select** mode: `List(selection:)` in edit mode, rows tagged `LibrarySelection`, other sections disabled, bottom bar Select all / Deselect all and Delete (N), one confirmation (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
+- [x] P19.2 `ScanStore.deletePlan(for:)`, `delete(_: LibraryDeletePlan)` with the single-delete checks per folder, interrupted recordings spared while recovery runs (G-4), one reload; `LibraryDeletePlan` / `LibraryDeleteResult` texts (storage → Sonnet 5.5 / high; done by the orchestrator)
+- [x] P19.3 Unit tests: `ScanStoreFolderTests` plan order, batch delete, changed folders, recovery and active-recording guards, texts (Sonnet 5.5 / high; written with the code)
+- [ ] P19.4 CI green: app build and unit tests, 0 warnings
+- [ ] P19.5 Change review of the PR diff and its callers (fresh Opus 5.5 / high); record in reviews/2026-11-14-P19.md
+- [x] P19.6 Build guide (`README.md`), requirements FR-APP-03 and traceability (orchestrator)
+- [ ] P19.7 PR merged; change-log row, project guide copy (orchestrator)
+
 ## 7. Change log
 
 Newest first. Build = run number of the `Build iOS app` workflow on `main` after the merge.

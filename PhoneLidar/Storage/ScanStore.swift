@@ -183,9 +183,10 @@ struct IncompleteRoute: Hashable {
     let folderName: String
 }
 
-/// A row picked in Select mode on Home: a saved scan (by id) or an incomplete scan (by folder name).
+/// A row picked in Select mode on Home: a saved or an incomplete scan, by folder name. Saved scans are not picked
+/// by id: a folder copied in the Files app keeps the original's id, and ticking one must not delete both.
 enum LibrarySelection: Hashable {
-    case scan(UUID)
+    case scan(String)
     case incomplete(String)
 }
 
@@ -227,18 +228,29 @@ struct LibraryDeletePlan: Equatable {
 /// Outcome of a multi-select delete.
 struct LibraryDeleteResult: Equatable {
     var deleted = 0
-    /// Names (as in `LibraryDeletePlan.names`) of the scans that were not deleted.
+    /// Names (as in `LibraryDeletePlan.names`) of the scans that could not be deleted.
     var notDeleted: [String] = []
+    /// Interrupted recordings left alone because a recovery pass started after the dialog opened (G-4).
+    var leftForRecovery = 0
 
     /// Alert text when something was left, nil when everything was deleted.
     var failureMessage: String? {
-        guard !notDeleted.isEmpty else { return nil }
-        let total = deleted + notDeleted.count
-        var list = notDeleted.prefix(LibraryDeletePlan.namesShown).joined(separator: "\n")
-        if notDeleted.count > LibraryDeletePlan.namesShown {
-            list += "\nand \(notDeleted.count - LibraryDeletePlan.namesShown) more"
+        guard !notDeleted.isEmpty || leftForRecovery > 0 else { return nil }
+        var parts: [String] = []
+        if !notDeleted.isEmpty {
+            let total = deleted + notDeleted.count + leftForRecovery
+            var list = notDeleted.prefix(LibraryDeletePlan.namesShown).joined(separator: "\n")
+            if notDeleted.count > LibraryDeletePlan.namesShown {
+                list += "\nand \(notDeleted.count - LibraryDeletePlan.namesShown) more"
+            }
+            parts.append("\(notDeleted.count) of \(total) could not be deleted:\n\(list)\n\nTry again. If it keeps failing, delete the folders in the Files app.")
         }
-        return "\(notDeleted.count) of \(total) could not be deleted:\n\(list)\n\nTry again. If it keeps failing, delete the folders in the Files app."
+        if leftForRecovery == 1 {
+            parts.append("1 interrupted recording was left alone: it is being recovered and moves to Saved scans.")
+        } else if leftForRecovery > 1 {
+            parts.append("\(leftForRecovery) interrupted recordings were left alone: they are being recovered and move to Saved scans.")
+        }
+        return parts.joined(separator: "\n\n")
     }
 }
 
@@ -402,7 +414,7 @@ final class ScanStore {
 
     /// The saved and incomplete scans of a Home selection that are still in the library, in list order.
     func deletePlan(for selection: Set<LibrarySelection>) -> LibraryDeletePlan {
-        LibraryDeletePlan(scans: scans.filter { selection.contains(.scan($0.id)) },
+        LibraryDeletePlan(scans: scans.filter { selection.contains(.scan($0.folderName)) },
                           incomplete: incomplete.filter { selection.contains(.incomplete($0.folderName)) })
     }
 
@@ -417,7 +429,9 @@ final class ScanStore {
             if removeSavedScanFolder(record) { result.deleted += 1 } else { result.notDeleted.append(names[index]) }
         }
         for (index, item) in plan.incomplete.enumerated() {
-            if removeIncompleteFolder(named: item.folderName, sparingInterruptedRecordings: recoveryRunning) {
+            if recoveryRunning, let url = validatedScanFolder(named: item.folderName), Self.isInterruptedRecording(url) {
+                result.leftForRecovery += 1
+            } else if removeIncompleteFolder(named: item.folderName, sparingInterruptedRecordings: recoveryRunning) {
                 result.deleted += 1
             } else {
                 result.notDeleted.append(names[plan.scans.count + index])
