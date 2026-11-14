@@ -17,11 +17,18 @@ struct TopoReplayView: View {
     @State private var visible = false
     /// Set when the scan record (file list, summary) could not be saved; shown as an alert.
     @State private var recordError: String?
+    /// Shown above the replay when it fell back to the Averaged map (design §15.8); ✕ hides it.
+    @State private var notice: String?
 
     var body: some View {
         Group {
             if let model {
                 TopoReplayContent(model: model, filesChanged: refreshFileList)
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        if let notice {
+                            noticeBanner(notice)
+                        }
+                    }
             } else if let failure {
                 ContentUnavailableView("Cannot replay this recording", systemImage: "exclamationmark.triangle",
                                        description: Text(failure))
@@ -50,6 +57,29 @@ struct TopoReplayView: View {
             model?.stop()
             OrientationLock.allow(.portrait, rotateTo: .portrait)
         }
+    }
+
+    /// The fallback notice above the replay, dismissed with ✕.
+    private func noticeBanner(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.orange)
+            Text(text)
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                notice = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.regularMaterial)
     }
 
     /// New files (TopoGrid.bin, saved images) appear in the scan's file list.
@@ -98,6 +128,19 @@ struct TopoReplayView: View {
         }
     }
 
+    /// Builds the scan's map off the main thread (`method` nil = the recording's). TopoMap.png is rendered there too
+    /// and staged with the other files.
+    private static func buildMap(folder: URL, recording: MapRecording,
+                                 method: MapMethod?) async -> Result<TopoMapBuilder.Output, Error> {
+        await Task.detached(priority: .userInitiated) { () async -> Result<TopoMapBuilder.Output, Error> in
+            do {
+                return .success(try await MapRebuild.build(folder: folder, recording: recording, method: method))
+            } catch {
+                return .failure(error)
+            }
+        }.value
+    }
+
     /// Reads, builds (once, for old recordings) and prepares everything off the main thread. The grid file is
     /// read once and handed on. Nothing is started if the screen went away meanwhile.
     private func load() async {
@@ -123,18 +166,30 @@ struct TopoReplayView: View {
         if gridFile == nil {
             // Recordings made before the replay existed: build the map once (this also writes TopoGrid.bin).
             status = "Building the topographic grid…"
-            let built = await Task.detached(priority: .userInitiated) { () async -> Result<TopoMapBuilder.Output, Error> in
-                do {
-                    // TopoMap.png is rendered here, off the main thread, and staged with the other files.
-                    return .success(try await MapRebuild.build(folder: folder, recording: recording, method: nil))
-                } catch {
-                    return .failure(error)
+            var built = await Self.buildMap(folder: folder, recording: recording, method: nil)
+            var fallbackLine: String?
+            if case .failure(let error) = built, recording.info.mapMethod == .cameraParallax,
+               error.localizedDescription != MapRebuild.busyMessage {
+                // A camera-parallax map that cannot be built: replay the Averaged LiDAR map (design §15.8).
+                guard !Task.isCancelled else { return }
+                let reason = error.localizedDescription
+                status = "Camera-parallax map not built. Building the Averaged LiDAR map…"
+                built = await Self.buildMap(folder: folder, recording: recording, method: .averaged)
+                switch built {
+                case .success:
+                    fallbackLine = ParallaxDiagnosis.fallbackSummaryLine(reason: reason)
+                    notice = ParallaxDiagnosis.fallbackNotice(reason: reason)
+                case .failure(let second):
+                    failure = LoadError.build(reason + " The Averaged LiDAR map could not be built either: "
+                                              + second.localizedDescription).localizedDescription
+                    return
                 }
-            }.value
+            }
             switch built {
             case .success(let output):
                 // The files were written whether or not the screen is still open; keep the record current.
-                updateScanRecord(summary: (recording: recording, map: output.summary))
+                let map = output.summary + (fallbackLine.map { [$0] } ?? [])
+                updateScanRecord(summary: (recording: recording, map: map))
                 gridFile = output.grid
                 singleReading = output.stats.isSingleReading
                 aboveBelt = output.stats.heightAboveBelt

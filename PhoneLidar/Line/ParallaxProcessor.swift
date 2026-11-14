@@ -395,6 +395,17 @@ enum ParallaxDiagnosis {
         return Double(times.count - 1) / (last - first)
     }
 
+    /// Scan summary line when the replay built the Averaged map because the camera-parallax map failed. A map line
+    /// ("Camera parallax:" prefix): replaced by the next map build.
+    static func fallbackSummaryLine(reason: String) -> String {
+        "Camera parallax: map not built, so the replay built the Averaged LiDAR map. " + reason
+    }
+
+    /// Notice above the replay in the same case.
+    static func fallbackNotice(reason: String) -> String {
+        "Camera-parallax map not built, so this replay shows the Averaged LiDAR map. " + reason
+    }
+
     /// The reason shown when a camera-parallax build added no reading.
     static func reason(counters c: ParallaxProcessor.Counters, facts f: ParallaxBuildFacts,
                        settings: ParallaxSettings = ParallaxSettings()) -> String {
