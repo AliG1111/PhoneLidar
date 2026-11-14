@@ -175,14 +175,17 @@ final class LineRecorderTests: XCTestCase {
                 times.append(CMSampleBufferGetPresentationTimeStamp(sample).seconds)
             }
         }
-        // As the parallax builder pairs them: the first sample is the first written frame, and every sample lies
+        XCTAssertEqual(reader.status, .completed, reader.error.map { "\($0)" } ?? "")
+        // As the parallax builder pairs them: the earliest sample is the first written frame, and every sample lies
         // within 25 ms of a written frame's time from there (an encoder may still drop a sample it accepted).
+        // Without decoding, samples come in decode order, so the anchor is the smallest time (U1).
         XCTAssertFalse(times.isEmpty)
         XCTAssertLessThanOrEqual(times.count, written.count)
         let anchor = frames[first].time
         let writtenTimes = written.map { frames[$0].time - anchor }
+        let start = times.min() ?? 0
         for t in times {
-            let relative = t - (times.first ?? 0)
+            let relative = t - start
             let nearest = writtenTimes.map { abs($0 - relative) }.min() ?? .infinity
             XCTAssertLessThanOrEqual(nearest, 0.025, "sample at \(relative) s has no written frame")
         }
