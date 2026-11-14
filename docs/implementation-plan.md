@@ -351,7 +351,7 @@ P9 additions (owner runs on the device; analysis assignment in brackets):
 
 ### P17 — Replay Reset view button; file sizes on the scan screen (owner, 2026-11-13)
 
-Owner requests: a button that returns the rotated topographic replay to the default angle, and file sizes when viewing a scan's saved files. FR-RPL-06, FR-LIB-01; design §4 (`ScanDetailView`), §6.11. Branch `replay-reset-file-sizes`, one PR. One session: the orchestrator (Opus 5.5) writes code, tests and docs; one fresh change reviewer.
+Owner requests: a button that returns the rotated topographic replay to the default angle, and file sizes when viewing a scan's saved files. FR-RPL-06, FR-LIB-01; design §3.3 (`ScanDetailView`), §6.11. Branch `replay-reset-file-sizes`, one PR. One session: the orchestrator (Opus 5.5) writes code, tests and docs; one fresh change reviewer.
 
 - [x] P17.1 Replay: **Reset view** overlay button (top left of the strip, both modes, disabled while `TopoReplayModel.isDefaultView`) calling `resetView` (42° above, slant 0.36, zoom 1); hint text (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
 - [x] P17.2 Scan screen: size of each listed file, **Total (whole folder)**, count and size on **Share all files**; `ScanStore.sizes(of:in:)` (nonisolated, `Task.detached`) and `ScanSizes` (SwiftUI + storage → Sonnet 5.5 / high; done by the orchestrator)
