@@ -367,8 +367,8 @@ Owner report: on the iPhone 17 Pro Max the bottom of the Line scan screen is cut
 
 - [x] P18.1 Fixed top bar and bottom legend + record panel inside the safe area; scrolling, top-aligned middle panels; picture taps in the gaps through the `LineScanScreen` coordinate space (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
 - [x] P18.2 Fixed readout cells (three per row, "—" for missing values), one-line shrinking texts; three-cell `DepthLegend` (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
-- [ ] P18.3 CI green: app build and unit tests, 0 warnings
-- [ ] P18.4 Change review of the PR diff and its callers (fresh Opus 5.5 / high); record in [reviews/2026-11-14-P18.md](reviews/2026-11-14-P18.md)
+- [x] P18.3 CI green: app build and unit tests, 0 warnings (branch runs 43589066927, 43589773414)
+- [x] P18.4 Change review of the PR diff and its callers (fresh Opus 5.5 / high): P18-1 (Medium), P18-2…P18-4 (Low) fixed; re-review 1: no new code findings (R1 no change, R2 wording fixed). Record in [reviews/2026-11-14-P18.md](reviews/2026-11-14-P18.md)
 - [x] P18.5 Build guide (`README.md`), NFR-USE-06, design §3.3 (orchestrator)
 - [ ] P18.6 PR merged; change-log row, project guide copy (orchestrator)
 
