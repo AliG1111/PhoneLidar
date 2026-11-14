@@ -410,6 +410,8 @@ enum ParallaxDiagnosis {
 
     /// Forward travel below this multiple of the needed travel is reported as "only just" enough.
     static let nearMissFactor = 1.1
+    /// Backward travel (mm) needed before the direction is blamed; at least a quarter of the needed travel when known.
+    static let minimumBackwardTravel = 10.0
 
     /// The reason shown when a camera-parallax build added no reading.
     static func reason(counters c: ParallaxProcessor.Counters, facts f: ParallaxBuildFacts,
@@ -433,11 +435,15 @@ enum ParallaxDiagnosis {
                           + "recorded frame time (within 25 ms), so the video does not match the recording.",
                           f.videoPictures)
         }
-        if f.backwardTravel >= 1 && f.backwardTravel > f.forwardTravel
+        // A real run backwards, not the few millimetres of speed noise a stopped belt drifts either way.
+        let backwardMinimum = max(minimumBackwardTravel, 0.25 * f.neededTravel)
+        if f.backwardTravel >= backwardMinimum && f.backwardTravel > f.forwardTravel
             && (f.neededTravel <= 0 || f.forwardTravel < f.neededTravel) {
             return String(format: "No camera-parallax heights: the material moved %.0f mm against the recording's "
-                          + "travel direction (and %.0f mm along it). Check Direction on the Line scan screen (Auto, "
-                          + "or the other way), then record again.", f.backwardTravel, f.forwardTravel)
+                          + "travel direction (and %.0f mm along it): Direction was set the wrong way, or the line "
+                          + "ran backwards during the recording. Check Direction on the Line scan screen (Auto, or "
+                          + "the other way), then record again while the material runs forward.",
+                          f.backwardTravel, f.forwardTravel)
         }
         if f.speedReadings == 0 && f.forwardTravel < 1 {
             return "No camera-parallax heights: the speed never locked onto the surface texture, so the recording has "

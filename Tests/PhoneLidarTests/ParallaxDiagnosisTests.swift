@@ -97,6 +97,21 @@ final class ParallaxDiagnosisTests: XCTestCase {
         XCTAssertFalse(forward.contains("against"), forward)
     }
 
+    func testAStoppedBeltsDriftIsNotBlamedOnTheDirection() {
+        var drift = facts(travel: 2)
+        drift.backwardTravel = 3
+        let reason = ParallaxDiagnosis.reason(counters: Counters(framesSeen: 300, templatesStored: 1), facts: drift)
+        XCTAssertFalse(reason.contains("against"), reason)
+        XCTAssertTrue(reason.contains("moved 2 mm during the recording"), reason)
+        // Below a quarter of the needed travel (79 mm here) the direction is not blamed either.
+        drift.backwardTravel = 70
+        let short = ParallaxDiagnosis.reason(counters: Counters(framesSeen: 300, templatesStored: 1), facts: drift)
+        XCTAssertFalse(short.contains("against"), short)
+        drift.backwardTravel = 80
+        let against = ParallaxDiagnosis.reason(counters: Counters(framesSeen: 300, templatesStored: 1), facts: drift)
+        XCTAssertTrue(against.contains("ran backwards during the recording"), against)
+    }
+
     func testTravelJustAboveTheNeededTravelIsANearMiss() {
         let reason = ParallaxDiagnosis.reason(counters: Counters(framesSeen: 300, templatesStored: 40),
                                               facts: facts(travel: 330))

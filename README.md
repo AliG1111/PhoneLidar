@@ -284,7 +284,7 @@ The LiDAR's spots are ≈ 5 cm apart at 1 m, so a LiDAR map cannot show single s
 
 **When no heights are measured** the message (on the Topographic map screen, in the scan summary as "Map not built: …", and in the replay notice) names the cause:
 - *no picture could be read from Video.mov*, or *none of the N pictures in Video.mov lines up with a recorded frame time (within 25 ms)*: the video does not match the recording.
-- *the material moved N mm against the recording's travel direction*: **Direction** was set the wrong way; use **Auto** or the other direction.
+- *the material moved N mm against the recording's travel direction*: **Direction** was set the wrong way, or the line ran backwards during the recording (a recording keeps the direction it started with); check **Direction** (**Auto** or the other way) and record again while the material runs forward. A few millimetres of drift on a stopped line do not count (at least 10 mm and a quarter of the travel needed).
 - *the speed never locked onto the surface texture, so the recording has no travel*: add light, keep the short shutter on, and make sure the material moves under the phone with visible texture.
 - *the material moved N mm during the recording; a camera-parallax map needs at least M mm (a third of the picture at D m from the camera)*: record for longer (table above).
 - *no frame had the LiDAR readings needed to start a match*: keep the surface 0.3–4 m from the phone.
