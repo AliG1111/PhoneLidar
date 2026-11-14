@@ -150,15 +150,23 @@ struct DepthLegend: View {
             LinearGradient(colors: DepthColors.stops, startPoint: .leading, endPoint: .trailing)
                 .frame(height: 10)
                 .clipShape(RoundedRectangle(cornerRadius: 3))
-            HStack {
+            // Three equal cells: changing values shrink their own text instead of wrapping or moving the others.
+            HStack(spacing: 4) {
                 Text(text(blueLabel, blueValue))
-                Spacer()
-                if let blue = blueValue, let red = redValue {
-                    Text(String(format: "span %.\(decimals)f mm", abs(red - blue)))
-                    Spacer()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Group {
+                    if let blue = blueValue, let red = redValue {
+                        Text(String(format: "span %.\(decimals)f mm", abs(red - blue)))
+                    } else {
+                        Text(" ")
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .center)
                 Text(text(redLabel, redValue))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
             .font(.caption2.monospacedDigit())
         }
     }
