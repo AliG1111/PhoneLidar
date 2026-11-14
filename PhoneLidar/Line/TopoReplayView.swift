@@ -288,8 +288,21 @@ private struct TopoReplayContent: View {
                     .padding(4)
                     .allowsHitTesting(false)
             }
+            .overlay(alignment: .topLeading) {
+                // Returns to the default angle (42° above, square on), slant and zoom; same as a double tap.
+                Button {
+                    model.resetView()
+                } label: {
+                    Label("Reset view", systemImage: "arrow.counterclockwise")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(model.isDefaultView)
+                .padding(4)
+            }
             .overlay(alignment: .bottomLeading) {
-                Text(String(format: "window %.2f m  ·  drag to turn any way, twist to roll, pinch to zoom, double-tap to reset",
+                Text(String(format: "window %.2f m  ·  drag to turn any way, twist to roll, pinch to zoom, double-tap or Reset view to reset",
                             model.stripLengthMM / 1000))
                     .font(.system(size: 9))
                     .foregroundStyle(.gray)

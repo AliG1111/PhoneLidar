@@ -380,6 +380,35 @@ final class ScanStoreFolderTests: XCTestCase {
         XCTAssertEqual(entries[0].urls.count, 1)
     }
 
+    func testSizesOfListedFilesAndTheWholeFolder() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("zz-sizes-\(UUID().uuidString)",
+                                                                                isDirectory: true)
+        let url = base.appendingPathComponent("scan", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
+        try write("1234567", to: url.appendingPathComponent("Depth.bin"))
+        try write("", to: url.appendingPathComponent("Empty.csv"))
+        try write("123", to: url.appendingPathComponent("scan.json"))
+        try write("12345", to: url.appendingPathComponent("Images/one.heic"))
+        try write("cache", to: url.appendingPathComponent("Checkpoint/cache.bin"))
+        try write("hidden", to: url.appendingPathComponent(".recording-in-progress"))   // hidden: not counted
+        try FileManager.default.createDirectory(at: url.appendingPathComponent("Folder.bin"),
+                                                withIntermediateDirectories: true)
+        try write("outside the scan", to: base.appendingPathComponent("Depth.bin"))          // "../Depth.bin"
+
+        let names = ["Depth.bin", "Empty.csv", "Missing.mov", "Folder.bin", "../Depth.bin", "Images/one.heic", ""]
+        let sizes = ScanStore.sizes(of: names, in: url)
+        XCTAssertEqual(sizes.files, ["Depth.bin": 7, "Empty.csv": 0])
+        XCTAssertEqual(sizes.total, 7 + 0 + 3 + 5 + 5)
+        XCTAssertEqual(sizes.listedTotal(names), 7)
+        XCTAssertEqual(sizes.listedTotal([]), 0)
+    }
+
+    func testSizesOfAMissingFolderAreZero() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("zz-none-\(UUID().uuidString)")
+        XCTAssertEqual(ScanStore.sizes(of: ["Depth.bin"], in: url), ScanSizes())
+    }
+
     @MainActor
     func testEntriesOfAnUnknownOrInvalidFolderAreEmpty() {
         let store = ScanStore()

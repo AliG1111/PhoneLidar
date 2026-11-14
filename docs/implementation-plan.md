@@ -349,6 +349,18 @@ P9 additions (owner runs on the device; analysis assignment in brackets):
 - [ ] **V20 Camera-height reference** — tape H (±5 mm), zero the level on the belt, record a board of known thickness and an empty stretch if possible. Pass: board and belt heights within ±5 mm (FR-HREF-08) (Opus 5.5 / high)
 - [ ] **V21 Side-wall reference** — measure h_w (±1 mm), mark both wall tops, calibrate with flakes on the belt; compare with an empty-belt baseline made at a shutdown and with a known board. Pass: within ±5 mm; report the wall disagreement and readings per band (FR-HREF-03, FR-HREF-08) (Opus 5.5 / high)
 
+### P17 — Replay Reset view button; file sizes on the scan screen (owner, 2026-11-13)
+
+Owner requests: a button that returns the rotated topographic replay to the default angle, and file sizes when viewing a scan's saved files. FR-RPL-06, FR-LIB-01; design §4 (`ScanDetailView`), §6.11. Branch `replay-reset-file-sizes`, one PR. One session: the orchestrator (Opus 5.5) writes code, tests and docs; one fresh change reviewer.
+
+- [x] P17.1 Replay: **Reset view** overlay button (top left of the strip, both modes, disabled while `TopoReplayModel.isDefaultView`) calling `resetView` (42° above, slant 0.36, zoom 1); hint text (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
+- [x] P17.2 Scan screen: size of each listed file, **Total (whole folder)**, count and size on **Share all files**; `ScanStore.sizes(of:in:)` (nonisolated, `Task.detached`) and `ScanSizes` (SwiftUI + storage → Sonnet 5.5 / high; done by the orchestrator)
+- [x] P17.3 Unit tests: `ScanStoreFolderTests` sizes (listed, missing, directory, names leaving the folder, hidden, sub-folders, missing folder); `ReplayOrientationTests` exact default (Sonnet 5.5 / high; written with the code)
+- [ ] P17.4 CI green: app build and unit tests, 0 warnings
+- [ ] P17.5 Change review of the PR diff and its callers (fresh Opus 5.5 / high); re-reviews until no new findings; record in [reviews/2026-11-13-P17.md](reviews/2026-11-13-P17.md)
+- [x] P17.6 Build guide (`README.md`), requirements FR-RPL-06 / FR-LIB-01 and traceability, design (Sonnet 5.5 / medium; written by the orchestrator with the code)
+- [ ] P17.7 PR merged; change-log row, project guide copy (orchestrator)
+
 ## 7. Change log
 
 Newest first. Build = run number of the `Build iOS app` workflow on `main` after the merge.
