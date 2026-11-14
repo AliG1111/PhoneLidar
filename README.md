@@ -232,6 +232,7 @@ Scan › **Topographic replay (real time, adjustable speed)**. The screen turns 
 **Notes**
 - The map grid is averaged into square blocks for display (at most about 260 blocks along the window and 90 across; the last block row can be narrower) so the strip can be redrawn at every screen refresh. When the block size changes (for example while you drag the window-length slider) the new blocks are built in the background and the current picture stays until they are ready.
 - Recordings made before the replay existed have no `TopoGrid.bin`; the first time the replay opens it builds the map (a few seconds). **Rebuild map** on the Topographic map screen also writes it.
+- A **camera-parallax recording whose parallax map cannot be built** (see *Camera-parallax map*, *When no heights are measured*) still replays: the replay builds the **Averaged** LiDAR map instead and shows a notice above the strip, "Camera-parallax map not built, so this replay shows the Averaged LiDAR map." followed by the reason (✕ hides it). The scan summary keeps the reason in a "Camera parallax: map not built, so the replay built the Averaged LiDAR map. …" line until the next map build. The Topographic map screen then shows the Averaged map; pick **Camera parallax** there and tap **Rebuild map** to try the parallax map again. If the Averaged map cannot be built either, both reasons are shown.
 - Leaving the screen while it is still loading does not start a replay in the background.
 
 **Expected performance** (from published LiDAR measurements; untested on this app yet): ~15 real LiDAR samples per second (30 depth frames/s delivered), ±1–2 mm height after averaging at ~1 m, real laser-spot spacing ≈ 5 cm across at 1 m; speed ≈ ±0.2–0.3% once the distance scale is checked against a known speed or length.
@@ -268,10 +269,27 @@ The LiDAR's spots are ≈ 5 cm apart at 1 m, so a LiDAR map cannot show single s
 **Recording**
 - Pick **Map: camera parallax** before Record (short shutter switches on). Use good, even light; the wood texture must be sharp.
 - Mount as for any Line scan. Strand-level detail needs the camera at about 1 m (≈ 11 mm patches, points every ≈ 5 mm across 1.27 m); at 2.9 m (a 12 ft line from one phone) the patches are ≈ 31 mm.
+- **Let the material travel far enough**: a height needs the same material in two frames a third of the picture apart, so during one recording the material must move at least a third of the picture along the travel (≈ 0.32 × the camera distance), with the speed locked onto its texture, and cover that within 600 frames (about 20 s):
+
+  | Camera distance | Travel needed | Slowest usable speed |
+  |---|---|---|
+  | 0.5 m | ≈ 160 mm | ≈ 8 mm/s |
+  | 1.0 m | ≈ 320 mm | ≈ 16 mm/s |
+  | 1.5 m | ≈ 475 mm | ≈ 24 mm/s |
+  | 2.9 m | ≈ 920 mm | ≈ 46 mm/s |
 - Choose a height reference first (see above).
 - After Stop the map is built from the video; this takes longer than a LiDAR map (a progress bar shows on the Topographic map screen when you rebuild). **Map method › Camera parallax** + **Rebuild map** builds it from any recording that has `Video.mov` (older recordings have no lens calibration and less video quality, so their heights are less accurate toward the picture edges; the summary says so).
 
-**What is measured**: per patch (16 × 16 pixels, every 8 pixels across, rows every 8 pixels along), one reading per map cell, nothing averaged between frames. The summary line "Camera parallax: …" gives the frame pairs scaled by the LiDAR, the points, the share of patches matched and the LiDAR scale relative to the recorded travel. If nothing could be measured the map is not built and the message says why (no movement of a third of the picture, no texture, no LiDAR readings, or no video).
+**What is measured**: per patch (16 × 16 pixels, every 8 pixels across, rows every 8 pixels along), one reading per map cell, nothing averaged between frames. The summary line "Camera parallax: …" gives the frame pairs scaled by the LiDAR, the points, the share of patches matched and the LiDAR scale relative to the recorded travel. If nothing could be measured the map is not built and the message says why (see below).
+
+**When no heights are measured** the message (on the Topographic map screen, in the scan summary as "Map not built: …", and in the replay notice) names the cause:
+- *no picture could be read from Video.mov*, or *none of the N pictures in Video.mov lines up with a recorded frame time (within 25 ms)*: the video does not match the recording.
+- *the speed never locked onto the surface texture, so the recording has no travel*: add light, keep the short shutter on, and make sure the material moves under the phone with visible texture.
+- *the material moved N mm during the recording; a camera-parallax map needs at least M mm (a third of the picture at D m from the camera)*: record for longer (table above).
+- *no frame had the LiDAR readings needed to start a match*: keep the surface 0.3–4 m from the phone.
+- *the material took longer than 600 frames (about 20 s) to move a third of the picture (M mm); it needs at least S mm/s at D m*: the material moved too slowly.
+- *the material moved N mm, but not a third of the picture between two of the F frames that have a video picture*: the video is shorter than the recording (for example a recovered recording) or the encoder skipped frames.
+- When frame pairs did form: *the surface texture could not be matched* (short shutter, light, a still phone) or *no frame pair had enough LiDAR readings for its scale*.
 
 **Expected performance** (calculated; untested on the device yet): height of a point relative to its neighbours ≈ 0.2–0.6 mm at 1 m, 0.3–0.9 mm at 1.5 m, 0.6–1.8 mm at 2.9 m; the absolute level comes from the LiDAR and the height reference. Strand edges that hide part of a patch from one of the two views give no reading.
 

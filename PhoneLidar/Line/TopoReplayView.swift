@@ -17,7 +17,7 @@ struct TopoReplayView: View {
     @State private var visible = false
     /// Set when the scan record (file list, summary) could not be saved; shown as an alert.
     @State private var recordError: String?
-    /// Shown above the replay when it fell back to the Averaged map (design §15.8); ✕ hides it.
+    /// Shown above the replay when it fell back to the Averaged map (design §15.9); ✕ hides it.
     @State private var notice: String?
 
     var body: some View {
@@ -170,7 +170,7 @@ struct TopoReplayView: View {
             var fallbackLine: String?
             if case .failure(let error) = built, recording.info.mapMethod == .cameraParallax,
                error.localizedDescription != MapRebuild.busyMessage {
-                // A camera-parallax map that cannot be built: replay the Averaged LiDAR map (design §15.8).
+                // A camera-parallax map that cannot be built: replay the Averaged LiDAR map (design §15.9).
                 guard !Task.isCancelled else { return }
                 let reason = error.localizedDescription
                 status = "Camera-parallax map not built. Building the Averaged LiDAR map…"

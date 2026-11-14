@@ -294,7 +294,8 @@ Owner's request (2026-11-13): detect the direction of the scanned material autom
 | FR-PAR-03 | Line/ParallaxMath.swift (`PatchMatcher`, `MatchTemplate`); Line/ParallaxProcessor.swift | Implemented |
 | FR-PAR-04 | Line/ParallaxMath.swift (`ParallaxGeometry`, `ScaleSmoother`); Line/ParallaxProcessor.swift | Implemented |
 | FR-PAR-05 | Line/ParallaxMapBuilder.swift; Line/MapRebuild.swift; Line/TopoMapView.swift | Implemented – not verified on device |
-| FR-PAR-06 | Line/ParallaxMapBuilder.swift (`noReadingsReason`) | Implemented – not verified on device |
+| FR-PAR-06 | Line/ParallaxMapBuilder.swift (facts); Line/ParallaxProcessor.swift (`ParallaxDiagnosis`) | Implemented – not verified on device |
+| FR-PAR-07 | Line/TopoReplayView.swift (`load`, notice); Line/ParallaxProcessor.swift (`fallbackSummaryLine`); Line/MapRebuild.swift (`busyMessage`) | Implemented – not verified on device |
 | FR-HREF-01 | Line/HeightReference.swift (`HeightReference`); Line/HeightReferenceSheet.swift | Implemented – not verified on device |
 | FR-HREF-02 | Line/HeightReference.swift (`HeightPlane`) | Implemented |
 | FR-HREF-03 | Line/HeightReference.swift (`WallCapture`, `HeightMath.closestCluster`); Line/LineCapturePipeline.swift (`captureWalls`); Line/HeightReferenceSheet.swift | Implemented |
@@ -315,7 +316,8 @@ Owner's decision (2026-11-13): strand-level heights without an external laser, f
 | FR-PAR-03 | Measurement: template bands (16 × 16 px patches every 8 px across, rows every 8 px over the material that arrived since the last band) half a baseline upstream of the principal row are matched in the first frame in which the material moved ≥ ⅓ of the picture (ZNCC: half-resolution search around the LiDAR-predicted position, full-resolution hill-climb, parabolic sub-pixel peak in both axes; patch SD ≥ 3 grey levels, coarse ZNCC ≥ 0.5, fine ≥ 0.75, peak not on the window edge). | Synthetic sub-pixel shifts found to ≤ 0.15 px (unit test). |
 | FR-PAR-04 | Triangulation with the known travel direction (parallel to the belt, normal from the zeroed tilt, else the LiDAR surface tilt, else gravity; across drift from the recording, refined from the matches): Z₁ = s·g per patch. Scale s per frame pair = median over patches of LiDAR distance ÷ g, smoothed as the median ratio to the recorded travel over ±15 pairs. | Synthetic ridge 50 mm above a belt the LiDAR sees flat reads 50 mm (±3 mm) from parallax alone, both directions (unit tests). |
 | FR-PAR-05 | Map: one reading per cell (the one nearest the cell centre), cell = patch spacing at the typical distance rounded up to 0.1 mm (×1.25 until ≤ 3,000,000 cells), heights from the recording's height reference (§5.18), outputs as FR-TOPO-04, `TopoStats.sensor` = `cameraParallax`. Summary line `Camera parallax: …` with pairs scaled, points, share of patches matched, median LiDAR scale and whether the lens was corrected. Progress is shown while building. | Map files after Stop and after Rebuild map; progress on the map screen. |
-| FR-PAR-06 | A recording without `Video.mov`, without movement of ⅓ picture, without texture or without LiDAR readings fails with a message naming the cause; captured data is never changed. | Messages per cause. |
+| FR-PAR-06 | A recording without `Video.mov`, without movement of ⅓ picture, without texture or without LiDAR readings fails with a message naming the cause; captured data is never changed. When no frame pair forms, the message tells apart: no picture in the video, video times not matching the recording, no texture lock (no travel), too little travel (recorded and needed travel in mm and the camera distance), no LiDAR readings for a template, material too slow (frame limit, seconds, slowest usable speed) and travel only between frames without a picture. | Messages per cause, with numbers (unit tests). |
+| FR-PAR-07 | The topographic replay of a camera-parallax recording whose parallax map cannot be built replays the Averaged LiDAR map instead, with a dismissible notice and a `Camera parallax:` summary line giving the reason; if that fails too, both reasons are shown. | Replay opens on such a recording; summary line replaced by the next map build (unit test). |
 
 ### 5.18 Height references (FR-HREF)
 
@@ -593,6 +595,7 @@ Paths are relative to `PhoneLidar/`. Status legend in §4. Review IDs name the M
 
 | Date | Change |
 |---|---|
+| 2026-11-14 | P20: FR-PAR-06 lists the no-pair causes; FR-PAR-07 replay falls back to the Averaged map (owner's screenshot: "Cannot replay this recording"). |
 | 2026-11-13 | P16: Laser line scan removed (FR-LAS withdrawn); camera-parallax map (FR-PAR-01…06); height references camera height and side walls (FR-HREF-01…08). |
 | 2026-11-13 | P15: calibration capture watchdog, cancel and format restore after the LiDAR probe (FR-LAS-16), from the first on-device test (baseline calibration did not finish). |
 | 2026-11-12 | P13: side-wall calibration and wall re-zero (FR-LAS-11…15). |

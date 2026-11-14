@@ -350,7 +350,7 @@ final class ParallaxProcessor {
     }
 }
 
-/// What a camera-parallax build saw of the recording, for the message when it measured nothing (design §15.8).
+/// What a camera-parallax build saw of the recording, for the message when it measured nothing (design §15.9).
 struct ParallaxBuildFacts: Sendable, Equatable {
     /// Pictures decoded from Video.mov.
     var videoPictures = 0
@@ -368,7 +368,7 @@ struct ParallaxBuildFacts: Sendable, Equatable {
     var frameRate: Double = 0
 }
 
-/// Explains a camera-parallax build that produced no heights (design §15.8). Pure; unit-tested.
+/// Explains a camera-parallax build that produced no heights (design §15.9). Pure; unit-tested.
 enum ParallaxDiagnosis {
     /// Largest travel gain between an earlier and a later frame (mm, ≥ 0): the farthest the material moved forward in
     /// one stretch. A jog backwards does not count, and neither does travel lost to it.

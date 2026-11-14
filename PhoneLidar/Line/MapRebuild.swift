@@ -44,7 +44,8 @@ final class MapBuildRegistry: @unchecked Sendable {
 /// Map builds and replay inputs. Everything here runs off the main thread.
 enum MapRebuild {
     /// Error text when another build of the same scan is running.
-    static let busyMessage = "This scan's map is already being built. Wait until that build has finished, then try again."
+    static let busyMessage = "This scan's map is already being built. Wait until that build has finished, "
+        + "then try again."
 
     /// Reads the recording in `folder` (a cut-off Recording.json is repaired on disk, as Line scan does after
     /// recording).

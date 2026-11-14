@@ -45,7 +45,7 @@ enum ParallaxMapBuilder {
         }
         let focals = frames.map { Double($0.fx) * Double(videoWidth) / Double(w) }.filter { $0 > 0 }.sorted()
         guard !focals.isEmpty else { throw LineError.notEnoughData }
-        // Video focal length along the travel (pixels), for the travel a pair needs (design §15.8).
+        // Video focal length along the travel (pixels), for the travel a pair needs (design §15.9).
         let focalY = HeightMath.median(frames.map {
             LineMotionMath.videoFocalLength(depthFy: Double($0.fy), videoHeight: videoHeight, depthHeight: h)
         }.filter { $0 > 0 && $0.isFinite }) ?? 0
