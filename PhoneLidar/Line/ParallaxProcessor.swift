@@ -360,6 +360,8 @@ struct ParallaxBuildFacts: Sendable, Equatable {
     var speedReadings = 0
     /// Longest forward run of the recorded travel, mm (`ParallaxDiagnosis.forwardTravel`).
     var forwardTravel: Double = 0
+    /// Longest run against the recording's travel direction, mm (`forwardTravel` of the negated travel).
+    var backwardTravel: Double = 0
     /// Travel that moves the material by the views' baseline (a third of the picture) at `distance`, mm; 0 = unknown.
     var neededTravel: Double = 0
     /// Typical distance from the camera to the surface, mm.
@@ -406,6 +408,9 @@ enum ParallaxDiagnosis {
         "Camera-parallax map not built, so this replay shows the Averaged LiDAR map. " + reason
     }
 
+    /// Forward travel below this multiple of the needed travel is reported as "only just" enough.
+    static let nearMissFactor = 1.1
+
     /// The reason shown when a camera-parallax build added no reading.
     static func reason(counters c: ParallaxProcessor.Counters, facts f: ParallaxBuildFacts,
                        settings: ParallaxSettings = ParallaxSettings()) -> String {
@@ -413,6 +418,10 @@ enum ParallaxDiagnosis {
             if c.patchesMatched == 0 {
                 return "No camera-parallax heights: the surface texture could not be matched between frames. Use the "
                     + "short shutter, add light, and keep the phone still."
+            }
+            if c.readings > 0 {
+                return String(format: "No camera-parallax heights: %ld heights were measured, but none fell inside "
+                              + "the map (outside the LiDAR map's area, or no baseline value there).", c.readings)
             }
             return "No camera-parallax heights: no frame pair had enough LiDAR readings for its scale."
         }
@@ -423,6 +432,12 @@ enum ParallaxDiagnosis {
             return String(format: "No camera-parallax heights: none of the %ld pictures in Video.mov lines up with a "
                           + "recorded frame time (within 25 ms), so the video does not match the recording.",
                           f.videoPictures)
+        }
+        if f.backwardTravel >= 1 && f.backwardTravel > f.forwardTravel
+            && (f.neededTravel <= 0 || f.forwardTravel < f.neededTravel) {
+            return String(format: "No camera-parallax heights: the material moved %.0f mm against the recording's "
+                          + "travel direction (and %.0f mm along it). Check Direction on the Line scan screen (Auto, "
+                          + "or the other way), then record again.", f.backwardTravel, f.forwardTravel)
         }
         if f.speedReadings == 0 && f.forwardTravel < 1 {
             return "No camera-parallax heights: the speed never locked onto the surface texture, so the recording has "
@@ -455,6 +470,13 @@ enum ParallaxDiagnosis {
                 }
             }
             return line + "."
+        }
+        if f.neededTravel > 0 && f.forwardTravel < f.neededTravel * nearMissFactor {
+            // Each pair uses its own frame's distance and starts up to a template row after a jog, so travel just
+            // above the median-based figure can still leave every pair short.
+            return String(format: "No camera-parallax heights: the material moved %.0f mm, only just the %.0f mm a "
+                          + "pair needs (a third of the picture at %@ from the camera), so no pair completed. Record "
+                          + "until the material has moved farther.", f.forwardTravel, f.neededTravel, distance)
         }
         return String(format: "No camera-parallax heights: the material moved %.0f mm, but not a third of the picture "
                       + "between two of the %ld frames that have a video picture (the recording has %ld frames; "

@@ -79,6 +79,38 @@ final class ParallaxDiagnosisTests: XCTestCase {
         XCTAssertTrue(reason.contains("the recording has 900 frames"), reason)
     }
 
+    func testTravelAgainstTheRecordingsDirectionIsNamed() {
+        var against = facts(travel: 0)
+        against.backwardTravel = 500
+        let reason = ParallaxDiagnosis.reason(counters: Counters(framesSeen: 300, templatesStored: 1),
+                                              facts: against)
+        XCTAssertTrue(reason.contains("moved 500 mm against the recording's travel direction (and 0 mm along it)"),
+                      reason)
+        // Also when the speed never locked during the recording (a held speed moved it backwards).
+        against.speedReadings = 0
+        let held = ParallaxDiagnosis.reason(counters: Counters(framesSeen: 300, templatesStored: 1), facts: against)
+        XCTAssertTrue(held.contains("against the recording's travel direction"), held)
+        // Forward travel that is enough wins over a longer jog backwards.
+        var both = facts(travel: 400)
+        both.backwardTravel = 600
+        let forward = ParallaxDiagnosis.reason(counters: Counters(framesSeen: 300, templatesStored: 40), facts: both)
+        XCTAssertFalse(forward.contains("against"), forward)
+    }
+
+    func testTravelJustAboveTheNeededTravelIsANearMiss() {
+        let reason = ParallaxDiagnosis.reason(counters: Counters(framesSeen: 300, templatesStored: 40),
+                                              facts: facts(travel: 330))
+        XCTAssertTrue(reason.contains("moved 330 mm, only just the 317 mm a pair needs"), reason)
+        XCTAssertTrue(reason.contains("at 1.00 m from the camera"), reason)
+    }
+
+    func testHeightsMeasuredButOutsideTheMap() {
+        let reason = ParallaxDiagnosis.reason(counters: Counters(framesSeen: 300, pairs: 5, pairsWithScale: 3,
+                                                                 patchesMatched: 40, readings: 1200),
+                                              facts: facts(travel: 900))
+        XCTAssertTrue(reason.contains("1200 heights were measured, but none fell inside the map"), reason)
+    }
+
     func testNoTemplatesMeansNoLiDARReadings() {
         let reason = ParallaxDiagnosis.reason(counters: Counters(framesSeen: 300), facts: facts(travel: 900))
         XCTAssertTrue(reason.contains("LiDAR readings needed to start a match"), reason)

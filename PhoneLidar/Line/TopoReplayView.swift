@@ -61,7 +61,7 @@ struct TopoReplayView: View {
 
     /// The fallback notice above the replay, dismissed with ✕.
     private func noticeBanner(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             Image(systemName: "info.circle")
                 .foregroundStyle(.orange)
             Text(text)
@@ -73,12 +73,14 @@ struct TopoReplayView: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Dismiss")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.leading, 12)
+        .padding(.vertical, 2)
         .background(.regularMaterial)
     }
 

@@ -284,12 +284,14 @@ The LiDAR's spots are ≈ 5 cm apart at 1 m, so a LiDAR map cannot show single s
 
 **When no heights are measured** the message (on the Topographic map screen, in the scan summary as "Map not built: …", and in the replay notice) names the cause:
 - *no picture could be read from Video.mov*, or *none of the N pictures in Video.mov lines up with a recorded frame time (within 25 ms)*: the video does not match the recording.
+- *the material moved N mm against the recording's travel direction*: **Direction** was set the wrong way; use **Auto** or the other direction.
 - *the speed never locked onto the surface texture, so the recording has no travel*: add light, keep the short shutter on, and make sure the material moves under the phone with visible texture.
 - *the material moved N mm during the recording; a camera-parallax map needs at least M mm (a third of the picture at D m from the camera)*: record for longer (table above).
 - *no frame had the LiDAR readings needed to start a match*: keep the surface 0.3–4 m from the phone.
 - *the material took longer than 600 frames (about 20 s) to move a third of the picture (M mm); it needs at least S mm/s at D m*: the material moved too slowly.
+- *the material moved N mm, only just the M mm a pair needs*: the travel was barely enough (the distance changes slightly from frame to frame); record for longer.
 - *the material moved N mm, but not a third of the picture between two of the F frames that have a video picture*: the video is shorter than the recording (for example a recovered recording) or the encoder skipped frames.
-- When frame pairs did form: *the surface texture could not be matched* (short shutter, light, a still phone) or *no frame pair had enough LiDAR readings for its scale*.
+- When frame pairs did form: *the surface texture could not be matched* (short shutter, light, a still phone), *N heights were measured, but none fell inside the map* (outside the LiDAR map's area, or the baseline has no value there), or *no frame pair had enough LiDAR readings for its scale*.
 
 **Expected performance** (calculated; untested on the device yet): height of a point relative to its neighbours ≈ 0.2–0.6 mm at 1 m, 0.3–0.9 mm at 1.5 m, 0.6–1.8 mm at 2.9 m; the absolute level comes from the LiDAR and the height reference. Strand edges that hide part of a patch from one of the two views give no reading.
 

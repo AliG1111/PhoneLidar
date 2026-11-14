@@ -122,6 +122,7 @@ enum ParallaxMapBuilder {
                 videoPictures: videoPictures, recordingFrames: frames.count,
                 speedReadings: frames.reduce(0) { $0 + ($1.speed == nil ? 0 : 1) },
                 forwardTravel: ParallaxDiagnosis.forwardTravel(frames.map(\.travel)),
+                backwardTravel: ParallaxDiagnosis.forwardTravel(frames.map { -$0.travel }),
                 neededTravel: ParallaxDiagnosis.neededTravel(settings: settings, videoHeight: videoHeight,
                                                              distance: zTypical, focalY: focalY),
                 distance: zTypical, frameRate: ParallaxDiagnosis.frameRate(times: times))
