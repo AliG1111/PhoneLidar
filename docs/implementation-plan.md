@@ -386,6 +386,19 @@ scan's files are not deleted one by one.
 - [x] P19.6 Build guide (`README.md`), requirements FR-APP-03 and traceability (orchestrator)
 - [x] P19.7 PR #26 merged (`f37c5e3`, build #124); change-log row, project guide copy (orchestrator)
 
+### P20 — Home button to connect the two phones (owner, 2026-11-14)
+
+Owner's request: a button on the home screen to connect, and to allow being connected, with the other phone. Read as
+one Home button for both remote-link roles, keeping one role per phone (no networking change). FR-RMT-01, UC-10;
+design §3.9 (`RemoteLinkViews`). Branch `home-phone-link`, one PR. One session: the orchestrator (Opus 5.5) writes code
+and docs; one fresh change reviewer.
+
+- [x] P20.1 Home › Remote link › **Connect to the other phone** opens `PhoneLinkSheet` (*Connect phones*): Allow remote control (scanner, with pairing) and Control a scanner phone (remote, opens the Remote screen after the sheet closes); role switches confirmed; screen kept awake; Home shows the role with Turn off / Open. Scanner link and pairing sections shared with the Line scan sheet (`RemoteScannerSections`) (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
+- [ ] P20.2 CI green: app build and unit tests, 0 warnings
+- [ ] P20.3 Change review of the PR diff and its callers (fresh Opus 5.5 / high). Record in [reviews/2026-11-14-P20.md](reviews/2026-11-14-P20.md)
+- [x] P20.4 Build guide (`README.md`), FR-RMT-01, UC-10, design §3.9 (orchestrator)
+- [ ] P20.5 PR merged; change-log row, project guide copy (orchestrator)
+
 ## 7. Change log
 
 Newest first. Build = run number of the `Build iOS app` workflow on `main` after the merge.
