@@ -195,7 +195,10 @@ struct HomeView: View {
             }
             newScanSection
                 .disabled(selecting)
-            RemoteHomeSection(openLink: { showPhoneLink = true }, openRemote: { showRemote = true })
+            RemoteHomeSection(openLink: {
+                openRemoteAfterPhoneLink = false
+                showPhoneLink = true
+            }, openRemote: { showRemote = true })
                 .disabled(selecting)
             savedSection
             if !store.incomplete.isEmpty {

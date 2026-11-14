@@ -733,6 +733,8 @@ final class LineScanModel {
     }
 
     let pipeline = LineCapturePipeline()
+    /// This screen's hold on `ScreenAwake`, taken in `start` and released in `shutdown`.
+    private let screenAwakeHolder = UUID()
     @ObservationIgnored var onSaved: ((UUID) -> Void)?
     /// True while remote control is allowed: after a save the screen stays open and ready instead of opening the
     /// scan, so the remote phone can start the next recording (FR-RMT-09).
@@ -771,8 +773,8 @@ final class LineScanModel {
         self.store = store
         loadHeightReference()
         // Keep the screen awake for the whole Line scan screen (mounting, levelling, calibration, recording);
-        // an auto-lock would cancel the calibration. Reset in shutdown().
-        UIApplication.shared.isIdleTimerDisabled = true
+        // an auto-lock would cancel the calibration. Released in shutdown().
+        ScreenAwake.set(held: true, by: screenAwakeHolder)
         pipeline.onUpdate = { [weak self] update in
             Task { @MainActor [weak self] in
                 self?.apply(update)
@@ -823,7 +825,7 @@ final class LineScanModel {
             pipeline.cancelCalibration(reason: "the screen was closed")
         }
         pipeline.stop()
-        UIApplication.shared.isIdleTimerDisabled = false
+        ScreenAwake.set(held: false, by: screenAwakeHolder)
     }
 
     /// Recording cannot continue in the background (the camera stops), so it is stopped and saved.
