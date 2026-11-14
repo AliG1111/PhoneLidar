@@ -339,9 +339,9 @@ The owner cannot supply an external line laser. Decisions: build "Method A" (cam
 - [x] P16.4 Height-reference sheet and Line scan wiring (copy into recordings, warnings, remote status) (capture + UI → Opus 5.5 / high)
 - [x] P16.5 `ParallaxMath`, `ParallaxProcessor`, `ParallaxMapBuilder`; lens tables and 40 Mbit/s video in recordings; async `MapRebuild`; map-method picker and progress (Opus 5.5 / high)
 - [x] P16.6 Unit tests `HeightReferenceTests`, `ParallaxTests` (synthetic textured ridge), updated map-method tests (Sonnet 5.5 / high; written with the code by the orchestrator)
-- [ ] P16.7 CI green: app build and unit tests, 0 warnings (Sonnet 5.5 / medium for compile-error triage)
-- [ ] P16.8 Change review of the PR diff and its callers (fresh Opus 5.5 / high), fixes, re-reviews until no new findings; record in `docs/reviews/2026-11-13-P16.md`
-- [ ] P16.9 Build guide (`README.md`), `CLAUDE.md` repo map (Sonnet 5.5 / medium; written by the orchestrator with the code)
+- [x] P16.7 CI green: app build and unit tests, 0 warnings (branch runs 43519923740 … 43531976110; 586 unit tests)
+- [x] P16.8 Change review of the PR diff and its callers (fresh Opus 5.5 / high): P16-1…P16-3 (Medium), P16-4…P16-7 (Low) fixed; re-reviews R1 (High: failing test), R2, S1 (Medium), S2, T1, T2, U1 (Low) fixed; re-review 5: no new findings. Record in [reviews/2026-11-13-P16.md](reviews/2026-11-13-P16.md)
+- [x] P16.9 Build guide (`README.md`), `CLAUDE.md` repo map (Sonnet 5.5 / medium; written by the orchestrator with the code)
 - [ ] P16.10 PR into `main`; after merge: change-log row, project guide copy, owner's local folder and `REVISIONS.md` (orchestrator)
 
 P9 additions (owner runs on the device; analysis assignment in brackets):
