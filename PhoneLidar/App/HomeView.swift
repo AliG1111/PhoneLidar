@@ -8,6 +8,10 @@ struct HomeView: View {
     @Environment(RemoteLink.self) private var link
     @Environment(\.scenePhase) private var scenePhase
     @State private var showRemote = false
+    /// Home › Connect to the other phone (`PhoneLinkSheet`).
+    @State private var showPhoneLink = false
+    /// Set by the sheet's Control a scanner phone: the Remote screen opens once the sheet has closed.
+    @State private var openRemoteAfterPhoneLink = false
     @State private var path = NavigationPath()
     @State private var activeScan: ScanKind?
     @State private var pendingDelete: PendingDelete?
@@ -147,6 +151,19 @@ struct HomeView: View {
                     }
                 }
         }
+        .sheet(isPresented: $showPhoneLink, onDismiss: {
+            // One presentation at a time: the Remote screen opens after the sheet has gone.
+            if openRemoteAfterPhoneLink {
+                openRemoteAfterPhoneLink = false
+                showRemote = true
+            }
+        }) {
+            PhoneLinkSheet(onControlScanner: {
+                openRemoteAfterPhoneLink = true
+                showPhoneLink = false
+            })
+            .environment(link)
+        }
         .fullScreenCover(isPresented: $showRemote) {
             RemoteControlView(onClose: { showRemote = false }, onOpenScan: openCopiedScan)
                 .environment(store)
@@ -178,7 +195,7 @@ struct HomeView: View {
             }
             newScanSection
                 .disabled(selecting)
-            RemoteHomeSection(openRemote: { showRemote = true })
+            RemoteHomeSection(openLink: { showPhoneLink = true }, openRemote: { showRemote = true })
                 .disabled(selecting)
             savedSection
             if !store.incomplete.isEmpty {
