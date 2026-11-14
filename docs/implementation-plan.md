@@ -356,8 +356,8 @@ Owner requests: a button that returns the rotated topographic replay to the defa
 - [x] P17.1 Replay: **Reset view** overlay button (top left of the strip, both modes, disabled while `TopoReplayModel.isDefaultView`) calling `resetView` (42° above, slant 0.36, zoom 1); hint text (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
 - [x] P17.2 Scan screen: size of each listed file, **Total (whole folder)**, count and size on **Share all files**; `ScanStore.sizes(of:in:)` (nonisolated, `Task.detached`) and `ScanSizes` (SwiftUI + storage → Sonnet 5.5 / high; done by the orchestrator)
 - [x] P17.3 Unit tests: `ScanStoreFolderTests` sizes (listed, missing, directory, names leaving the folder, hidden, sub-folders, missing folder); `ReplayOrientationTests` exact default (Sonnet 5.5 / high; written with the code)
-- [ ] P17.4 CI green: app build and unit tests, 0 warnings
-- [ ] P17.5 Change review of the PR diff and its callers (fresh Opus 5.5 / high); re-reviews until no new findings; record in [reviews/2026-11-13-P17.md](reviews/2026-11-13-P17.md)
+- [x] P17.4 CI green: app build and unit tests, 0 warnings (branch runs 43554802605, 43555470746)
+- [x] P17.5 Change review of the PR diff and its callers (fresh Opus 5.5 / high): P17-1…P17-3 (Low) fixed; re-review 1: no new findings. Record in [reviews/2026-11-13-P17.md](reviews/2026-11-13-P17.md)
 - [x] P17.6 Build guide (`README.md`), requirements FR-RPL-06 / FR-LIB-01 and traceability, design (Sonnet 5.5 / medium; written by the orchestrator with the code)
 - [ ] P17.7 PR merged; change-log row, project guide copy (orchestrator)
 
