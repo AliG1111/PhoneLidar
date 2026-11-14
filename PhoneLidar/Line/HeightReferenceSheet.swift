@@ -40,6 +40,12 @@ extension LineScanModel {
         }
     }
 
+    /// How far the level has moved since the side-wall calibration (degrees), or nil without one.
+    var wallMovedDegrees: Double? {
+        guard let walls = heightReference.walls, let x = levelX, let y = levelY else { return nil }
+        return ((x - walls.tiltX) * (x - walls.tiltX) + (y - walls.tiltY) * (y - walls.tiltY)).squareRoot()
+    }
+
     /// Warnings for a camera-height or side-wall reference (`short` = the ones kept on screen while recording).
     func referenceWarnings(short: Bool) -> [String] {
         var lines: [String] = []
@@ -53,13 +59,10 @@ extension LineScanModel {
             }
         case .sideWalls:
             guard let walls = heightReference.walls else { break }
-            if let x = levelX, let y = levelY {
-                let moved = ((x - walls.tiltX) * (x - walls.tiltX) + (y - walls.tiltY) * (y - walls.tiltY)).squareRoot()
-                if moved > 0.3 {
-                    lines.append(short
-                        ? String(format: "Tilt changed %.1f° since the wall calibration", moved)
-                        : String(format: "Phone tilt changed %.1f° since the wall calibration — calibrate again", moved))
-                }
+            if wallTiltWarning, let moved = wallMovedDegrees {
+                lines.append(short
+                    ? String(format: "Tilt changed %.1f° since the wall calibration", moved)
+                    : String(format: "Phone tilt changed %.1f° since the wall calibration — calibrate again", moved))
             }
             if walls.disagreement > WallCalibration.disagreementWarning {
                 lines.append(short

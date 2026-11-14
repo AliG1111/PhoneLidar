@@ -12,6 +12,11 @@ struct LineScanView: View {
     @State private var model = LineScanModel()
     @State private var showRemote = false
     @State private var showReference = false
+    /// The picture's rectangle in `screenSpace`, for taps in the gaps between the panels (inside the scroll view).
+    @State private var pictureInScreen: CGRect = .zero
+
+    /// Coordinate space of the whole screen, shared by the camera layer and the scrolling panels.
+    private static var screenSpace: NamedCoordinateSpace { .named("LineScanScreen") }
 
     var body: some View {
         ZStack {
@@ -19,6 +24,7 @@ struct LineScanView: View {
 
             GeometryReader { geometry in
                 let picture = PlaybackModel.fitRect(in: geometry.size, aspect: CGFloat(model.pictureAspect))
+                let origin = geometry.frame(in: Self.screenSpace).origin
                 ZStack {
                     CameraPreview(session: model.pipeline.session)
                     if let image = model.depthImage {
@@ -47,35 +53,53 @@ struct LineScanView: View {
                     }
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
+                .onChange(of: picture.offsetBy(dx: origin.x, dy: origin.y), initial: true) { _, rect in
+                    pictureInScreen = rect
+                }
             }
             .ignoresSafeArea()
 
-            VStack(spacing: 10) {
+            // The top bar and the record controls stay inside the safe area (below the camera cut-out, above the
+            // home indicator); the panels between them scroll when they do not fit (large text, long warnings).
+            // The panels start at the top, so a panel that changes height never moves the panels above it.
+            VStack(spacing: 8) {
                 topBar
-                RemoteStatusChip()
-                if let banner = model.bannerText {
-                    noticeBadge([banner], color: .orange)
-                }
-                if model.phase == .recording, !model.recordingWarnings.isEmpty {
-                    noticeBadge(model.recordingWarnings, color: .yellow)
-                }
-                speedPanel
-                levelPanel
-                Spacer()
-                Group {
-                    if model.heightMode {
-                        DepthLegend(lowHeight: model.depthRange?.lowerBound, highHeight: model.depthRange?.upperBound)
-                    } else {
-                        DepthLegend(near: model.depthRange?.lowerBound, far: model.depthRange?.upperBound)
+                GeometryReader { area in
+                    ScrollView {
+                        VStack(spacing: 10) {
+                            RemoteStatusChip()
+                            if let banner = model.bannerText {
+                                noticeBadge([banner], color: .orange)
+                            }
+                            speedPanel
+                            levelPanel
+                            // Below the readouts, so a warning that comes and goes never moves them.
+                            if model.phase == .recording, !model.recordingWarnings.isEmpty {
+                                noticeBadge(model.recordingWarnings, color: .yellow)
+                            }
+                            if showsSettings {
+                                settingsPanel
+                            }
+                        }
+                        .frame(maxWidth: .infinity, minHeight: area.size.height, alignment: .top)
+                        .background {
+                            // The gaps between the panels show the picture: a tap there reads the speed at that point.
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .gesture(SpatialTapGesture(coordinateSpace: Self.screenSpace).onEnded { value in
+                                    model.selectPoint(at: value.location, in: pictureInScreen)
+                                })
+                        }
                     }
+                    .scrollBounceBehavior(.basedOnSize)
                 }
-                    .foregroundStyle(.white)
-                    .padding(8)
-                    .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
-                controls
+                legend
+                recordPanel
             }
-            .padding()
+            .padding(.horizontal)
+            .padding(.vertical, 8)
         }
+        .coordinateSpace(Self.screenSpace)
         .statusBarHidden()
         .onAppear {
             model.onSaved = { id in onFinish(id) }
@@ -145,6 +169,8 @@ struct LineScanView: View {
             }
             Text(model.statusText)
                 .font(.callout.monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .foregroundStyle(.white)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
@@ -167,39 +193,43 @@ struct LineScanView: View {
             Text(SpeedText.main(model.speed))
                 .font(.system(size: 42, weight: .bold, design: .rounded))
                 .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
             Text(SpeedText.perMinute(model.speed))
                 .font(.subheadline)
                 .monospacedDigit()
-            HStack(spacing: 14) {
-                Label(String(format: "%.0f mm", model.medianDepth), systemImage: "ruler")
-                if model.heightMode, let h = model.centerHeight {
-                    Label(String(format: "%+.1f mm high", h), systemImage: "arrow.up.to.line")
-                }
-                if let spread = model.spread {
-                    Label(String(format: "σ %.1f mm", spread), systemImage: "square.grid.3x3")
-                }
-                Label(String(format: "%.0f%% lock", model.quality * 100), systemImage: "scope")
-                if let angle = model.angle {
-                    Label(String(format: "%+.1f°", angle), systemImage: "angle")
-                }
-            }
-            .font(.caption.monospacedDigit())
-            HStack(spacing: 14) {
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            readoutGrid
+                .font(.caption.monospacedDigit())
+            // Two equal halves: a longer speed shrinks its text instead of wrapping and moving the hint.
+            HStack(spacing: 8) {
                 Label("Fastest " + SpeedText.short(model.fastestSpeed), systemImage: "hare.fill")
                     .foregroundStyle(.orange)
-                if model.selectedPoint != nil {
-                    Label("At point " + SpeedText.short(model.speedAtPoint), systemImage: "scope")
-                    Button {
-                        model.clearPoint()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Group {
+                    if model.selectedPoint != nil {
+                        HStack(spacing: 6) {
+                            Label("At point " + SpeedText.short(model.speedAtPoint), systemImage: "scope")
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.6)
+                            Button {
+                                model.clearPoint()
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                            }
+                            .accessibilityLabel("Clear point")
+                        }
+                    } else {
+                        Text("Tap the picture for speed at a point")
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.8))
+                            .lineLimit(2, reservesSpace: true)
                     }
-                    .accessibilityLabel("Clear point")
-                } else {
-                    Text("Tap the picture for speed at a point")
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.8))
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .font(.callout.weight(.semibold).monospacedDigit())
             SpeedSparkline(values: model.speedHistory)
@@ -208,6 +238,7 @@ struct LineScanView: View {
                 Image(systemName: model.direction.map { $0 == .rightToLeft ? "arrow.left" : "arrow.right" }
                       ?? "arrow.left.arrow.right")
                 Text(model.directionSetting.travelText(detected: model.detectedDirection))
+                    .lineLimit(2, reservesSpace: true)
             }
             .font(.caption2)
         }
@@ -215,6 +246,43 @@ struct LineScanView: View {
         .padding(10)
         .frame(maxWidth: .infinity)
         .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Live readouts in fixed, equal cells, three per row. A value that is missing in a frame shows "—" instead of
+    /// disappearing, so changing numbers never move their neighbours or change the panel's height.
+    private var readoutGrid: some View {
+        let items = readoutItems
+        let rows = stride(from: 0, to: items.count, by: 3).map { Array(items[$0..<min($0 + 3, items.count)]) }
+        return VStack(spacing: 4) {
+            ForEach(rows.indices, id: \.self) { r in
+                HStack(spacing: 6) {
+                    ForEach(0..<3, id: \.self) { c in
+                        if c < rows[r].count {
+                            Label(rows[r][c].text, systemImage: rows[r][c].symbol)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.6)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            Color.clear
+                                .frame(maxWidth: .infinity, maxHeight: 0)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Distance, height (height mode only), flatness σ, texture lock and travel angle.
+    private var readoutItems: [(text: String, symbol: String)] {
+        var items: [(text: String, symbol: String)] = [(String(format: "%.0f mm", model.medianDepth), "ruler")]
+        if model.heightMode {
+            items.append((model.centerHeight.map { String(format: "%+.1f mm high", $0) } ?? "— mm high",
+                          "arrow.up.to.line"))
+        }
+        items.append((model.spread.map { String(format: "σ %.1f mm", $0) } ?? "σ —", "square.grid.3x3"))
+        items.append((String(format: "%.0f%% lock", model.quality * 100), "scope"))
+        items.append((model.angle.map { String(format: "%+.1f°", $0) } ?? "— °", "angle"))
+        return items
     }
 
     private var levelPanel: some View {
@@ -230,13 +298,19 @@ struct LineScanView: View {
                 }
                 Text(Self.levelText(model.levelX, model.levelY))
                     .font(.caption.monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                 HStack(spacing: 6) {
                     Circle().stroke(Color.orange, lineWidth: 2).frame(width: 9, height: 9)
                     Text("Phone vs surface (LiDAR)")
                         .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                 }
                 Text(Self.levelText(model.surfaceTiltX, model.surfaceTiltY))
                     .font(.caption.monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                 HStack(spacing: 8) {
                     Button(model.levelZeroed ? "Re-zero" : "Zero here") { model.zeroLevel() }
                     if model.levelZeroed {
@@ -261,7 +335,53 @@ struct LineScanView: View {
         return String(format: "↔ %+.1f°   ↕ %+.1f°   (%.1f°)", x, y, (x * x + y * y).squareRoot())
     }
 
-    private var controls: some View {
+    /// The settings panel has content only before recording (and to show a failure).
+    private var showsSettings: Bool {
+        if case .failed = model.phase { return true }
+        return model.phase == .ready
+    }
+
+    /// Colour legend of the depth overlay, fixed above the record controls.
+    private var legend: some View {
+        Group {
+            if model.heightMode {
+                DepthLegend(lowHeight: model.depthRange?.lowerBound, highHeight: model.depthRange?.upperBound)
+            } else {
+                DepthLegend(near: model.depthRange?.lowerBound, far: model.depthRange?.upperBound)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(8)
+        .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Overlay strength and the record button (or the save / map progress): always on screen.
+    private var recordPanel: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "square.2.layers.3d")
+                Slider(value: $model.overlayOpacity, in: 0...1)
+                Text("Depth overlay")
+                    .font(.caption)
+                    .lineLimit(1)
+            }
+            if model.phase == .saving || model.phase == .building {
+                HStack(spacing: 8) {
+                    ProgressView().tint(.white)
+                    Text(model.phase == .saving ? "Saving recording…" : "Building topographic map…")
+                }
+                .frame(height: 72)
+            } else {
+                recordButton
+            }
+        }
+        .font(.callout)
+        .foregroundStyle(.white)
+        .padding(10)
+        .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var settingsPanel: some View {
         VStack(spacing: 10) {
             if case .failed(let message) = model.phase {
                 Text(message)
@@ -309,20 +429,6 @@ struct LineScanView: View {
                     .pickerStyle(.segmented)
                 }
                 .disabled(model.calibrating)
-            }
-            HStack(spacing: 10) {
-                Image(systemName: "square.2.layers.3d")
-                Slider(value: $model.overlayOpacity, in: 0...1)
-                Text("Depth overlay").font(.caption)
-            }
-            if model.phase == .saving || model.phase == .building {
-                HStack(spacing: 8) {
-                    ProgressView().tint(.white)
-                    Text(model.phase == .saving ? "Saving recording…" : "Building topographic map…")
-                }
-                .frame(height: 72)
-            } else {
-                recordButton
             }
         }
         .font(.callout)
@@ -408,7 +514,7 @@ struct LineScanView: View {
                         .font(.caption2)
                         .foregroundStyle(.yellow)
                 }
-                if let moved = model.baselineMovedDegrees, moved > 0.3 {
+                if model.baselineTiltWarning, let moved = model.baselineMovedDegrees {
                     Label(String(format: "Phone tilt changed %.1f° since calibration — recalibrate", moved),
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.caption2)
@@ -555,6 +661,10 @@ final class LineScanModel {
     var levelZeroX = UserDefaults.standard.double(forKey: "lineLevelZeroX")
     var levelZeroY = UserDefaults.standard.double(forKey: "lineLevelZeroY")
     var baseline: Baseline? = Baseline.load(from: Baseline.standardFolder)
+    /// Whether each tilt warning showed at the last frame: the memory of the `TiltWarning` hysteresis. Updated with
+    /// the tilt in each frame (`tiltX`/`tiltY` are observed, so views re-read the warnings then).
+    @ObservationIgnored private var baselineTiltWarned = false
+    @ObservationIgnored private var wallTiltWarned = false
     /// Height reference (empty belt, camera height or side walls; design §16), kept in Calibration; read in `start`.
     var heightReference = HeightReference()
     /// The stored reference file is damaged and could not be moved aside: changes are not saved over it (P16-3).
@@ -580,6 +690,16 @@ final class LineScanModel {
         return ((x - bx) * (x - bx) + (y - by) * (y - by)).squareRoot()
     }
 
+    /// The baseline tilt warning shows (with hysteresis, `TiltWarning`).
+    var baselineTiltWarning: Bool {
+        TiltWarning.shows(moved: baselineMovedDegrees, wasShown: baselineTiltWarned)
+    }
+
+    /// The side-wall tilt warning shows (with hysteresis, `TiltWarning`).
+    var wallTiltWarning: Bool {
+        TiltWarning.shows(moved: wallMovedDegrees, wasShown: wallTiltWarned)
+    }
+
     /// Level shown on the bubble: gravity tilt minus the saved zero (if any).
     var levelX: Double? { tiltX.map { $0 - (levelZeroed ? levelZeroX : 0) } }
     var levelY: Double? { tiltY.map { $0 - (levelZeroed ? levelZeroY : 0) } }
@@ -588,7 +708,7 @@ final class LineScanModel {
     var recordingWarnings: [String] {
         var warnings: [String] = referenceWarnings(short: true)
         if heightReference.method == .emptyBelt, heightMode, let baseline {
-            if let moved = baselineMovedDegrees, moved > 0.3 {
+            if baselineTiltWarning, let moved = baselineMovedDegrees {
                 warnings.append(String(format: "Tilt changed %.1f° since baseline — recalibrate after this run", moved))
             }
             if baseline.info.filteredDepth != filteredDepth {
@@ -879,6 +999,8 @@ final class LineScanModel {
         }
         tiltX = update.tiltX
         tiltY = update.tiltY
+        baselineTiltWarned = baselineTiltWarning
+        wallTiltWarned = wallTiltWarning
         if update.surfaceTiltX != nil {
             surfaceTiltX = update.surfaceTiltX
             surfaceTiltY = update.surfaceTiltY

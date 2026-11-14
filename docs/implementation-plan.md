@@ -361,6 +361,17 @@ Owner requests: a button that returns the rotated topographic replay to the defa
 - [x] P17.6 Build guide (`README.md`), requirements FR-RPL-06 / FR-LIB-01 and traceability, design (Sonnet 5.5 / medium; written by the orchestrator with the code)
 - [x] P17.7 PR #22 merged (`1a2792a`, build #113); change-log row, project guide copy (orchestrator)
 
+### P18 — Line scan screen layout (owner's screen recording, 2026-11-14)
+
+Owner report: on the iPhone 17 Pro Max the bottom of the Line scan screen is cut off, the camera cut-out covers the top middle, and the readouts jump. Cause: the overlay stack was taller than the safe area and centred, so it overflowed both ends; readouts wrapped differently as their values changed length. NFR-USE-06; design §3.3 (`LineScanView`). Branch `line-scan-layout`, one PR. One session: the orchestrator (Opus 5.5) writes code and docs; one fresh change reviewer.
+
+- [x] P18.1 Fixed top bar and bottom legend + record panel inside the safe area; scrolling, top-aligned middle panels; picture taps in the gaps through the `LineScanScreen` coordinate space (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
+- [x] P18.2 Fixed readout cells (three per row, "—" for missing values), one-line shrinking texts; three-cell `DepthLegend` (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
+- [x] P18.3 CI green: app build and unit tests, 0 warnings (branch runs 43589066927, 43589773414)
+- [x] P18.4 Change review of the PR diff and its callers (fresh Opus 5.5 / high): P18-1 (Medium), P18-2…P18-4 (Low) fixed; re-review 1: no new code findings (R1 no change, R2 wording fixed). Record in [reviews/2026-11-14-P18.md](reviews/2026-11-14-P18.md)
+- [x] P18.5 Build guide (`README.md`), NFR-USE-06, design §3.3 (orchestrator)
+- [ ] P18.6 PR merged; change-log row, project guide copy (orchestrator)
+
 ## 7. Change log
 
 Newest first. Build = run number of the `Build iOS app` workflow on `main` after the merge.
