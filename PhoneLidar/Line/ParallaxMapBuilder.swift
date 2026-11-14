@@ -45,6 +45,10 @@ enum ParallaxMapBuilder {
         }
         let focals = frames.map { Double($0.fx) * Double(videoWidth) / Double(w) }.filter { $0 > 0 }.sorted()
         guard !focals.isEmpty else { throw LineError.notEnoughData }
+        // Video focal length along the travel (pixels), for the travel a pair needs (design §15.9).
+        let focalY = HeightMath.median(frames.map {
+            LineMotionMath.videoFocalLength(depthFy: Double($0.fy), videoHeight: videoHeight, depthHeight: h)
+        }.filter { $0 > 0 && $0.isFinite }) ?? 0
         var cell = ParallaxGeometry.cellSize(spacingPixels: settings.acrossStep, distance: zTypical,
                                              focal: focals[focals.count / 2])
         let qSpan = extent.q.upperBound - extent.q.lowerBound
@@ -96,8 +100,10 @@ enum ParallaxMapBuilder {
         // A source-clock timeline is anchored at the first frame whose picture was written (design §15.7).
         let firstWritten = ParallaxGeometry.videoFrameIndices(frames).first.map { times[$0] } ?? 0
         var lastIndex = -1
+        var videoPictures = 0
         try await decode(videoURL: videoURL, width: videoWidth, height: videoHeight,
                          firstSampleTime: firstWritten) { time, luma, bytesPerRow in
+            videoPictures += 1
             guard let index = nearestFrame(time: time, times: times), index > lastIndex else { return }
             lastIndex = index
             let f = frames[index]
@@ -112,7 +118,16 @@ enum ParallaxMapBuilder {
         progress?(1)
         let counters = processor.counters
         guard added > 0 else {
-            throw LineError.configuration(Self.noReadingsReason(counters))
+            let facts = ParallaxBuildFacts(
+                videoPictures: videoPictures, recordingFrames: frames.count,
+                speedReadings: frames.reduce(0) { $0 + ($1.speed == nil ? 0 : 1) },
+                forwardTravel: ParallaxDiagnosis.forwardTravel(frames.map(\.travel)),
+                backwardTravel: ParallaxDiagnosis.forwardTravel(frames.map { -$0.travel }),
+                neededTravel: ParallaxDiagnosis.neededTravel(settings: settings, videoHeight: videoHeight,
+                                                             distance: zTypical, focalY: focalY),
+                distance: zTypical, frameRate: ParallaxDiagnosis.frameRate(times: times))
+            throw LineError.configuration(ParallaxDiagnosis.reason(counters: counters, facts: facts,
+                                                                   settings: settings))
         }
 
         var extraLines: [String] = []
@@ -136,18 +151,6 @@ enum ParallaxMapBuilder {
         line += lens ? "; lens distortion corrected"
             : "; no lens calibration in this recording (heights toward the picture edges carry the lens distortion)"
         return line
-    }
-
-    static func noReadingsReason(_ c: ParallaxProcessor.Counters) -> String {
-        if c.pairs == 0 {
-            return "No camera-parallax heights: the material did not move a third of the picture between frames "
-                + "(no travel, or the video does not match the recording)."
-        }
-        if c.patchesMatched == 0 {
-            return "No camera-parallax heights: the surface texture could not be matched between frames. Use the "
-                + "short shutter, add light, and keep the phone still."
-        }
-        return "No camera-parallax heights: no frame pair had enough LiDAR readings for its scale."
     }
 
     /// Index of the recording frame nearest `time` (seconds), nil when none lies within 25 ms.

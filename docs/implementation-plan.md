@@ -399,6 +399,21 @@ and docs; one fresh change reviewer.
 - [x] P20.4 Build guide (`README.md`), FR-RMT-01, FR-RMT-12, UC-10, traceability, design §3.9 (orchestrator)
 - [x] P20.5 PR #29 merged (`a86cb8e`, build #133); change-log row, project guide copy (orchestrator)
 
+### P21 — Camera-parallax "no frame pairs" diagnosis and replay fallback (owner's screenshot, 2026-11-14)
+
+Owner's screenshot: Topographic replay showed "Cannot replay this recording … No camera-parallax heights: the material
+did not move a third of the picture between frames (no travel, or the video does not match the recording)" on a
+camera-parallax recording. The message lumped five causes together, and the replay retried the failing parallax build
+every time it opened.
+
+- [x] P21.1 `ParallaxDiagnosis` (pure): forward travel, needed travel, frame rate, one message per cause with numbers; `ParallaxMapBuilder` collects `ParallaxBuildFacts` (Opus 5.5 / high; done by the orchestrator)
+- [x] P21.2 Replay falls back to the Averaged map with a notice and a `Camera parallax:` summary line; `MapRebuild.busyMessage` not retried (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
+- [x] P21.3 Unit tests `ParallaxDiagnosisTests` (Sonnet 5.5 / high; written with the code)
+- [x] P21.4 CI green: app build and unit tests, 0 warnings (PR runs 43642113931, 43642992785, 43643703220)
+- [x] P21.5 Change review of the PR diff and its callers (fresh Opus 5.5 / high): P21-1 (Medium), P21-2…P21-4 (Low) fixed; re-review 1: P21-5 (Medium), P21-6 (Low) fixed; re-review 2: no new findings. Record in [reviews/2026-11-14-P21.md](reviews/2026-11-14-P21.md)
+- [x] P21.6 Build guide (`README.md`), design §15.9, requirements FR-PAR-06/07 (orchestrator)
+- [ ] P21.7 PR merged; change-log row, project guide copy (orchestrator)
+
 ## 7. Change log
 
 Newest first. Build = run number of the `Build iOS app` workflow on `main` after the merge.

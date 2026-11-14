@@ -43,6 +43,10 @@ final class MapBuildRegistry: @unchecked Sendable {
 
 /// Map builds and replay inputs. Everything here runs off the main thread.
 enum MapRebuild {
+    /// Error text when another build of the same scan is running.
+    static let busyMessage = "This scan's map is already being built. Wait until that build has finished, "
+        + "then try again."
+
     /// Reads the recording in `folder` (a cut-off Recording.json is repaired on disk, as Line scan does after
     /// recording).
     static func load(folder: URL) throws -> MapRecording {
@@ -56,8 +60,7 @@ enum MapRebuild {
     static func build(folder: URL, recording: MapRecording, method: MapMethod?,
                       progress: (@Sendable (Double) -> Void)? = nil) async throws -> TopoMapBuilder.Output {
         guard MapBuildRegistry.shared.claim(folder) else {
-            throw LineError.configuration("This scan's map is already being built. Wait until that build has "
-                                          + "finished, then try again.")
+            throw LineError.configuration(busyMessage)
         }
         defer { MapBuildRegistry.shared.release(folder) }
         let direction = recording.direction
