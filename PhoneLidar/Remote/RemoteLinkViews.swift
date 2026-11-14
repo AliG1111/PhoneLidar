@@ -4,7 +4,6 @@ import SwiftUI
 struct RemoteScannerSheet: View {
     @Environment(RemoteLink.self) private var link
     @Environment(\.dismiss) private var dismiss
-    @State private var confirmForget = false
 
     var body: some View {
         NavigationStack {
@@ -17,51 +16,7 @@ struct RemoteScannerSheet: View {
                 }
 
                 if link.mode == .scanner {
-                    Section("Link") {
-                        Label(link.stateText, systemImage: link.isConnected ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right")
-                            .foregroundStyle(link.isConnected ? Color.green : Color.primary)
-                        LabeledContent("This phone", value: link.identity.name)
-                        if let notice = link.scannerNotice {
-                            Text(notice)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Section {
-                        if let window = link.pairingWindow {
-                            TimelineView(.periodic(from: .now, by: 1)) { context in
-                                if window.isOpen(at: context.date) {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("Pairing code")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        Text(PairingCode.display(window.code))
-                                            .font(.system(size: 44, weight: .bold, design: .monospaced))
-                                            .accessibilityLabel("Pairing code \(window.code.map { String($0) }.joined(separator: " "))")
-                                        Text("On the other phone: Home › Remote link › Control a scanner phone, pick \(link.identity.name) and enter this code. \(Int(window.remaining(at: context.date))) s left.")
-                                            .font(.footnote)
-                                    }
-                                } else {
-                                    Text("The code has expired.")
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            Button("Stop pairing", role: .cancel) { link.closePairingWindow() }
-                        } else {
-                            Button(link.pairedPeerName == nil ? "Pair a remote" : "Pair a different remote") {
-                                link.openPairingWindow()
-                            }
-                        }
-                        if let name = link.pairedPeerName {
-                            LabeledContent("Paired remote", value: name)
-                            Button("Forget \(name)", role: .destructive) { confirmForget = true }
-                        }
-                    } header: {
-                        Text("Pairing")
-                    } footer: {
-                        Text("Pair once. The paired remote reconnects by itself whenever it is in range. A recording keeps running when the link drops, and this screen stays open after each save so the remote can start the next recording.")
-                    }
+                    RemoteScannerSections()
                 }
             }
             .navigationTitle("Remote control")
@@ -71,11 +26,66 @@ struct RemoteScannerSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .confirmationDialog("Forget the paired remote?", isPresented: $confirmForget, titleVisibility: .visible) {
-                Button("Forget", role: .destructive) { link.forgetScannerPairing() }
-            } message: {
-                Text("It has to pair again with a new code before it can connect.")
+        }
+    }
+}
+
+/// The scanner's link state and pairing (code, paired remote, forget), shown while remote control is allowed.
+/// Used by the Line scan sheet and by Home › Connect to the other phone (FR-RMT-03).
+struct RemoteScannerSections: View {
+    @Environment(RemoteLink.self) private var link
+    @State private var confirmForget = false
+
+    var body: some View {
+        Section("Link") {
+            Label(link.stateText, systemImage: link.isConnected ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right")
+                .foregroundStyle(link.isConnected ? Color.green : Color.primary)
+            LabeledContent("This phone", value: link.identity.name)
+            if let notice = link.scannerNotice {
+                Text(notice)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
+        }
+
+        Section {
+            if let window = link.pairingWindow {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    if window.isOpen(at: context.date) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Pairing code")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(PairingCode.display(window.code))
+                                .font(.system(size: 44, weight: .bold, design: .monospaced))
+                                .accessibilityLabel("Pairing code \(window.code.map { String($0) }.joined(separator: " "))")
+                            Text("On the other phone: Home › Connect to the other phone › Control a scanner phone, pick \(link.identity.name) and enter this code. \(Int(window.remaining(at: context.date))) s left.")
+                                .font(.footnote)
+                        }
+                    } else {
+                        Text("The code has expired.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Button("Stop pairing", role: .cancel) { link.closePairingWindow() }
+            } else {
+                Button(link.pairedPeerName == nil ? "Pair a remote" : "Pair a different remote") {
+                    link.openPairingWindow()
+                }
+            }
+            if let name = link.pairedPeerName {
+                LabeledContent("Paired remote", value: name)
+                Button("Forget \(name)", role: .destructive) { confirmForget = true }
+                    .confirmationDialog("Forget the paired remote?", isPresented: $confirmForget, titleVisibility: .visible) {
+                        Button("Forget", role: .destructive) { link.forgetScannerPairing() }
+                    } message: {
+                        Text("It has to pair again with a new code before it can connect.")
+                    }
+            }
+        } header: {
+            Text("Pairing")
+        } footer: {
+            Text("Pair once. The paired remote reconnects by itself whenever it is in range. A recording keeps running when the link drops, and the Line scan screen stays open after each save so the remote can start the next recording.")
         }
     }
 }
@@ -105,58 +115,197 @@ struct RemoteStatusChip: View {
     }
 }
 
-/// Home › Remote link.
+/// Home › Remote link: one button to connect this phone with the other one, either way, plus the current role
+/// with a shortcut (FR-RMT-01).
 struct RemoteHomeSection: View {
+    /// Opens Home › Connect to the other phone (`PhoneLinkSheet`).
+    var openLink: () -> Void
+    /// Opens the Remote screen (this phone is the remote).
     var openRemote: () -> Void
 
     @Environment(RemoteLink.self) private var link
-    @State private var confirmSwitch = false
+    @State private var confirmTurnOff = false
 
     var body: some View {
         Section {
-            Button {
-                if link.mode == .scanner {
-                    confirmSwitch = true
-                } else {
-                    openRemote()
-                }
-            } label: {
+            Button(action: openLink) {
                 HStack(spacing: 14) {
-                    Image(systemName: "antenna.radiowaves.left.and.right")
+                    Image(systemName: "iphone.radiowaves.left.and.right")
                         .font(.title2)
                         .frame(width: 36)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Control a scanner phone")
+                        Text("Connect to the other phone")
                             .font(.headline)
-                        Text(link.mode == .remote
-                             ? link.stateText
-                             : "Start and stop a mounted Line scan phone, watch its readouts and copy its scans to this phone.")
+                        Text("On the mounted Line scan phone: let the other phone connect. On the phone in your hand: connect to the mounted phone to start and stop recordings, watch its readouts and copy its scans.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
                 .padding(.vertical, 4)
             }
-            .confirmationDialog("This phone is the scanner", isPresented: $confirmSwitch, titleVisibility: .visible) {
-                Button("Use this phone as the remote") {
-                    link.setMode(.remote)
-                    openRemote()
-                }
-            } message: {
-                Text("Remote control of this phone turns off. The other phone can then no longer connect to it.")
-            }
 
-            if link.mode == .scanner {
+            switch link.mode {
+            case .scanner:
                 HStack(spacing: 12) {
                     Label("Scanner: \(link.stateText)", systemImage: "barcode.viewfinder")
                         .font(.callout)
                     Spacer(minLength: 0)
-                    Button("Turn off") { link.setMode(.off) }
+                    Button("Turn off") {
+                        if link.isConnected {
+                            confirmTurnOff = true
+                        } else {
+                            link.setMode(.off)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .confirmationDialog(RemoteTurnOffText.title, isPresented: $confirmTurnOff, titleVisibility: .visible) {
+                        Button(RemoteTurnOffText.button, role: .destructive) { link.setMode(.off) }
+                    } message: {
+                        Text(RemoteTurnOffText.message)
+                    }
+                }
+            case .remote:
+                HStack(spacing: 12) {
+                    Label("Remote: \(remoteRowText)", systemImage: "antenna.radiowaves.left.and.right")
+                        .font(.callout)
+                    Spacer(minLength: 0)
+                    Button("Open", action: openRemote)
                         .buttonStyle(.bordered)
                 }
+            case .off:
+                EmptyView()
             }
         } header: {
             Text("Remote link")
+        } footer: {
+            if link.mode == .scanner {
+                Text("This phone does not auto-lock while remote control is allowed and the app is open. Turn off to let it lock.")
+            }
         }
+    }
+
+    /// The remote's link state; "pick a scanner below" only makes sense on the Remote screen.
+    private var remoteRowText: String {
+        if link.linkState == .waiting && link.pairedScannerName == nil {
+            return "Not paired: tap Open to pick a scanner"
+        }
+        return link.stateText
+    }
+}
+
+/// Confirmation before turning remote control off while the other phone is connected.
+enum RemoteTurnOffText {
+    static let title = "Turn remote control off?"
+    static let button = "Turn off"
+    static let message = "The other phone is connected. It loses the link, and any copy to it pauses until remote control is on again. The pairing is kept."
+}
+
+/// Home › Connect to the other phone: let the other phone connect to this one (scanner role) or connect to the
+/// other phone (remote role). One role at a time (FR-RMT-01, FR-RMT-03).
+struct PhoneLinkSheet: View {
+    /// Closes this sheet and opens the Remote screen.
+    var onControlScanner: () -> Void
+
+    @Environment(RemoteLink.self) private var link
+    @Environment(\.dismiss) private var dismiss
+    /// This phone is the remote and the user turned on Allow remote control: asks before the remote link stops.
+    @State private var confirmScanner = false
+    /// This phone is the scanner and the user tapped Control a scanner phone: asks before remote control turns off.
+    @State private var confirmRemote = false
+    /// The other phone is connected and the user turned Allow remote control off: asks first.
+    @State private var confirmTurnOff = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    LabeledContent("This phone", value: link.identity.name)
+                    LabeledContent("Role", value: roleText)
+                } footer: {
+                    Text("Both phones need Phone LiDAR open and Wi-Fi switched on in Settings; no Wi-Fi network is needed. A phone has one role at a time.")
+                }
+
+                Section {
+                    Toggle("Allow remote control", isOn: allowRemoteControl)
+                } header: {
+                    Text("Let the other phone connect to this one")
+                } footer: {
+                    Text("Use this on the mounted Line scan phone. The other phone can then connect and copy this phone's saved Line scans at any time; it shows the Line scan readouts and starts and stops recordings while Line scan is open on this phone. While remote control is allowed, this phone does not auto-lock with the app open, so the link stays up.")
+                }
+
+                if link.mode == .scanner {
+                    RemoteScannerSections()
+                }
+
+                Section {
+                    Button {
+                        if link.mode == .scanner {
+                            confirmRemote = true
+                        } else {
+                            onControlScanner()
+                        }
+                    } label: {
+                        Label(link.mode == .remote ? "Open Remote control" : "Control a scanner phone",
+                              systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                } header: {
+                    Text("Connect to the other phone")
+                } footer: {
+                    Text("Use this on the phone in your hand: pick the scanner and enter the code it shows. Then start and stop its recordings, watch its readouts and copy its scans to this phone.")
+                }
+            }
+            .navigationTitle("Connect phones")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .confirmationDialog("This phone is the remote", isPresented: $confirmScanner, titleVisibility: .visible) {
+                Button("Allow remote control of this phone") { link.setMode(.scanner) }
+            } message: {
+                Text("The link to the scanner stops and any copy pauses. The pairing is kept, so this phone can be the remote again later.")
+            }
+            .confirmationDialog(RemoteTurnOffText.title, isPresented: $confirmTurnOff, titleVisibility: .visible) {
+                Button(RemoteTurnOffText.button, role: .destructive) { link.setMode(.off) }
+            } message: {
+                Text(RemoteTurnOffText.message)
+            }
+            .confirmationDialog("This phone is the scanner", isPresented: $confirmRemote, titleVisibility: .visible) {
+                Button("Use this phone as the remote") {
+                    link.setMode(.remote)
+                    onControlScanner()
+                }
+            } message: {
+                Text("Remote control of this phone turns off. The other phone can then no longer connect to it.")
+            }
+        }
+    }
+
+    private var roleText: String {
+        switch link.mode {
+        case .off: return "None (remote link off)"
+        case .scanner: return "Scanner (the other phone connects to this one)"
+        case .remote: return "Remote (this phone connects to the scanner)"
+        }
+    }
+
+    /// On: this phone becomes the scanner (after a confirmation when it is the remote). Off: the link stops (after a
+    /// confirmation when the other phone is connected).
+    private var allowRemoteControl: Binding<Bool> {
+        Binding(get: { link.mode == .scanner },
+                set: { allow in
+                    if !allow {
+                        if link.isConnected {
+                            confirmTurnOff = true
+                        } else {
+                            link.setMode(.off)
+                        }
+                    } else if link.mode == .remote {
+                        confirmScanner = true
+                    } else {
+                        link.setMode(.scanner)
+                    }
+                })
     }
 }

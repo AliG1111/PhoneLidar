@@ -66,7 +66,7 @@ struct RemoteControlView: View {
                 }
                 Button("Cancel", role: .cancel) { codeText = "" }
             } message: {
-                Text("Enter the code shown on the scanner (Line scan › Remote › Pair a remote).")
+                Text("Enter the code the scanner shows after Pair a remote.")
             }
             .confirmationDialog("Forget the paired scanner?", isPresented: $confirmForget, titleVisibility: .visible) {
                 Button("Forget", role: .destructive) { link.forgetScanner() }
@@ -110,7 +110,7 @@ struct RemoteControlView: View {
     private var nearbySection: some View {
         Section {
             if link.foundScanners.isEmpty {
-                Text("Searching… On the scanner phone open Line scan › Remote and turn on Allow remote control.")
+                Text("Searching… On the scanner phone: Home › Connect to the other phone (or Line scan › Remote), turn on Allow remote control and tap Pair a remote.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

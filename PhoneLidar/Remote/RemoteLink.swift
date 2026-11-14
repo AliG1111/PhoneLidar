@@ -83,6 +83,8 @@ final class RemoteLink {
     @ObservationIgnored private let store: ScanStore
     @ObservationIgnored private let queue = DispatchQueue(label: "phonelidar.remote.link", qos: .userInitiated)
     @ObservationIgnored private var appActive = false
+    /// The scanner role's hold on `ScreenAwake`.
+    @ObservationIgnored private let screenAwakeHolder = UUID()
 
     // Scanner
     @ObservationIgnored private let secrets = ScannerSecrets()
@@ -174,6 +176,9 @@ final class RemoteLink {
 
     private func startIfNeeded() {
         guard appActive else { return }
+        // A scanner stays reachable: the phone does not auto-lock while remote control is allowed, because an
+        // auto-lock sends the app to the background, which stops the link (also on Home, with Line scan closed).
+        ScreenAwake.set(held: mode == .scanner, by: screenAwakeHolder)
         switch mode {
         case .off:
             linkState = .off
