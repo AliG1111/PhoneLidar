@@ -1,6 +1,6 @@
 import Foundation
 
-/// Direction setting on the Line scan and Laser line scan screens (FR-DIR-01): detected from the material's
+/// Direction setting on the Line scan screen (FR-DIR-01): detected from the material's
 /// movement, or set by hand when the detection has trouble.
 enum DirectionSetting: String, Codable, CaseIterable, Identifiable {
     case auto

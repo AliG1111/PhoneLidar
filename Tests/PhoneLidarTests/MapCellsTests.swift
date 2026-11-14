@@ -12,15 +12,20 @@ final class MapMethodTests: XCTestCase {
         XCTAssertEqual(MapMethod.averaged.rawValue, "averaged")
         XCTAssertEqual(MapMethod.singleReading.rawValue, "singleReading")
         XCTAssertEqual(MapSensor.lidar.rawValue, "lidar")
-        XCTAssertEqual(MapSensor.laserLine.rawValue, "laserLine")
-        XCTAssertEqual(MapMethod.allCases.count, 2)
+        XCTAssertEqual(MapSensor.cameraParallax.rawValue, "cameraParallax")
+        XCTAssertEqual(MapMethod.cameraParallax.rawValue, "cameraParallax")
+        XCTAssertEqual(MapMethod.allCases.count, 3)
         XCTAssertNotEqual(MapMethod.averaged.label, MapMethod.singleReading.label)
+        XCTAssertNotEqual(MapMethod.cameraParallax.label, MapMethod.singleReading.label)
+        XCTAssertFalse(MapMethod.averaged.isSingleReading)
+        XCTAssertTrue(MapMethod.singleReading.isSingleReading)
+        XCTAssertTrue(MapMethod.cameraParallax.isSingleReading)
         XCTAssertEqual(MapMethod.averaged.id, "averaged")
     }
 
     func testRoundTrip() throws {
         for method in MapMethod.allCases {
-            for sensor in [MapSensor.lidar, .laserLine] {
+            for sensor in [MapSensor.lidar, .cameraParallax] {
                 let data = try JSONEncoder().encode(Holder(method: method, sensor: sensor))
                 let back = try JSONDecoder().decode(Holder.self, from: data)
                 XCTAssertEqual(back.method, method)
@@ -37,10 +42,31 @@ final class MapMethodTests: XCTestCase {
     }
 
     func testKnownValuesDecode() throws {
+        let data = Data(#"{"method":"cameraParallax","sensor":"cameraParallax"}"#.utf8)
+        let back = try JSONDecoder().decode(Holder.self, from: data)
+        XCTAssertEqual(back.method, .cameraParallax)
+        XCTAssertEqual(back.sensor, .cameraParallax)
+    }
+
+    func testMapsOfTheRemovedLaserScanReadAsLidar() throws {
+        // P16 removed the Laser line scan; its TopoStats.json files still open.
         let data = Data(#"{"method":"singleReading","sensor":"laserLine"}"#.utf8)
         let back = try JSONDecoder().decode(Holder.self, from: data)
         XCTAssertEqual(back.method, .singleReading)
-        XCTAssertEqual(back.sensor, .laserLine)
+        XCTAssertEqual(back.sensor, .lidar)
+    }
+
+    func testParallaxCellsKeepOneReadingPerCell() {
+        var cells = MapCells(method: .cameraParallax, columns: 2, rows: 1, cell: 10, qMin: 0, xMin: 0, zRef: 0)
+        XCTAssertTrue(cells.m2s.isEmpty)
+        XCTAssertEqual(cells.scores.count, 2)
+        cells.withAccumulator { acc in
+            acc.add(5, at: 0, score: 3)
+            acc.add(9, at: 0, score: 1)      // better placed: replaces
+            acc.add(7, at: 0, score: 2)      // worse: ignored
+        }
+        XCTAssertEqual(cells.means[0], 9)
+        XCTAssertEqual(cells.hits[0], 1)
     }
 }
 

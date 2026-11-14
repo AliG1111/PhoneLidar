@@ -77,6 +77,8 @@ struct TopoReplayView: View {
         var grid: TopoGridFile?
         /// The map on disk holds one reading per cell (its replay starts without 3 × 3 smoothing).
         var singleReading: Bool
+        /// Its heights are above the belt (camera height or side walls).
+        var aboveBelt = false
     }
 
     private struct Prepared {
@@ -90,7 +92,7 @@ struct TopoReplayView: View {
 
         var errorDescription: String? {
             switch self {
-            case .recording: return "The recording file (Recording.json or LaserRecording.json) is missing or damaged."
+            case .recording: return "The recording file (Recording.json) is missing or damaged."
             case .build(let reason): return "The topographic map could not be built: \(reason)"
             }
         }
@@ -107,7 +109,7 @@ struct TopoReplayView: View {
             let stats = (try? Data(contentsOf: folder.appendingPathComponent("TopoStats.json")))
                 .flatMap { try? JSONDecoder.iso.decode(TopoStats.self, from: $0) }
             return Opened(recording: recording, grid: TopoGridFile.load(from: folder),
-                          singleReading: stats?.isSingleReading == true)
+                          singleReading: stats?.isSingleReading == true, aboveBelt: stats?.heightAboveBelt == true)
         }.value
         guard !Task.isCancelled else { return }
         guard let opened else {
@@ -117,13 +119,14 @@ struct TopoReplayView: View {
         let recording = opened.recording
         var gridFile = opened.grid
         var singleReading = opened.singleReading
+        var aboveBelt = opened.aboveBelt
         if gridFile == nil {
             // Recordings made before the replay existed: build the map once (this also writes TopoGrid.bin).
             status = "Building the topographic grid…"
-            let built = await Task.detached(priority: .userInitiated) { () -> Result<TopoMapBuilder.Output, Error> in
+            let built = await Task.detached(priority: .userInitiated) { () async -> Result<TopoMapBuilder.Output, Error> in
                 do {
                     // TopoMap.png is rendered here, off the main thread, and staged with the other files.
-                    return .success(try MapRebuild.build(folder: folder, recording: recording, method: nil))
+                    return .success(try await MapRebuild.build(folder: folder, recording: recording, method: nil))
                 } catch {
                     return .failure(error)
                 }
@@ -134,6 +137,7 @@ struct TopoReplayView: View {
                 updateScanRecord(summary: (recording: recording, map: output.summary))
                 gridFile = output.grid
                 singleReading = output.stats.isSingleReading
+                aboveBelt = output.stats.heightAboveBelt
             case .failure(let error):
                 failure = LoadError.build(error.localizedDescription).localizedDescription
                 return
@@ -160,6 +164,7 @@ struct TopoReplayView: View {
                                          grid: prepared.grid)
             // A single-reading map is shown as measured: no 3 × 3 smoothing unless the user turns it on.
             if singleReading { replay.smooth = false }
+            replay.heightAboveBelt = aboveBelt
             model = replay
             if visible {
                 replay.start()

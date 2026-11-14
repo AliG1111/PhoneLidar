@@ -70,13 +70,20 @@ struct TopoStats: Codable {
     var heightMode: Bool? = nil
     /// How readings in a cell were combined (design §13.2); absent in maps before P12 = averaged.
     var mapMethod: MapMethod? = nil
-    /// Sensor of the values (design §14.6); absent in maps before P12 = LiDAR.
+    /// Sensor of the values; absent in maps before P12 = LiDAR.
     var sensor: MapSensor? = nil
+    /// What the heights are measured from (design §16); absent in maps before P16 (baseline when `heightMode`).
+    var heightReference: HeightReferenceMethod? = nil
 }
 
 extension TopoStats {
-    /// One reading per cell: no repeat-reading noise exists (FR-SFM-05).
-    var isSingleReading: Bool { mapMethod == .singleReading }
+    /// One reading per cell (single frame or camera parallax): no repeat-reading noise exists (FR-SFM-05).
+    var isSingleReading: Bool { mapMethod?.isSingleReading == true }
+
+    /// Heights measured from a belt plane (camera height or side walls) rather than the empty-belt baseline.
+    var heightAboveBelt: Bool {
+        heightMode == true && (heightReference == .cameraHeight || heightReference == .sideWalls)
+    }
 }
 
 /// Stitches the recorded depth frames into a top-down distance map using the measured travel,
@@ -102,14 +109,18 @@ enum TopoMapBuilder {
     /// `method` overrides the recording's `mapMethod` (nil = the recording's, else averaged; design §13.2).
     static func build(folder: URL, info: LineRecordingInfo, method: MapMethod? = nil,
                       composite: ((CGImage, TopoStats) throws -> Data)? = nil) throws -> Output {
+        let method = method ?? info.mapMethod ?? .averaged
+        guard method != .cameraParallax else {
+            throw LineError.configuration("A camera-parallax map is built by the parallax builder.")
+        }
         let reader = try DepthFileReader(url: folder.appendingPathComponent("Depth.bin"))
         let frames = Array(info.frames.prefix(reader.frameCount))
-        // A baseline saved with the recording turns distances into heights above the flat surface.
-        let baseline = Baseline.load(from: folder).flatMap {
-            $0.matches(width: reader.width, height: reader.height) ? $0 : nil
-        }
-        let heightMode = baseline != nil
-        let baseValues = baseline?.values ?? []
+        // A height reference saved with the recording turns distances into heights above the belt: a camera-height
+        // or side-wall plane (HeightReference.json), else the empty-belt baseline (Baseline.bin; design §16.4).
+        let model = MapHeightModel.load(folder: folder, width: reader.width, height: reader.height, frames: frames)
+        let heightMode = model.isHeight
+        let baseValues = model.baselineValues ?? []
+        let plane = model.plane
         guard frames.count >= 2 else { throw LineError.notEnoughData }
         let w = reader.width
         let h = reader.height
@@ -120,31 +131,10 @@ enum TopoMapBuilder {
         guard w > 2 * border + 4, h > 2 * border + 4 else { throw LineError.badFile }
         let sign = Double(info.direction.bufferSign)
 
-        // Map coordinates (mm): q runs left → right as seen on the portrait screen and stays fixed
-        // to the material (q = sign·travel − y); x runs top → bottom of the screen (across the material).
-        var qMin = Double.infinity
-        var qMax = -Double.infinity
-        var xMin = Double.infinity
-        var xMax = -Double.infinity
-        for f in frames {
-            let z = f.medianDepth > 0 ? f.medianDepth : zTypical
-            let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
-            guard fx > 0, fy > 0 else { continue }
-            let yLo = (Double(border) - cy) * z / fy
-            let yHi = (Double(h - 1 - border) - cy) * z / fy
-            let xLo = (Double(border) - cx) * z / fx
-            let xHi = (Double(w - 1 - border) - cx) * z / fx
-            qMin = min(qMin, sign * f.travel - yHi)
-            qMax = max(qMax, sign * f.travel - yLo)
-            xMin = min(xMin, xLo)
-            xMax = max(xMax, xHi)
-        }
-        guard qMin.isFinite, qMax > qMin, xMin.isFinite, xMax > xMin else { throw LineError.notEnoughData }
-        let pad = (xMax - xMin) * 0.06         // room for relief nearer/farther than the typical distance
-        xMin -= pad
-        xMax += pad
-        qMin -= pad
-        qMax += pad
+        guard let extent = Self.extent(frames: frames, width: w, height: h, border: border, sign: sign,
+                                       typicalDepth: zTypical) else { throw LineError.notEnoughData }
+        let qMin = extent.q.lowerBound, qMax = extent.q.upperBound
+        let xMin = extent.x.lowerBound, xMax = extent.x.upperBound
 
         // At least one depth-pixel footprint everywhere in the frame (rounded up to whole mm), so neighbouring
         // pixels of one frame never skip a cell: no empty stripes and full coverage of stationary material.
@@ -160,8 +150,9 @@ enum TopoMapBuilder {
             rows = Int(((xMax - xMin) / cell).rounded(.up)) + 1
         }
         let zRef: Float = heightMode ? 0 : Float(zTypical)
-        let method = method ?? info.mapMethod ?? .averaged
         let single = method == .singleReading
+        // Side walls: only the columns between the wall bands (FR-HREF-07).
+        let columns = model.columns(width: w, border: border)
         var cells = MapCells(method: method, columns: cols, rows: rows, cell: cell, qMin: qMin, xMin: xMin, zRef: zRef)
 
         // Single reading: each cell keeps the reading whose depth row was closest to the scan line (design §13.3);
@@ -183,16 +174,20 @@ enum TopoMapBuilder {
                     if single {
                         var sample = ScanRowSample(frame: f.index, time: f.time, travel: f.travel, repeated: repeated)
                         let rowBase = scanRow * w
-                        for u in border..<(w - border) {
+                        let scanYn = (Double(scanRow) - cy) / fy
+                        for u in columns {
                             let z = depth[rowBase + u]
                             if z <= 0 { continue }
                             var value = z
-                            if heightMode {
+                            let xn = (Double(u) - cx) / fx
+                            if let plane {
+                                value = Float(plane.height(z: Double(z), xn: xn, yn: scanYn))
+                            } else if heightMode {
                                 let b = baseValues[rowBase + u]
                                 if !(b > 0 && b.isFinite) { continue }
                                 value = b - z
                             }
-                            sample.across.append(Float((Double(u) - cx) / fx * Double(z)))
+                            sample.across.append(Float(xn * Double(z)))
                             sample.values.append(value)
                         }
                         scanRows.append(sample)
@@ -207,18 +202,21 @@ enum TopoMapBuilder {
                             let yFactor = (Double(v) - cy) / fy
                             let rowBase = v * w
                             let score = Float(abs(v - scanRow))
-                            for u in border..<(w - border) {
+                            for u in columns {
                                 let z = zBuf[rowBase + u]
                                 if z <= 0 { continue }
                                 var value = z
-                                if heightMode {
+                                let xFactor = (Double(u) - cx) / fx
+                                let zd = Double(z)
+                                if let plane {
+                                    value = Float(plane.height(z: zd, xn: xFactor, yn: yFactor))
+                                } else if heightMode {
                                     let b = baseBuf[rowBase + u]
                                     if !(b > 0 && b.isFinite) { continue }   // no NaN/inf from a damaged baseline
                                     value = b - z
                                 }
-                                let zd = Double(z)
                                 let q = offset - yFactor * zd
-                                let x = (Double(u) - cx) / fx * zd
+                                let x = xFactor * zd
                                 guard let idx = acc.index(q: q, x: x) else { continue }
                                 acc.add(value, at: idx, score: score)
                             }
@@ -229,6 +227,7 @@ enum TopoMapBuilder {
         }
 
         var extraLines: [String] = []
+        if let line = model.summaryLine { extraLines.append(line) }
         if single {
             extraLines.append(Self.singleReadingLine(used: usedFrames, total: frames.count, repeated: repeatedFrames))
         }
@@ -237,7 +236,7 @@ enum TopoMapBuilder {
         let output = try finish(cells: cells, heightMode: heightMode, sensor: .lidar, speeds: frames.map(\.speed),
                                 frameCount: frames.count, duration: frames.last?.time ?? 0,
                                 travel: Self.travelRange(frames), extraLines: extraLines, folder: folder,
-                                composite: composite) { geometry in
+                                heightReference: model.method, composite: composite) { geometry in
             guard single else { return [] }
             return [(ScanLineProfiles.fileName, { url in
                 try ScanLineProfiles.write(samples, geometry: geometry, to: url)
@@ -250,6 +249,34 @@ enum TopoMapBuilder {
             if FileManager.default.fileExists(atPath: stale.path) { try? FileManager.default.removeItem(at: stale) }
         }
         return output
+    }
+
+    /// Map coordinates (mm) covered by the frames' depth views, padded by 6 % of the width for relief nearer or
+    /// farther than the typical distance: q runs left → right as seen on the portrait screen and stays fixed to the
+    /// material (q = sign·travel − y); x runs top → bottom of the screen (across the material). Nil without a frame
+    /// with valid intrinsics.
+    static func extent(frames: [LineFrameInfo], width w: Int, height h: Int, border: Int, sign: Double,
+                       typicalDepth zTypical: Double) -> (q: ClosedRange<Double>, x: ClosedRange<Double>)? {
+        var qMin = Double.infinity
+        var qMax = -Double.infinity
+        var xMin = Double.infinity
+        var xMax = -Double.infinity
+        for f in frames {
+            let z = f.medianDepth > 0 ? f.medianDepth : zTypical
+            let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
+            guard fx > 0, fy > 0 else { continue }
+            let yLo = (Double(border) - cy) * z / fy
+            let yHi = (Double(h - 1 - border) - cy) * z / fy
+            let xLo = (Double(border) - cx) * z / fx
+            let xHi = (Double(w - 1 - border) - cx) * z / fx
+            qMin = min(qMin, sign * f.travel - yHi)
+            qMax = max(qMax, sign * f.travel - yLo)
+            xMin = min(xMin, xLo)
+            xMax = max(xMax, xHi)
+        }
+        guard qMin.isFinite, qMax > qMin, xMin.isFinite, xMax > xMin else { return nil }
+        let pad = (xMax - xMin) * 0.06
+        return ((qMin - pad)...(qMax + pad), (xMin - pad)...(xMax + pad))
     }
 
     /// The trimmed grid a map was written with (for files that need its rows or columns).
@@ -268,11 +295,12 @@ enum TopoMapBuilder {
     }
 
     /// Trims the accumulated grid to the observed extent, computes statistics and profiles, renders the map image
-    /// and writes every map file (staged, renamed together). Shared by the LiDAR builds and the laser builder.
+    /// and writes every map file (staged, renamed together). Shared by the LiDAR builds and the parallax builder.
     /// `speeds` holds one entry per frame that could have a speed (nil = no reading); `extraFiles` adds files that
     /// depend on the trimmed grid, written in the same staged set.
     static func finish(cells: MapCells, heightMode: Bool, sensor: MapSensor, speeds: [Double?], frameCount: Int,
                        duration: Double, travel: Double, extraLines: [String], folder: URL,
+                       heightReference: HeightReferenceMethod? = nil,
                        composite: ((CGImage, TopoStats) throws -> Data)?,
                        extraFiles: (Geometry) -> [(name: String, write: (URL) throws -> Void)] = { _ in [] })
         throws -> Output {
@@ -458,7 +486,8 @@ enum TopoMapBuilder {
             speedTrackedPercent: speeds.isEmpty ? 0 : 100 * Double(readings.count) / Double(speeds.count),
             colorNear: near, colorFar: far,
             frames: frameCount, duration: duration,
-            heightMode: heightMode, mapMethod: cells.method, sensor: sensor)
+            heightMode: heightMode, mapMethod: cells.method, sensor: sensor,
+            heightReference: heightMode ? heightReference : nil)
         let profiles = TopoProfiles(across: across, along: along)
         let gridFile = TopoGridFile(columns: cols, rows: rows, cell: cell, qMin: qMin, xMin: xMin,
                                     heightMode: heightMode, values: grid)
@@ -656,7 +685,9 @@ enum TopoMapBuilder {
         var lines = [
             String(format: "Scanned %.2f m long × %.2f m wide, %@ mm cells, %.0f%% coverage",
                    s.lengthMM / 1000, s.widthMM / 1000, cellText(s.cellSize), s.coveragePercent),
-            String(format: s.heightMode == true
+            String(format: s.heightAboveBelt
+                   ? "Height above the belt mean %.2f mm, std dev %.2f mm, variance %.2f mm²"
+                   : s.heightMode == true
                    ? "Height above baseline mean %.2f mm, std dev %.2f mm, variance %.2f mm²"
                    : "Distance mean %.1f mm, std dev %.2f mm, variance %.2f mm²",
                    s.mean, s.stdDev, s.variance),
@@ -679,7 +710,10 @@ enum TopoMapBuilder {
         } else {
             lines.append("Speed: no texture lock (map uses zero travel)")
         }
-        if s.heightMode == true {
+        if s.heightAboveBelt {
+            lines.append(String(format: "Colours: dark blue %.1f mm (low) → dark red %.1f mm (high) above the belt",
+                                s.colorFar, s.colorNear))
+        } else if s.heightMode == true {
             lines.append(String(format: "Colours: dark blue %.1f mm (low) → dark red %.1f mm (high) above the baseline",
                                 s.colorFar, s.colorNear))
         } else {
@@ -692,9 +726,11 @@ enum TopoMapBuilder {
     /// Lines written by `summaryLines` (or a failed build), recognised so a rebuild can replace them in the
     /// scan record without touching other summary lines.
     private static let mapSummaryPrefixes = [
-        "Scanned ", "Height above baseline mean", "Distance mean", "Range ", "Across-width profile",
-        "Along-travel profile", "Local residual", "Speed mean", "Speed: no texture lock", "Colours:",
-        "Map not built", "Map method:", "Laser line:", "Wall re-zero:",
+        "Scanned ", "Height above baseline mean", "Height above the belt mean", "Distance mean", "Range ",
+        "Across-width profile", "Along-travel profile", "Local residual", "Speed mean", "Speed: no texture lock",
+        "Colours:", "Map not built", "Map method:", "Height reference:", "Camera parallax:",
+        // Lines of maps from the removed Laser line scan (P16), replaced when such a scan is rebuilt.
+        "Laser line:", "Wall re-zero:",
         // Written by Line scan when Recording.json could not be read; obsolete once a map builds from it.
         "Recording.json could not be read back"
     ]
@@ -735,7 +771,9 @@ enum TopoMapBuilder {
         let p = s.heightMode == true ? "height" : "distance"
         let rows: [[String]] = [
             ["metric", "value", "unit"],
-            ["values", s.heightMode == true ? "height_above_flat_baseline" : "distance_from_camera", ""],
+            ["values", s.heightAboveBelt
+                ? (s.heightReference == .sideWalls ? "height_above_belt_side_walls" : "height_above_belt_camera_height")
+                : s.heightMode == true ? "height_above_flat_baseline" : "distance_from_camera", ""],
             ["frames", "\(s.frames)", ""],
             ["duration", f(s.duration, 2), "s"],
             ["cell_size", f(s.cellSize, 1), "mm"],
@@ -773,7 +811,7 @@ enum TopoMapBuilder {
         return CSV.make(rows)
     }
 
-    /// Cell size for text: whole millimetres as "10", finer cells (laser maps) as "1.3".
+    /// Cell size for text: whole millimetres as "10", finer cells (camera-parallax maps) as "5.3".
     static func cellText(_ cell: Double) -> String {
         abs(cell - cell.rounded()) < 0.05 ? String(format: "%.0f", cell) : String(format: "%.1f", cell)
     }
@@ -799,7 +837,7 @@ enum TopoMapBuilder {
         let rows = grid.rows
         let cols = grid.columns
         let writer = try TextFileWriter(url: url)
-        // Whole-millimetre cells keep their whole-millimetre labels; finer cells (laser maps) get 0.01 mm labels so
+        // Whole-millimetre cells keep their whole-millimetre labels; finer cells (parallax maps) get 0.01 mm labels so
         // neighbouring labels stay distinct.
         let label = abs(grid.cell - grid.cell.rounded()) < 1e-9 ? "%.0f" : "%.2f"
         var header = ["across_mm \\ along_mm"]

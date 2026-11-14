@@ -29,7 +29,10 @@ enum TopoMapRenderer {
             ]
             let arrow: String = direction == .rightToLeft ? "←" : "→"
             let edge: String = direction == .rightToLeft ? "left" : "right"
-            let what = stats.heightMode == true ? "height above the flat-surface baseline" : "distance from camera"
+            let what = stats.heightAboveBelt
+                ? (stats.heightReference == .sideWalls ? "height above the belt (side walls)"
+                                                       : "height above the belt (camera height)")
+                : stats.heightMode == true ? "height above the flat-surface baseline" : "distance from camera"
             let titleText = "Topographic map — \(what)   (material travel \(arrow), leading edge on the \(edge))"
             (titleText as NSString).draw(at: CGPoint(x: 20, y: 18), withAttributes: title)
 

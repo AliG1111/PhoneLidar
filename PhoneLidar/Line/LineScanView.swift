@@ -11,6 +11,7 @@ struct LineScanView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var model = LineScanModel()
     @State private var showRemote = false
+    @State private var showReference = false
 
     var body: some View {
         ZStack {
@@ -279,8 +280,8 @@ struct LineScanView: View {
                     .foregroundStyle(.yellow)
             }
             if model.phase == .ready {
-                baselineRow
-                // Locked while a baseline is being captured so the baseline uses one depth setting.
+                referenceRow
+                // Locked while a calibration is being captured so it uses one depth setting.
                 Group {
                     Toggle("Raw LiDAR depth (unfiltered)", isOn: Binding(
                         get: { !model.filteredDepth },
@@ -297,11 +298,12 @@ struct LineScanView: View {
                     }
                     .pickerStyle(.segmented)
                     // Single frame: one reading per map cell, no averaging between frames (FR-SFM-01).
+                    // Camera parallax: strand heights from the video, scaled by the LiDAR (FR-PAR-01).
                     Picker("Map", selection: Binding(
                         get: { model.mapMethod },
                         set: { model.setMapMethod($0) })) {
                         ForEach(MapMethod.allCases) { method in
-                            Text(method == .averaged ? "Map: averaged" : "Map: single frame").tag(method)
+                            Text(method.shortLabel).tag(method)
                         }
                     }
                     .pickerStyle(.segmented)
@@ -327,6 +329,55 @@ struct LineScanView: View {
         .foregroundStyle(.white)
         .padding(10)
         .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Height reference: the method in use, its state, and the sheet to change it.
+    private var referenceRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Height: \(model.heightReference.method.label)")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Button("Height reference…") { showReference = true }
+                    .font(.caption)
+                    .buttonStyle(.bordered)
+                    .tint(.white)
+                    .disabled(model.calibrating)
+            }
+            if model.heightReference.method == .emptyBelt {
+                baselineRow
+            } else {
+                if let progress = model.calibrationProgress {
+                    HStack(spacing: 8) {
+                        ProgressView(value: progress).tint(.green)
+                        Text(String(format: "Hold still — reading the wall tops %.0f%%", progress * 100))
+                            .font(.caption)
+                    }
+                } else if model.calibrating {
+                    HStack(spacing: 8) {
+                        ProgressView().tint(.white)
+                        Text("Measuring the wall tops…").font(.caption)
+                    }
+                }
+                Text(model.referenceStatusText)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(model.heightReferenceReady ? .green : .yellow)
+                ForEach(model.referenceWarnings(short: false), id: \.self) { line in
+                    Label(line, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                }
+                if let message = model.calibrationMessage {
+                    Text(message)
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .sheet(isPresented: $showReference) {
+            HeightReferenceSheet(model: model)
+        }
     }
 
     private var baselineRow: some View {
@@ -504,12 +555,23 @@ final class LineScanModel {
     var levelZeroX = UserDefaults.standard.double(forKey: "lineLevelZeroX")
     var levelZeroY = UserDefaults.standard.double(forKey: "lineLevelZeroY")
     var baseline: Baseline? = Baseline.load(from: Baseline.standardFolder)
+    /// Height reference (empty belt, camera height or side walls; design §16), kept in Calibration; read in `start`.
+    var heightReference = HeightReference()
+    /// The stored reference file is damaged and could not be moved aside: changes are not saved over it (P16-3).
+    @ObservationIgnored var referenceSaveBlocked = false
+    /// Which capture `calibrating` belongs to.
+    var calibrationKind: CalibrationKind?
     var heightMode = false
     var centerHeight: Double?
     var spread: Double?
     var calibrating = false
     var calibrationProgress: Double?
     var calibrationMessage: String?
+
+    enum CalibrationKind {
+        case baseline
+        case walls
+    }
 
     /// How far the gravity tilt has moved since the baseline was captured (degrees).
     var baselineMovedDegrees: Double? {
@@ -524,8 +586,8 @@ final class LineScanModel {
 
     /// Short warnings kept on screen while recording (the full ones are in the settings panel before recording).
     var recordingWarnings: [String] {
-        var warnings: [String] = []
-        if heightMode, let baseline {
+        var warnings: [String] = referenceWarnings(short: true)
+        if heightReference.method == .emptyBelt, heightMode, let baseline {
             if let moved = baselineMovedDegrees, moved > 0.3 {
                 warnings.append(String(format: "Tilt changed %.1f° since baseline — recalibrate after this run", moved))
             }
@@ -587,6 +649,7 @@ final class LineScanModel {
         guard !started else { return }
         started = true
         self.store = store
+        loadHeightReference()
         // Keep the screen awake for the whole Line scan screen (mounting, levelling, calibration, recording);
         // an auto-lock would cancel the calibration. Reset in shutdown().
         UIApplication.shared.isIdleTimerDisabled = true
@@ -618,7 +681,7 @@ final class LineScanModel {
         do {
             try pipeline.configure(filteredDepth: filteredDepth)
             pipeline.setDirection(directionSetting, generation: directionGeneration)
-            pipeline.setBaseline(baseline)
+            applyHeightReference()
             pipeline.start(shortShutter: shortShutter)
             phase = .ready
         } catch {
@@ -695,6 +758,7 @@ final class LineScanModel {
     func calibrateBaseline() {
         guard phase == .ready, !calibrating else { return }
         calibrating = true
+        calibrationKind = .baseline
         calibrationMessage = nil
         calibrationProgress = 0
         pipeline.captureBaseline(frames: 90, filtered: filteredDepth) { [weak self] result in
@@ -706,6 +770,7 @@ final class LineScanModel {
 
     private func finishCalibration(_ outcome: Result<Baseline, Error>) {
         calibrating = false
+        calibrationKind = nil
         calibrationProgress = nil
         let result: Baseline
         switch outcome {
@@ -721,14 +786,14 @@ final class LineScanModel {
             calibrationMessage = "Baseline in use but not saved: \(error.localizedDescription)"
         }
         baseline = result
-        pipeline.setBaseline(result)
+        applyHeightReference()
     }
 
     func clearBaseline() {
         Baseline.delete(from: Baseline.standardFolder)
         baseline = nil
         calibrationMessage = nil
-        pipeline.setBaseline(nil)
+        applyHeightReference()
     }
 
     func zeroLevel() {
@@ -737,6 +802,7 @@ final class LineScanModel {
         levelZeroY = y
         levelZeroed = true
         saveLevelZero()
+        applyHeightReference()
     }
 
     func resetLevel() {
@@ -744,6 +810,7 @@ final class LineScanModel {
         levelZeroX = 0
         levelZeroY = 0
         saveLevelZero()
+        applyHeightReference()
     }
 
     private func saveLevelZero() {
@@ -758,12 +825,16 @@ final class LineScanModel {
         pipeline.setFiltering(filtered)
     }
 
-    /// Single frame needs Apple's temporal filter off, so it switches raw depth on.
+    /// Single frame needs Apple's temporal filter off, so it switches raw depth on; camera parallax needs sharp
+    /// texture, so it switches the short shutter on.
     func setMapMethod(_ method: MapMethod) {
         guard !calibrating else { return }
         mapMethod = method
         if method == .singleReading && filteredDepth {
             setFiltered(false)
+        }
+        if method == .cameraParallax && !shortShutter {
+            setShortShutter(true)
         }
     }
 
@@ -822,7 +893,7 @@ final class LineScanModel {
         if calibrating, let progress = update.calibrationProgress {
             calibrationProgress = progress
         } else if calibrating, calibrationProgress != nil, update.calibrationProgress == nil {
-            calibrationProgress = nil      // capture finished; baseline is being built
+            calibrationProgress = nil      // capture finished; the result is being built
         }
         thermal = ProcessInfo.processInfo.thermalState
     }
@@ -858,6 +929,7 @@ final class LineScanModel {
         }
         do {
             let folder = try store.newFolder(kind: .line)
+            let notes = copyHeightReference(into: folder.url)
             recordingFolder = folder
             store.beginLineRecording(folder.name)      // until saved: no recovery, not listed as incomplete
             stopReason = nil
@@ -867,7 +939,8 @@ final class LineScanModel {
             phase = .arming
             onRecordingStart()
             pipeline.startRecording(folder: folder.url, filtered: filteredDepth,
-                                    shortShutter: shortShutter, direction: direction, mapMethod: mapMethod)
+                                    shortShutter: shortShutter, direction: direction, mapMethod: mapMethod,
+                                    notes: notes)
         } catch {
             notice = "Recording not started: the scan folder could not be created (\(error.localizedDescription))."
         }
@@ -938,7 +1011,7 @@ final class LineScanModel {
         pipeline.stop()
         let url = folder.url
         Task { @MainActor in
-            let built = await Task.detached(priority: .userInitiated) { LineScanModel.buildMap(folder: url) }.value
+            let built = await Task.detached(priority: .userInitiated) { await LineScanModel.buildMap(folder: url) }.value
             var updated = record
             // Z-3: frames and duration as Recording.json holds them (a failed write can drop buffered frames).
             var recordingLines = summary
@@ -971,16 +1044,14 @@ final class LineScanModel {
     /// included: it is rendered here, off the main thread, and staged with the other map files (Z-5), as Rebuild map
     /// does. `recordingLine` is the summary's frames-and-duration line from the file read back (nil if unreadable);
     /// `mapBuilt` is true when the map files were written.
-    nonisolated private static func buildMap(folder: URL)
+    nonisolated private static func buildMap(folder: URL) async
         -> (recordingLine: String?, summary: [String], mapBuilt: Bool) {
         let info: LineRecordingInfo
-        var summary: [String] = []
+        let repaired: Bool
         do {
             let loaded = try LineRecordingRepair.loadInfo(folder: folder)
             info = loaded.info
-            if loaded.repaired {
-                summary.append(TopoMapBuilder.recordingRepairedNote)
-            }
+            repaired = loaded.repaired
         } catch {
             return (nil,
                     ["Recording.json could not be read back (\(error.localizedDescription)): playback and map are "
@@ -989,12 +1060,13 @@ final class LineScanModel {
         }
         LineRecordingRepair.clearMarker(in: folder)
         do {
-            let map = try TopoMapBuilder.build(folder: folder, info: info) { image, stats in
-                try TopoMapRenderer.compositePNG(map: image, stats: stats, direction: info.direction)
-            }
-            return (info.summaryLine, summary + map.summary, true)
+            // The recording's map method (a camera-parallax recording builds from Video.mov; design §15).
+            let map = try await MapRebuild.build(folder: folder, recording: .lidar(info, repaired: repaired),
+                                                 method: nil)
+            return (info.summaryLine, map.summary, true)
         } catch {
-            return (info.summaryLine, summary + ["Map not built: \(error.localizedDescription)"], false)
+            let note = repaired ? [TopoMapBuilder.recordingRepairedNote] : []
+            return (info.summaryLine, note + ["Map not built: \(error.localizedDescription)"], false)
         }
     }
 
@@ -1046,7 +1118,7 @@ extension LineScanModel: RemoteScannerTarget {
         status.distance = medianDepth > 0 ? medianDepth : nil
         status.heightMode = heightMode
         status.centerHeight = centerHeight
-        status.baselineSaved = baseline != nil
+        status.baselineSaved = heightReferenceReady
         status.calibrating = calibrating
         status.levelX = levelX
         status.levelY = levelY

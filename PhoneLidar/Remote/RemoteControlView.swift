@@ -208,9 +208,10 @@ struct RemoteControlView: View {
                 LabeledContent("Texture lock", value: String(format: "%.0f %%", status.lock * 100))
                 LabeledContent("Distance", value: status.distance.map { String(format: "%.0f mm", $0) } ?? "—")
                 if status.heightMode, let height = status.centerHeight {
-                    LabeledContent("Height above baseline", value: String(format: "%+.1f mm", height))
+                    LabeledContent("Height (centre)", value: String(format: "%+.1f mm", height))
                 }
-                LabeledContent("Baseline", value: status.calibrating ? "Calibrating…" : (status.baselineSaved ? "Calibrated" : "Not calibrated"))
+                LabeledContent("Height reference",
+                               value: status.calibrating ? "Calibrating…" : (status.baselineSaved ? "Ready" : "Not set"))
                 LabeledContent("Level", value: LineScanView.levelText(status.levelX, status.levelY))
                 LabeledContent("Heat", value: RemoteStatusText.heat(status.heat))
                 LabeledContent("Free storage", value: status.freeBytes.map { LineStorage.text($0) } ?? "—")

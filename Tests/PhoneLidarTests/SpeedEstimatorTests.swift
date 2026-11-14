@@ -182,7 +182,7 @@ final class SpeedEstimatorTests: XCTestCase {
     }
 
     func testSearchingBothWaysOnAShortCropStillWorks() throws {
-        // Laser mode: the smallest crop (216 rows) leaves 6 coarse steps each way (48 px).
+        // The smallest row crop (216 rows) leaves 6 coarse steps each way (48 px).
         let estimator = SpeedEstimator()
         estimator.searchesBothWays = true
         let rows = 0..<SpeedEstimator.minimumTrackingRows

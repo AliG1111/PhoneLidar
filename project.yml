@@ -45,21 +45,19 @@ targets:
       - path: Tests/PhoneLidarTests
       - path: PhoneLidar/Line/Baseline.swift
       - path: PhoneLidar/Line/DepthColors.swift
+      - path: PhoneLidar/Line/HeightReference.swift
       - path: PhoneLidar/Line/LineMotionMath.swift
       - path: PhoneLidar/Line/LineRecording.swift
       - path: PhoneLidar/Line/LineRecordingRecovery.swift
       - path: PhoneLidar/Line/MapCells.swift
+      - path: PhoneLidar/Line/ParallaxMath.swift
+      - path: PhoneLidar/Line/ParallaxProcessor.swift
       - path: PhoneLidar/Line/SpeedEstimator.swift
       - path: PhoneLidar/Line/TopoGridFile.swift
       - path: PhoneLidar/Line/TopoMapBuilder.swift
       - path: PhoneLidar/Line/TopoReplayData.swift
       - path: PhoneLidar/Line/TopoReplayOrientation.swift
       - path: PhoneLidar/Line/TravelDirectionDetector.swift
-      - path: PhoneLidar/Laser/LaserGeometry.swift
-      - path: PhoneLidar/Laser/LaserLineDetector.swift
-      - path: PhoneLidar/Laser/LaserMapBuilder.swift
-      - path: PhoneLidar/Laser/LaserRecording.swift
-      - path: PhoneLidar/Laser/LaserWalls.swift
       - path: PhoneLidar/Remote/RemoteConnection.swift
       - path: PhoneLidar/Remote/RemoteCrypto.swift
       - path: PhoneLidar/Remote/RemoteProtocol.swift

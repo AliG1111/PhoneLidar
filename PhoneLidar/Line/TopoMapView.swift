@@ -15,9 +15,10 @@ struct TopoMapView: View {
     @State private var methodChoice: MapMethod?
     /// Method chosen when the recording was made.
     @State private var recordedMethod: MapMethod = .averaged
-    @State private var isLaser = false
     @State private var loaded = false
     @State private var building = false
+    /// Progress of a camera-parallax build (0…1), nil otherwise.
+    @State private var buildProgress: Double?
     /// Last rebuild failure; shown even when an older map is still on screen.
     @State private var message: String?
 
@@ -31,8 +32,14 @@ struct TopoMapView: View {
                 }
                 if building {
                     HStack {
-                        ProgressView()
-                        Text("Building topographic map…")
+                        if let buildProgress {
+                            ProgressView(value: buildProgress)
+                                .frame(width: 80)
+                            Text(String(format: "Measuring camera parallax… %.0f %%", buildProgress * 100))
+                        } else {
+                            ProgressView()
+                            Text("Building topographic map…")
+                        }
                     }
                 }
                 if let mapImage {
@@ -58,12 +65,12 @@ struct TopoMapView: View {
                 }
             } header: {
                 Text(heightMode
-                     ? "Topographic map (height above baseline: dark blue = lowest, dark red = highest)"
+                     ? "Topographic map (height above \(referenceName): dark blue = lowest, dark red = highest)"
                      : "Topographic map (dark blue = farthest, dark red = closest)")
             }
 
             if let stats {
-                Section(heightMode ? "Surface height above baseline" : "Surface distance from camera") {
+                Section(heightMode ? "Surface height above \(referenceName)" : "Surface distance from camera") {
                     row("Mean", "%.2f mm", stats.mean)
                     row("Standard deviation", "%.3f mm", stats.stdDev)
                     row("Variance", "%.3f mm²", stats.variance)
@@ -95,17 +102,18 @@ struct TopoMapView: View {
                          + "readings that landed in the same cell (none for a single-reading map).")
                 }
                 if let profiles, profiles.across.count >= 2 {
-                    Section(heightMode ? "Across-width profile (height above baseline)"
+                    Section(heightMode ? "Across-width profile (height above \(referenceName))"
                                        : "Across-width profile (up = closer to camera)") {
-                        ProfileChart(points: profiles.across, xLabel: "Across (mm)", heightMode: heightMode)
+                        ProfileChart(points: profiles.across, xLabel: "Across (mm)", heightMode: heightMode,
+                                     aboveBelt: stats.heightAboveBelt)
                             .frame(height: 180)
                     }
                 }
                 if let profiles, profiles.along.count >= 2 {
-                    Section(heightMode ? "Along-travel profile (height above baseline)"
+                    Section(heightMode ? "Along-travel profile (height above \(referenceName))"
                                        : "Along-travel profile (up = closer to camera)") {
                         ProfileChart(points: Self.thinned(profiles.along, to: 800), xLabel: "Along (mm)",
-                                     heightMode: heightMode)
+                                     heightMode: heightMode, aboveBelt: stats.heightAboveBelt)
                             .frame(height: 180)
                     }
                 }
@@ -117,8 +125,7 @@ struct TopoMapView: View {
                     if let lo = stats.speedMin, let hi = stats.speedMax {
                         row("Min / max", String(format: "%.0f / %.0f mm/s", lo, hi))
                     }
-                    row(stats.sensor == .laserLine ? "Tracked frames with texture lock" : "Frames with texture lock",
-                        "%.0f %%", stats.speedTrackedPercent)
+                    row("Frames with texture lock", "%.0f %%", stats.speedTrackedPercent)
                 }
                 Section("Scan") {
                     row("Length × width", String(format: "%.2f × %.2f m", stats.lengthMM / 1000, stats.widthMM / 1000))
@@ -135,7 +142,7 @@ struct TopoMapView: View {
                     get: { methodChoice ?? stats?.mapMethod ?? recordedMethod },
                     set: { methodChoice = $0 })) {
                     ForEach(MapMethod.allCases) { method in
-                        Text(method == .averaged ? "Averaged" : "Single reading").tag(method)
+                        Text(method == .singleReading ? "Single reading" : method.shortLabel).tag(method)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -157,19 +164,30 @@ struct TopoMapView: View {
 
     private var heightMode: Bool { stats?.heightMode == true }
 
+    /// What the heights are measured from, for titles.
+    private var referenceName: String {
+        stats?.heightAboveBelt == true ? "the belt" : "baseline"
+    }
+
     private var footerText: String {
         let files = "TopoMap.png, TopoMap.csv, TopoStats.csv and the profile CSV files are in the scan's file list."
-        let method = "Single reading: each cell holds one reading, nothing is averaged"
-            + (isLaser ? " (the laser reading nearest the cell centre). " : " (the reading taken closest to the "
-               + "scan line, ScanLineProfiles.csv). ")
-            + "Averaged: the mean of every reading in the cell. "
-        if isLaser {
-            return method + "Values are heights above the belt from the laser line (calibration in "
-                + "LaserRecording.json). " + files
+        let method = "Averaged: the mean of every LiDAR reading in the cell. Single reading: each cell holds one "
+            + "LiDAR reading, nothing is averaged (the reading taken closest to the scan line, ScanLineProfiles.csv). "
+            + "Camera parallax: heights from how far each patch of the surface moved in the video, scaled by the "
+            + "LiDAR; one reading per cell. "
+        let values: String
+        switch stats?.heightReference {
+        case .cameraHeight?:
+            values = "Values are heights above the belt from the camera height and the phone tilt "
+                + "(HeightReference.json). "
+        case .sideWalls?:
+            values = "Values are heights above the belt from the side-wall tops (HeightReference.json). "
+        default:
+            values = heightMode
+                ? "Values are heights above the flat-surface baseline saved with this recording (Baseline.bin). "
+                : "No height reference was saved with this recording, so values are distances from the camera. "
         }
-        return method + (heightMode
-            ? "Values are heights above the flat-surface baseline saved with this recording (Baseline.bin). "
-            : "No baseline was saved with this recording, so values are distances from the camera. ") + files
+        return method + values + files
     }
 
     private func row(_ title: String, _ format: String, _ value: Double) -> some View {
@@ -185,7 +203,6 @@ struct TopoMapView: View {
     private struct Loaded {
         var direction: TravelDirection?
         var recordedMethod: MapMethod?
-        var isLaser = false
         var stats: TopoStats?
         var profiles: TopoProfiles?
         var image: UIImage?
@@ -198,13 +215,7 @@ struct TopoMapView: View {
             var out = Loaded()
             // Only the direction is needed here: a cut-off file is repaired in memory (Rebuild map repairs it on
             // disk and notes that in the summary).
-            if LaserRecordingInfo.exists(in: folder) {
-                out.isLaser = true
-                if let info = try? LaserRecordingInfo.load(from: folder) {
-                    out.direction = info.direction
-                    out.recordedMethod = info.mapMethod
-                }
-            } else if let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
+            if let data = try? Data(contentsOf: folder.appendingPathComponent("Recording.json")),
                let info = (try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: data))
                 ?? LineRecordingRepair.repairedData(data).flatMap({
                     try? JSONDecoder.iso.decode(LineRecordingInfo.self, from: $0)
@@ -223,7 +234,6 @@ struct TopoMapView: View {
         }.value
         if let value = result.direction { direction = value }
         if let value = result.recordedMethod { recordedMethod = value }
-        isLaser = result.isLaser
         stats = result.stats
         profiles = result.profiles
         mapImage = result.image
@@ -236,15 +246,22 @@ struct TopoMapView: View {
         message = nil
         let folder = self.folder
         let method = methodChoice ?? stats?.mapMethod ?? recordedMethod
+        buildProgress = method == .cameraParallax ? 0 : nil
+        let report: @Sendable (Double) -> Void = { value in
+            Task { @MainActor in
+                if building { buildProgress = value }
+            }
+        }
         Task { @MainActor in
             let result = await Task.detached(priority: .userInitiated) {
-                () -> Result<(recording: MapRecording, output: TopoMapBuilder.Output), Error> in
+                () async -> Result<(recording: MapRecording, output: TopoMapBuilder.Output), Error> in
                 do {
                     guard let recording = try? MapRebuild.load(folder: folder) else {
                         throw RebuildError.recordingMissing
                     }
                     // TopoMap.png is rendered here, off the main thread, and staged with the other files.
-                    let output = try MapRebuild.build(folder: folder, recording: recording, method: method)
+                    let output = try await MapRebuild.build(folder: folder, recording: recording, method: method,
+                                                            progress: report)
                     return .success((recording: recording, output: output))
                 } catch {
                     return .failure(error)
@@ -259,6 +276,7 @@ struct TopoMapView: View {
             }
             await load()
             building = false
+            buildProgress = nil
         }
     }
 
@@ -280,7 +298,7 @@ struct TopoMapView: View {
     private enum RebuildError: LocalizedError {
         case recordingMissing
 
-        var errorDescription: String? { "The recording file (Recording.json or LaserRecording.json) is missing or damaged." }
+        var errorDescription: String? { "The recording file (Recording.json) is missing or damaged." }
     }
 
     private static func thinned(_ points: [ProfilePoint], to limit: Int) -> [ProfilePoint] {
@@ -295,6 +313,8 @@ struct ProfileChart: View {
     let points: [ProfilePoint]
     let xLabel: String
     var heightMode = false
+    /// Heights above the belt (camera height or side walls) rather than above the baseline.
+    var aboveBelt = false
 
     var body: some View {
         Chart(points) { point in
@@ -304,7 +324,9 @@ struct ProfileChart: View {
         }
         .chartYScale(domain: .automatic(includesZero: false, reversed: !heightMode))
         .chartXAxisLabel { Text(xLabel) }
-        .chartYAxisLabel { Text(heightMode ? "Height above baseline (mm)" : "Distance (mm)") }
+        .chartYAxisLabel {
+            Text(heightMode ? (aboveBelt ? "Height above the belt (mm)" : "Height above baseline (mm)") : "Distance (mm)")
+        }
     }
 }
 

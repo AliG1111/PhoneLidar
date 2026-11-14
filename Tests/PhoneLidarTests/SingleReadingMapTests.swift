@@ -321,6 +321,9 @@ extension TopoMapBuilderTests {
     func testMethodAndLaserLinesAreMapLinesForRebuilds() {
         XCTAssertTrue(TopoMapBuilder.isMapSummaryLine("Map method: one reading per cell (no averaging) …"))
         XCTAssertTrue(TopoMapBuilder.isMapSummaryLine("Laser line: 1234 profiles at 240 fps"))
+        XCTAssertTrue(TopoMapBuilder.isMapSummaryLine("Camera parallax: 10 of 12 frame pairs scaled by the LiDAR"))
+        XCTAssertTrue(TopoMapBuilder.isMapSummaryLine("Height reference: camera height 1500 mm"))
+        XCTAssertTrue(TopoMapBuilder.isMapSummaryLine("Height above the belt mean 12.00 mm, std dev 1.00 mm"))
         XCTAssertFalse(TopoMapBuilder.isMapSummaryLine("1234 profiles, 5.1 s at 240 fps, material travel Right → Left"))
     }
 
@@ -337,14 +340,14 @@ extension TopoMapBuilderTests {
                 }
             }
         }
-        let output = try TopoMapBuilder.finish(cells: cells, heightMode: true, sensor: .laserLine,
+        let output = try TopoMapBuilder.finish(cells: cells, heightMode: true, sensor: .cameraParallax,
                                                speeds: [100, nil], frameCount: 2, duration: 1, travel: 24,
                                                extraLines: ["extra"], folder: folder, composite: nil)
         // The empty margin is trimmed.
         XCTAssertEqual(output.stats.columns, 12)
         XCTAssertEqual(output.stats.rows, 5)
         XCTAssertEqual(output.stats.cellsWithData, 60)
-        XCTAssertEqual(output.stats.sensor, .laserLine)
+        XCTAssertEqual(output.stats.sensor, .cameraParallax)
         XCTAssertEqual(output.stats.mapMethod, .singleReading)
         XCTAssertEqual(output.stats.heightMode, true)
         XCTAssertEqual(output.stats.meanHitsPerCell, 1, accuracy: 1e-12)
