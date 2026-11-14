@@ -396,8 +396,8 @@ every time it opened.
 - [x] P20.1 `ParallaxDiagnosis` (pure): forward travel, needed travel, frame rate, one message per cause with numbers; `ParallaxMapBuilder` collects `ParallaxBuildFacts` (Opus 5.5 / high; done by the orchestrator)
 - [x] P20.2 Replay falls back to the Averaged map with a notice and a `Camera parallax:` summary line; `MapRebuild.busyMessage` not retried (SwiftUI → Sonnet 5.5 / high; done by the orchestrator)
 - [x] P20.3 Unit tests `ParallaxDiagnosisTests` (Sonnet 5.5 / high; written with the code)
-- [ ] P20.4 CI green: app build and unit tests, 0 warnings
-- [ ] P20.5 Change review of the PR diff and its callers (fresh Opus 5.5 / high) until no new findings; record in reviews/2026-11-14-P20.md
+- [x] P20.4 CI green: app build and unit tests, 0 warnings (PR runs 43642113931, 43642992785, 43643703220)
+- [x] P20.5 Change review of the PR diff and its callers (fresh Opus 5.5 / high): P20-1 (Medium), P20-2…P20-4 (Low) fixed; re-review 1: P20-5 (Medium), P20-6 (Low) fixed; re-review 2: no new findings. Record in [reviews/2026-11-14-P20.md](reviews/2026-11-14-P20.md)
 - [x] P20.6 Build guide (`README.md`), design §15.9, requirements FR-PAR-06/07 (orchestrator)
 - [ ] P20.7 PR merged; change-log row, project guide copy (orchestrator)
 
