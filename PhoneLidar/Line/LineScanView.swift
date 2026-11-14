@@ -71,11 +71,12 @@ struct LineScanView: View {
                             if let banner = model.bannerText {
                                 noticeBadge([banner], color: .orange)
                             }
+                            speedPanel
+                            levelPanel
+                            // Below the readouts, so a warning that comes and goes never moves them.
                             if model.phase == .recording, !model.recordingWarnings.isEmpty {
                                 noticeBadge(model.recordingWarnings, color: .yellow)
                             }
-                            speedPanel
-                            levelPanel
                             if showsSettings {
                                 settingsPanel
                             }
@@ -225,7 +226,7 @@ struct LineScanView: View {
                         Text("Tap the picture for speed at a point")
                             .font(.caption2)
                             .foregroundStyle(.white.opacity(0.8))
-                            .lineLimit(2)
+                            .lineLimit(2, reservesSpace: true)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -237,7 +238,7 @@ struct LineScanView: View {
                 Image(systemName: model.direction.map { $0 == .rightToLeft ? "arrow.left" : "arrow.right" }
                       ?? "arrow.left.arrow.right")
                 Text(model.directionSetting.travelText(detected: model.detectedDirection))
-                    .lineLimit(2)
+                    .lineLimit(2, reservesSpace: true)
             }
             .font(.caption2)
         }
@@ -513,7 +514,7 @@ struct LineScanView: View {
                         .font(.caption2)
                         .foregroundStyle(.yellow)
                 }
-                if let moved = model.baselineMovedDegrees, moved > 0.3 {
+                if model.baselineTiltWarning, let moved = model.baselineMovedDegrees {
                     Label(String(format: "Phone tilt changed %.1f° since calibration — recalibrate", moved),
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.caption2)
@@ -660,6 +661,10 @@ final class LineScanModel {
     var levelZeroX = UserDefaults.standard.double(forKey: "lineLevelZeroX")
     var levelZeroY = UserDefaults.standard.double(forKey: "lineLevelZeroY")
     var baseline: Baseline? = Baseline.load(from: Baseline.standardFolder)
+    /// Whether each tilt warning showed at the last frame: the memory of the `TiltWarning` hysteresis. Updated with
+    /// the tilt in each frame (`tiltX`/`tiltY` are observed, so views re-read the warnings then).
+    @ObservationIgnored private var baselineTiltWarned = false
+    @ObservationIgnored private var wallTiltWarned = false
     /// Height reference (empty belt, camera height or side walls; design §16), kept in Calibration; read in `start`.
     var heightReference = HeightReference()
     /// The stored reference file is damaged and could not be moved aside: changes are not saved over it (P16-3).
@@ -685,6 +690,16 @@ final class LineScanModel {
         return ((x - bx) * (x - bx) + (y - by) * (y - by)).squareRoot()
     }
 
+    /// The baseline tilt warning shows (with hysteresis, `TiltWarning`).
+    var baselineTiltWarning: Bool {
+        TiltWarning.shows(moved: baselineMovedDegrees, wasShown: baselineTiltWarned)
+    }
+
+    /// The side-wall tilt warning shows (with hysteresis, `TiltWarning`).
+    var wallTiltWarning: Bool {
+        TiltWarning.shows(moved: wallMovedDegrees, wasShown: wallTiltWarned)
+    }
+
     /// Level shown on the bubble: gravity tilt minus the saved zero (if any).
     var levelX: Double? { tiltX.map { $0 - (levelZeroed ? levelZeroX : 0) } }
     var levelY: Double? { tiltY.map { $0 - (levelZeroed ? levelZeroY : 0) } }
@@ -693,7 +708,7 @@ final class LineScanModel {
     var recordingWarnings: [String] {
         var warnings: [String] = referenceWarnings(short: true)
         if heightReference.method == .emptyBelt, heightMode, let baseline {
-            if let moved = baselineMovedDegrees, moved > 0.3 {
+            if baselineTiltWarning, let moved = baselineMovedDegrees {
                 warnings.append(String(format: "Tilt changed %.1f° since baseline — recalibrate after this run", moved))
             }
             if baseline.info.filteredDepth != filteredDepth {
@@ -984,6 +999,8 @@ final class LineScanModel {
         }
         tiltX = update.tiltX
         tiltY = update.tiltY
+        baselineTiltWarned = baselineTiltWarning
+        wallTiltWarned = wallTiltWarning
         if update.surfaceTiltX != nil {
             surfaceTiltX = update.surfaceTiltX
             surfaceTiltY = update.surfaceTiltY

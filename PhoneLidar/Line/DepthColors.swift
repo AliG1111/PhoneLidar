@@ -166,7 +166,7 @@ struct DepthLegend: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .lineLimit(1)
-            .minimumScaleFactor(0.7)
+            .minimumScaleFactor(0.5)
             .font(.caption2.monospacedDigit())
         }
     }

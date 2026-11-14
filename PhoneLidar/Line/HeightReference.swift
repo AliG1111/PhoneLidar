@@ -506,3 +506,19 @@ struct MapHeightModel {
         return reference.summaryLine(plane: plane)
     }
 }
+
+/// Hysteresis of the "phone tilt changed since calibration" warnings (baseline and side walls): shown once the tilt
+/// has moved more than `on` degrees, hidden again only below `off`, so a tilt sitting near the threshold does not
+/// make the warning, and the panels below it, blink frame by frame.
+enum TiltWarning {
+    /// Degrees of tilt change that turn the warning on.
+    static let on = 0.3
+    /// Degrees below which a shown warning turns off again.
+    static let off = 0.25
+
+    /// Whether the warning shows for a tilt change of `moved` degrees, given whether it showed before.
+    static func shows(moved: Double?, wasShown: Bool) -> Bool {
+        guard let moved, moved.isFinite else { return false }
+        return moved > on || (wasShown && moved >= off)
+    }
+}

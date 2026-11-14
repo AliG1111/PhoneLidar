@@ -261,4 +261,34 @@ final class HeightReferenceTests: XCTestCase {
                         bottomSpread: 2, tiltX: 0, tiltY: 0, depthWidth: 64, depthHeight: 48, filteredDepth: true,
                         topBand: topBand, bottomBand: bottomBand)
     }
+
+    // MARK: Tilt warning hysteresis
+
+    func testTiltWarningTurnsOnAboveThreshold() {
+        XCTAssertFalse(TiltWarning.shows(moved: nil, wasShown: false))
+        XCTAssertFalse(TiltWarning.shows(moved: 0.29, wasShown: false))
+        XCTAssertFalse(TiltWarning.shows(moved: 0.3, wasShown: false))
+        XCTAssertTrue(TiltWarning.shows(moved: 0.31, wasShown: false))
+    }
+
+    func testTiltWarningStaysOnUntilBelowOffThreshold() {
+        XCTAssertTrue(TiltWarning.shows(moved: 0.28, wasShown: true))
+        XCTAssertTrue(TiltWarning.shows(moved: 0.25, wasShown: true))
+        XCTAssertFalse(TiltWarning.shows(moved: 0.24, wasShown: true))
+        XCTAssertFalse(TiltWarning.shows(moved: nil, wasShown: true))
+        XCTAssertFalse(TiltWarning.shows(moved: .nan, wasShown: true))
+    }
+
+    func testTiltNearThresholdDoesNotBlink() {
+        // A tilt wobbling around 0.3° turns the warning on once and keeps it on.
+        var shown = false
+        var changes = 0
+        for moved in [0.29, 0.31, 0.29, 0.30, 0.28, 0.31, 0.27, 0.29] {
+            let next = TiltWarning.shows(moved: moved, wasShown: shown)
+            if next != shown { changes += 1 }
+            shown = next
+        }
+        XCTAssertTrue(shown)
+        XCTAssertEqual(changes, 1)
+    }
 }
