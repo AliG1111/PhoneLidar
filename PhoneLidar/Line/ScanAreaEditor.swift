@@ -50,50 +50,68 @@ struct ScanAreaOverlay: View {
 
 /// Transparent layer that edits the area with one finger (`ScanArea.grab`, `dragged`): an edge or corner follows
 /// the finger, a drag inside moves the whole area. `onChange` reports the area while dragging, `onEnd` once at the
-/// end. Fills its container; `picture` is the picture's rectangle in the container's coordinates.
+/// end, `onCancel` when a drag ends without `onEnd` (the system cancelled it) so the caller drops its draft. Fills
+/// its container; `picture` is the picture's rectangle in the container's coordinates. VoiceOver moves the edges in
+/// steps through the accessibility actions.
 struct ScanAreaDragLayer: View {
     var area: ScanArea
     var picture: CGRect
     var onChange: (ScanArea) -> Void
     var onEnd: (ScanArea) -> Void
+    var onCancel: () -> Void = {}
 
     /// Touch distance (points) within which an edge is grabbed.
     static let reach: CGFloat = 28
+    /// Edge step of one accessibility action, fraction of the picture.
+    static let accessibilityStep = 0.05
 
-    private struct DragStart {
-        var grab: ScanAreaGrab
-        var area: ScanArea
-    }
-
-    @State private var start: DragStart?
+    /// True while a finger is down; SwiftUI resets it when the drag ends or is cancelled.
+    @GestureState private var dragging = false
 
     var body: some View {
         Color.clear
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)
+                .updating($dragging) { _, state, _ in state = true }
                 .onChanged { value in
-                    guard picture.width > 0, picture.height > 0 else { return }
-                    if start == nil {
-                        let point = CGPoint(x: (value.startLocation.x - picture.minX) / picture.width,
-                                            y: (value.startLocation.y - picture.minY) / picture.height)
-                        start = DragStart(grab: area.grab(at: point, reachX: Double(Self.reach / picture.width),
-                                                          reachY: Double(Self.reach / picture.height)),
-                                          area: area)
-                    }
-                    if let moved = moved(value.translation) { onChange(moved) }
+                    if let moved = moved(value) { onChange(moved) }
                 }
                 .onEnded { value in
-                    if let moved = moved(value.translation) { onEnd(moved) }
-                    start = nil
+                    if let moved = moved(value) { onEnd(moved) }
                 })
+            // Any order of onEnded and this reset works: the result does not depend on the draft.
+            .onChange(of: dragging) { _, isDragging in
+                if !isDragging { onCancel() }
+            }
+            .accessibilityElement()
             .accessibilityLabel("Area of interest")
+            .accessibilityValue(area.text)
             .accessibilityHint("Drag an edge or corner of the yellow frame to resize it, or inside it to move it.")
+            .accessibilityAction(named: "Left edge to the left") { step(.left, dx: -1, dy: 0) }
+            .accessibilityAction(named: "Left edge to the right") { step(.left, dx: 1, dy: 0) }
+            .accessibilityAction(named: "Right edge to the left") { step(.right, dx: -1, dy: 0) }
+            .accessibilityAction(named: "Right edge to the right") { step(.right, dx: 1, dy: 0) }
+            .accessibilityAction(named: "Top edge up") { step(.top, dx: 0, dy: -1) }
+            .accessibilityAction(named: "Top edge down") { step(.top, dx: 0, dy: 1) }
+            .accessibilityAction(named: "Bottom edge up") { step(.bottom, dx: 0, dy: -1) }
+            .accessibilityAction(named: "Bottom edge down") { step(.bottom, dx: 0, dy: 1) }
     }
 
-    private func moved(_ translation: CGSize) -> ScanArea? {
-        guard let start, !start.grab.isEmpty, picture.width > 0, picture.height > 0 else { return nil }
-        return start.area.dragged(start.grab, dx: Double(translation.width / picture.width),
-                                  dy: Double(translation.height / picture.height))
+    /// The area for this drag: what the touch first grabbed on the saved `area`, moved by the translation. Worked out
+    /// from the gesture value alone, so a cancelled drag leaves nothing behind for the next one.
+    private func moved(_ value: DragGesture.Value) -> ScanArea? {
+        guard picture.width > 0, picture.height > 0 else { return nil }
+        let point = CGPoint(x: (value.startLocation.x - picture.minX) / picture.width,
+                            y: (value.startLocation.y - picture.minY) / picture.height)
+        let grab = area.grab(at: point, reachX: Double(Self.reach / picture.width),
+                             reachY: Double(Self.reach / picture.height))
+        guard !grab.isEmpty else { return nil }
+        return area.dragged(grab, dx: Double(value.translation.width / picture.width),
+                            dy: Double(value.translation.height / picture.height))
+    }
+
+    private func step(_ grab: ScanAreaGrab, dx: Double, dy: Double) {
+        onEnd(area.dragged(grab, dx: dx * Self.accessibilityStep, dy: dy * Self.accessibilityStep))
     }
 }
 
@@ -203,7 +221,8 @@ struct ScanAreaSheet: View {
                         ScanAreaOverlay(area: draft ?? area, picture: rect, editing: true)
                         ScanAreaDragLayer(area: area, picture: rect,
                                           onChange: { draft = $0 },
-                                          onEnd: { area = $0; draft = nil })
+                                          onEnd: { area = $0; draft = nil },
+                                          onCancel: { draft = nil })
                     }
                     .frame(width: geometry.size.width, height: geometry.size.height)
                 }
@@ -237,6 +256,8 @@ struct ScanAreaSheet: View {
                     }
                 }
             }
+            // Downward drags on the picture must move the frame, not pull the sheet away (Cancel closes it).
+            .interactiveDismissDisabled()
             .task {
                 let folder = self.folder
                 let loaded = await Task.detached(priority: .userInitiated) {

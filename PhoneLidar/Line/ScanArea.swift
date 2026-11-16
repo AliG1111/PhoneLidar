@@ -36,13 +36,20 @@ struct ScanArea: Codable, Equatable, Sendable {
         case acrossStart, acrossEnd, alongStart, alongEnd
     }
 
-    /// Absent keys mean the picture edge; a key with a wrong type still fails, so a damaged file is reported.
+    /// Absent or unreadable values mean the picture edge (a damaged `area` reads as the whole picture), so a damaged
+    /// optional field never makes the whole Recording.json or TopoStats.json unreadable.
     init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        acrossStart = try c.decodeIfPresent(Double.self, forKey: .acrossStart) ?? 0
-        acrossEnd = try c.decodeIfPresent(Double.self, forKey: .acrossEnd) ?? 1
-        alongStart = try c.decodeIfPresent(Double.self, forKey: .alongStart) ?? 0
-        alongEnd = try c.decodeIfPresent(Double.self, forKey: .alongEnd) ?? 1
+        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else {
+            self = .whole
+            return
+        }
+        func value(_ key: CodingKeys, _ edge: Double) -> Double {
+            (try? c.decodeIfPresent(Double.self, forKey: key)) ?? edge
+        }
+        acrossStart = value(.acrossStart, 0)
+        acrossEnd = value(.acrossEnd, 1)
+        alongStart = value(.alongStart, 0)
+        alongEnd = value(.alongEnd, 1)
     }
 
     /// Each side sorted, inside [0, 1] and at least `minimumSpan` long; non-finite values give the whole side.
@@ -230,9 +237,14 @@ struct MapPixels: Equatable, Sendable {
         lo < hi ? lo..<hi : lo..<lo
     }
 
-    /// Why a map cannot use these pixels: the area misses the part between the side walls, or is too small.
-    static func unusableMessage(sideWalls: Bool) -> String {
-        sideWalls
+    /// Why a map cannot use these pixels: the side walls leave too little of the picture (whole-picture area), the
+    /// area misses the part between the walls, or the area is too small.
+    static func unusableMessage(sideWalls: Bool, wholeArea: Bool) -> String {
+        if sideWalls && wholeArea {
+            return "No map: the side walls leave too little of the picture between them. Recalibrate the side walls "
+                + "(Height reference… › Side walls) with each band on its wall top."
+        }
+        return sideWalls
             ? "No map: the area of interest does not overlap the part of the picture between the side walls. "
                 + "Move the area (Topographic map › Area of interest › Set area…) or recalibrate the side walls."
             : "No map: the area of interest is too small for the depth map. Widen it (Topographic map › "

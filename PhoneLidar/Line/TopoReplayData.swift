@@ -111,17 +111,23 @@ struct TopoReplaySource: Sendable {
     }
 
     /// Per-frame replay inputs of a LiDAR recording: the reveal position is the material at the downstream edge
-    /// of the LiDAR's view.
-    static func replayFrames(info: LineRecordingInfo) -> ReplayFrames {
+    /// of the part of the LiDAR's view the map used: the area of interest of the map (`area`, nil = the recording's;
+    /// design §17.4), inside the border.
+    static func replayFrames(info: LineRecordingInfo, area: ScanArea? = nil) -> ReplayFrames {
         let sign = info.direction.bufferSign
         let frames = info.frames
         let border = TopoMapBuilder.border(width: info.depthWidth, height: info.depthHeight)
+        let rows = MapPixels.make(width: info.depthWidth, height: info.depthHeight, border: border, keptAcross: nil,
+                                  area: area ?? info.area ?? .whole).rows
+        let downstream = rows.isEmpty
+            ? (sign > 0 ? info.depthHeight - 1 - border : border)
+            : (sign > 0 ? rows.upperBound - 1 : rows.lowerBound)
         let depths = frames.map(\.medianDepth).filter { $0 > 0 }.sorted()
         let zTypical = depths.isEmpty ? 1000 : depths[depths.count / 2]
         var reveal = [Double](repeating: .nan, count: frames.count)
         for (i, f) in frames.enumerated() where f.fy > 0 {
             let z = f.medianDepth > 0 ? f.medianDepth : zTypical
-            let row = sign > 0 ? Double(info.depthHeight - 1 - border) : Double(border)
+            let row = Double(downstream)
             let yDown = (row - Double(f.cy)) * z / Double(f.fy)
             reveal[i] = f.travel - Double(sign) * yDown
         }

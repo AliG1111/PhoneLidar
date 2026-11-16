@@ -64,7 +64,8 @@ struct LineScanView: View {
                                           onEnd: { area in
                                               model.setArea(area)
                                               draftArea = nil
-                                          })
+                                          },
+                                          onCancel: { draftArea = nil })
                     }
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)

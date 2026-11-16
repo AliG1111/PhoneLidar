@@ -38,7 +38,8 @@ enum ParallaxMapBuilder {
         let area = (area ?? info.area ?? .whole).normalized
         let pixels = MapPixels.make(width: w, height: h, border: border, keptAcross: model.keptAcross, area: area)
         guard pixels.isUsable else {
-            throw LineError.configuration(MapPixels.unusableMessage(sideWalls: model.keptAcross != nil))
+            throw LineError.configuration(MapPixels.unusableMessage(sideWalls: model.keptAcross != nil,
+                                                                    wholeArea: area.isWhole))
         }
         // Along the travel the readings were never limited by the border, only by the area (its rows of the depth map).
         let rowLo = max(0, Int((area.alongStart * Double(h)).rounded(.up)))
@@ -83,6 +84,7 @@ enum ParallaxMapBuilder {
 
         // Readings → cells: the reading nearest each cell centre is kept (one reading per cell, nothing averaged).
         var added = 0
+        var insideArea = 0
         var outside = OutsideArea()
         func addReadings(_ readings: [ParallaxReading]) {
             guard !readings.isEmpty else { return }
@@ -95,6 +97,7 @@ enum ParallaxMapBuilder {
                         }
                         continue
                     }
+                    insideArea += 1
                     let value: Float
                     if let plane {
                         value = Float(plane.height(of: r.point))
@@ -137,7 +140,8 @@ enum ParallaxMapBuilder {
         addReadings(processor.finish())
         progress?(1)
         let counters = processor.counters
-        if added == 0, let message = outside.message() {
+        // Every height lay outside the area: say where they were (otherwise the usual diagnosis names the cause).
+        if added == 0, insideArea == 0, let message = outside.message() {
             throw LineError.configuration(message)
         }
         guard added > 0 else {

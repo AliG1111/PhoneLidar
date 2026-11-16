@@ -99,8 +99,15 @@ extension TopoMapBuilderTests {
         let output = try TopoMapBuilder.build(folder: folder, info: info)
         XCTAssertEqual(output.stats.mapMethod, .singleReading)
         XCTAssertEqual(output.stats.meanHitsPerCell, 1, accuracy: 1e-12)
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: folder.appendingPathComponent(ScanLineProfiles.fileName).path))
+        // ScanLineProfiles.csv holds each frame's scan-row readings. On frame 0 (travel 0) row 13 sees material at
+        // q = −(13 − 24) · 10 mm = 110 mm, height 11 mm, distance 989 mm (row 24 would read 1000 mm).
+        let lines = try fileText(ScanLineProfiles.fileName).split(separator: "\n")
+        XCTAssertGreaterThan(lines.count, 2)
+        let frame0 = lines[1].split(separator: ",", omittingEmptySubsequences: false)
+        XCTAssertEqual(frame0.first, "0")
+        let values = frame0.dropFirst(4).compactMap { Double($0) }
+        XCTAssertGreaterThan(values.count, 40)
+        for value in values { XCTAssertEqual(value, 989, accuracy: 0.15) }
     }
 
     func testAnAreaOutsideTheSideWallsIsRefusedWithAReason() throws {
@@ -119,7 +126,7 @@ extension TopoMapBuilderTests {
         XCTAssertLessThan(inside.widthMM, 200)
         info.area = area(0.8, 1, 0, 1)
         XCTAssertThrowsError(try TopoMapBuilder.build(folder: folder, info: info)) { error in
-            assertLineError(error, .configuration(MapPixels.unusableMessage(sideWalls: true)))
+            assertLineError(error, .configuration(MapPixels.unusableMessage(sideWalls: true, wholeArea: false)))
         }
     }
 }

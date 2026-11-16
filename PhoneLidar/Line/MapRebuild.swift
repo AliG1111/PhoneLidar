@@ -83,8 +83,12 @@ enum MapRebuild {
         }
     }
 
-    /// Per-frame replay inputs.
+    /// Per-frame replay inputs, revealed at the downstream edge of the map's area of interest (`TopoStats.json`,
+    /// written with `TopoGrid.bin`; the recording's area when the statistics cannot be read).
     static func replayFrames(folder: URL, recording: MapRecording) throws -> ReplayFrames {
-        TopoReplaySource.replayFrames(info: recording.info)
+        let statsURL = folder.appendingPathComponent("TopoStats.json")
+        let area = (try? Data(contentsOf: statsURL)).flatMap { try? JSONDecoder.iso.decode(TopoStats.self, from: $0) }?
+            .area
+        return TopoReplaySource.replayFrames(info: recording.info, area: area)
     }
 }

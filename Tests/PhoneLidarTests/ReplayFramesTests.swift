@@ -44,6 +44,25 @@ final class ReplayFramesTests: XCTestCase {
         for i in 0..<21 { XCTAssertEqual(frames.reveal[i], 210 + 10 * Double(i) - 220, accuracy: 1e-9) }
     }
 
+    func testReplayFramesRevealAtTheDownstreamEdgeOfTheArea() {
+        // Along 0…0.5 = depth rows 2…23: the downstream edge (right → left travel) is row 23, 1 pixel · 10 mm above
+        // the centre, so the newest complete line is 10 mm ahead of the travel instead of 210 mm behind it.
+        var info = makeInfo()
+        let half = ScanArea(acrossStart: 0, acrossEnd: 1, alongStart: 0, alongEnd: 0.5)
+        let explicit = TopoReplaySource.replayFrames(info: info, area: half)
+        for i in 0..<21 { XCTAssertEqual(explicit.reveal[i], 220 + 10 * Double(i), accuracy: 1e-9) }
+        // The recording's area is used when none is given; an explicit whole picture overrides it.
+        info.area = half
+        XCTAssertEqual(TopoReplaySource.replayFrames(info: info).reveal, explicit.reveal)
+        let whole = TopoReplaySource.replayFrames(info: info, area: .whole)
+        for i in 0..<21 { XCTAssertEqual(whole.reveal[i], 10 * Double(i), accuracy: 1e-9) }
+        // Left → right travel with along 0.5…1 (rows 24…45): the downstream edge is row 24, at the centre.
+        let other = TopoReplaySource.replayFrames(
+            info: makeInfo(direction: .leftToRight),
+            area: ScanArea(acrossStart: 0, acrossEnd: 1, alongStart: 0.5, alongEnd: 1))
+        for i in 0..<21 { XCTAssertEqual(other.reveal[i], 210 + 10 * Double(i), accuracy: 1e-9) }
+    }
+
     func testFramesWithoutAFocalLengthHaveNoRevealPosition() {
         var info = makeInfo()
         info.frames[3] = makeFrame(index: 3, time: 0.3, speed: 100, travel: 240, fy: 0)

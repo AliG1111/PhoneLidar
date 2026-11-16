@@ -82,7 +82,18 @@ final class ScanAreaTests: XCTestCase {
         XCTAssertEqual(decoded, a)
         let partial = try JSONDecoder.iso.decode(ScanArea.self, from: Data(#"{"acrossStart":0.3}"#.utf8))
         assertEqual(partial, area(0.3, 1, 0, 1))
-        XCTAssertThrowsError(try JSONDecoder.iso.decode(ScanArea.self, from: Data(#"{"alongEnd":"x"}"#.utf8)))
+    }
+
+    func testADamagedAreaReadsAsTheWholePictureAndKeepsTheRecordingReadable() throws {
+        // A value of the wrong type is the picture edge; an area that is not an object is the whole picture.
+        let wrongValue = try JSONDecoder.iso.decode(ScanArea.self,
+                                                    from: Data(#"{"acrossStart":0.2,"alongEnd":"x"}"#.utf8))
+        assertEqual(wrongValue, area(0.2, 1, 0, 1))
+        let json = #"{"depthWidth":64,"depthHeight":48,"videoWidth":1920,"videoHeight":1440,"filteredDepth":true,"#
+            + #""shortShutter":true,"direction":"rightToLeft","area":"damaged","frames":[]}"#
+        let info = try JSONDecoder.iso.decode(LineRecordingInfo.self, from: Data(json.utf8))
+        XCTAssertEqual(info.area, .whole)
+        XCTAssertTrue(info.frames.isEmpty)
     }
 
     // MARK: Zones
@@ -196,7 +207,11 @@ final class ScanAreaTests: XCTestCase {
         let p = MapPixels.make(width: 64, height: 48, border: 2, keptAcross: 0.3...0.6, area: area(0.7, 1, 0, 1))
         XCTAssertFalse(p.isUsable)
         XCTAssertTrue(p.columns.isEmpty)
-        XCTAssertTrue(MapPixels.unusableMessage(sideWalls: true).contains("side walls"))
+        XCTAssertTrue(MapPixels.unusableMessage(sideWalls: true, wholeArea: false).contains("area of interest"))
+        // With the whole picture only the walls can be the cause.
+        let walls = MapPixels.unusableMessage(sideWalls: true, wholeArea: true)
+        XCTAssertTrue(walls.contains("Recalibrate the side walls"), walls)
+        XCTAssertFalse(walls.contains("area of interest"), walls)
     }
 
     func testScanRowStaysInsideTheAreaRows() {

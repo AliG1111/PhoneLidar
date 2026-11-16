@@ -138,7 +138,8 @@ enum TopoMapBuilder {
         // Depth pixels used: inside the border, between the side walls (FR-HREF-07) and in the area (FR-AOI-03).
         let pixels = MapPixels.make(width: w, height: h, border: border, keptAcross: model.keptAcross, area: area)
         guard pixels.isUsable else {
-            throw LineError.configuration(MapPixels.unusableMessage(sideWalls: model.keptAcross != nil))
+            throw LineError.configuration(MapPixels.unusableMessage(sideWalls: model.keptAcross != nil,
+                                                                    wholeArea: area.isWhole))
         }
         let columns = pixels.columns
 

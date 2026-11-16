@@ -214,7 +214,7 @@ Scan › **Topographic replay (real time, adjustable speed)**. The screen turns 
 
 **What it shows**: the topographic map building up line by line in recording time, as a scrolling 3D strip laid out like the X-ray mat-density replay.
 - The newest line is at the right edge (black marker); older material scrolls left. The window is 2 × the strip width by default.
-- The newest line is the material leaving the downstream edge of the LiDAR's view. At that point every reading of that line has been averaged, so at each moment the replay shows only data that existed at that moment. Only complete display blocks are drawn: the newest drawn block can sit up to one block to the left of the marker.
+- The newest line is the material leaving the downstream edge of the LiDAR's view (of the map's area of interest, when it has one). At that point every reading of that line has been averaged, so at each moment the replay shows only data that existed at that moment. Only complete display blocks are drawn: the newest drawn block can sit up to one block to the left of the marker.
 - **Run-out**: after the last frame the rest of the recorded material runs out at the last measured speed ("run-out after the last frame" in the header), so the whole map is always revealed by the end. If that speed is so slow that the run-out would take longer than 60 s, it runs faster and ends after 60 s; if no speed was measured, the rest runs out over 3 s.
 - Values are heights above the belt (camera height or side walls) or above the baseline when the recording has one. Without one they are relative heights: median distance − distance (+ = closer to the camera).
 - **Header**: title; replay time t of total, frame N of M, speed (mm/s and m/min); newest-line average and its difference from target, on-screen average, std dev, min / max, % within ± tolerance. These figures, the along chart, the across-width profile and the statistics on the saved image use the **measured blocks only**; blocks that are only filled in for the picture are not counted.
@@ -248,10 +248,10 @@ Choose the part of the picture that goes into the map, for example the mat betwe
 2. Drag an **edge** or a **corner** of the frame to resize it, or drag **inside** it to move it. Each side is at least 10 % of the picture. The line at the top shows where the area is (for example *5–95 % from the left, 10–90 % from the top*).
 3. **Whole picture** goes back to the full view; **Done** returns to the readouts.
 
-Outside the area the picture is dimmed and the yellow frame stays visible. The area is kept for the next visit. It cannot be changed while recording, saving or calibrating; editing ends by itself when a recording starts (also from the remote phone).
+Outside the area the picture is dimmed and the yellow frame stays visible. With VoiceOver, the frame's actions move each edge in 5 % steps. The area is kept for the next visit. It cannot be changed while recording, saving or calibrating; editing ends by itself when a recording starts (also from the remote phone).
 
 **What it changes**
-- The **map**, its statistics, profiles and CSV files, `TopoGrid.bin` and the **Topographic replay** use only the readings inside the area. With the **Side walls** reference the map uses the part that is both between the walls and inside the area; an area that does not overlap that part is refused with a reason.
+- The **map**, its statistics, profiles and CSV files, `TopoGrid.bin` and the **Topographic replay** use only the readings inside the area. With the **Side walls** reference the map uses the part that is both between the walls and inside the area; an area that does not overlap that part is refused with a reason (and when the walls themselves leave too little of the picture, the message says to recalibrate them).
 - **Map: single frame** takes its scan line from inside the area (the row nearest the middle of the view).
 - **Map: camera parallax** measures around the middle of the picture along the travel; keep the area's left and right edges around that part. If every height lies outside the area, the map is not built and the message says where the heights were (in % of the picture).
 - **Fastest** (live, in `Frames.csv` and in playback) is the fastest zone inside the area; every zone still records its own speed in `ZoneSpeeds.csv`.
