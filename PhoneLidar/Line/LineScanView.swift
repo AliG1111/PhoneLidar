@@ -14,6 +14,10 @@ struct LineScanView: View {
     @State private var showReference = false
     /// The picture's rectangle in `screenSpace`, for taps in the gaps between the panels (inside the scroll view).
     @State private var pictureInScreen: CGRect = .zero
+    /// Setting the area of interest: the panels make way for the picture and the area's frame (design §17.2).
+    @State private var editingArea = false
+    /// The area while an edge is being dragged (saved when the finger lifts).
+    @State private var draftArea: ScanArea?
 
     /// Coordinate space of the whole screen, shared by the camera layer and the scrolling panels.
     private static var screenSpace: NamedCoordinateSpace { .named("LineScanScreen") }
@@ -51,6 +55,17 @@ struct LineScanView: View {
                             .position(x: picture.minX + point.x * picture.width,
                                       y: picture.minY + point.y * picture.height)
                     }
+                    if editingArea || !model.area.isWhole {
+                        ScanAreaOverlay(area: draftArea ?? model.area, picture: picture, editing: editingArea)
+                    }
+                    if editingArea {
+                        ScanAreaDragLayer(area: model.area, picture: picture,
+                                          onChange: { draftArea = $0 },
+                                          onEnd: { area in
+                                              model.setArea(area)
+                                              draftArea = nil
+                                          })
+                    }
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .onChange(of: picture.offsetBy(dx: origin.x, dy: origin.y), initial: true) { _, rect in
@@ -62,42 +77,11 @@ struct LineScanView: View {
             // The top bar and the record controls stay inside the safe area (below the camera cut-out, above the
             // home indicator); the panels between them scroll when they do not fit (large text, long warnings).
             // The panels start at the top, so a panel that changes height never moves the panels above it.
-            VStack(spacing: 8) {
-                topBar
-                GeometryReader { area in
-                    ScrollView {
-                        VStack(spacing: 10) {
-                            RemoteStatusChip()
-                            if let banner = model.bannerText {
-                                noticeBadge([banner], color: .orange)
-                            }
-                            speedPanel
-                            levelPanel
-                            // Below the readouts, so a warning that comes and goes never moves them.
-                            if model.phase == .recording, !model.recordingWarnings.isEmpty {
-                                noticeBadge(model.recordingWarnings, color: .yellow)
-                            }
-                            if showsSettings {
-                                settingsPanel
-                            }
-                        }
-                        .frame(maxWidth: .infinity, minHeight: area.size.height, alignment: .top)
-                        .background {
-                            // The gaps between the panels show the picture: a tap there reads the speed at that point.
-                            Color.clear
-                                .contentShape(Rectangle())
-                                .gesture(SpatialTapGesture(coordinateSpace: Self.screenSpace).onEnded { value in
-                                    model.selectPoint(at: value.location, in: pictureInScreen)
-                                })
-                        }
-                    }
-                    .scrollBounceBehavior(.basedOnSize)
-                }
-                legend
-                recordPanel
+            if editingArea {
+                areaEditingPanels
+            } else {
+                mainPanels
             }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
         }
         .coordinateSpace(Self.screenSpace)
         .statusBarHidden()
@@ -121,6 +105,96 @@ struct LineScanView: View {
         .onChange(of: scenePhase) { _, newPhase in
             model.scenePhaseChanged(newPhase)
         }
+        // A recording started from the remote phone, a calibration or a camera failure ends the area editing.
+        .onChange(of: model.phase) { _, phase in
+            if phase != .ready { endAreaEditing() }
+        }
+        .onChange(of: model.calibrating) { _, calibrating in
+            if calibrating { endAreaEditing() }
+        }
+    }
+
+    /// Top bar, readouts, settings and record controls over the picture.
+    private var mainPanels: some View {
+        VStack(spacing: 8) {
+            topBar
+            GeometryReader { area in
+                ScrollView {
+                    VStack(spacing: 10) {
+                        RemoteStatusChip()
+                        if let banner = model.bannerText {
+                            noticeBadge([banner], color: .orange)
+                        }
+                        speedPanel
+                        levelPanel
+                        // Below the readouts, so a warning that comes and goes never moves them.
+                        if model.phase == .recording, !model.recordingWarnings.isEmpty {
+                            noticeBadge(model.recordingWarnings, color: .yellow)
+                        }
+                        if showsSettings {
+                            settingsPanel
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: area.size.height, alignment: .top)
+                    .background {
+                        // The gaps between the panels show the picture: a tap there reads the speed at
+                        // that point.
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .gesture(SpatialTapGesture(coordinateSpace: Self.screenSpace).onEnded { value in
+                                model.selectPoint(at: value.location, in: pictureInScreen)
+                            })
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+            }
+            legend
+            recordPanel
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    private func endAreaEditing() {
+        editingArea = false
+        draftArea = nil
+    }
+
+    /// While setting the area: a hint and the area's position at the top, Whole picture and Done at the bottom;
+    /// everything between shows the picture.
+    private var areaEditingPanels: some View {
+        VStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Area of interest")
+                    .font(.callout.weight(.semibold))
+                Text("Drag an edge or corner of the yellow frame, or drag inside it to move it. Only the readings "
+                     + "inside go into the map; the full picture is still recorded.")
+                    .font(.caption)
+                Text((draftArea ?? model.area).text)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.yellow)
+            }
+            .foregroundStyle(.white)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+            .allowsHitTesting(false)
+            Spacer()
+            HStack(spacing: 12) {
+                Button("Whole picture") { model.setArea(.whole) }
+                    .buttonStyle(.bordered)
+                    .tint(.white)
+                    .disabled(model.area.isWhole)
+                Spacer()
+                Button("Done") { endAreaEditing() }
+                    .buttonStyle(.borderedProminent)
+            }
+            .font(.callout)
+            .padding(10)
+            .background(Color.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
     }
 
     /// Compact warning lines (camera / heat banner, and warnings that stay visible while recording).
@@ -427,6 +501,18 @@ struct LineScanView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    // Area of interest: the part of the picture that goes into the map (FR-AOI-01).
+                    HStack {
+                        Text("Area: \(model.area.text)")
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.8)
+                        Spacer()
+                        Button("Set area…") { editingArea = true }
+                            .font(.caption)
+                            .buttonStyle(.bordered)
+                            .tint(.white)
+                    }
                 }
                 .disabled(model.calibrating)
             }
@@ -614,6 +700,8 @@ final class LineScanModel {
     var direction: TravelDirection? { directionSetting.manual ?? detectedDirection }
     /// Map built after Stop (stored in Recording.json); single frame turns raw depth on (FR-SFM-01).
     var mapMethod: MapMethod = .averaged
+    /// Area of interest (design §17.2): kept between visits, stored in each recording, limits the map and Fastest.
+    var area: ScanArea = LineScanModel.savedArea()
     var overlayOpacity: Double = 0.55
     var thermal: ProcessInfo.ThermalState = .nominal
     var speedHistory: [Double] = []
@@ -803,6 +891,7 @@ final class LineScanModel {
         do {
             try pipeline.configure(filteredDepth: filteredDepth)
             pipeline.setDirection(directionSetting, generation: directionGeneration)
+            pipeline.setArea(area)
             applyHeightReference()
             pipeline.start(shortShutter: shortShutter)
             phase = .ready
@@ -960,6 +1049,27 @@ final class LineScanModel {
         }
     }
 
+    /// Changes the area of interest; refused while recording, saving or calibrating (a recording keeps the area it
+    /// started with).
+    func setArea(_ newArea: ScanArea) {
+        guard !isBusy, !calibrating else { return }
+        area = newArea.normalized
+        pipeline.setArea(area)
+        if let data = try? JSONEncoder.pretty.encode(area) {
+            UserDefaults.standard.set(data, forKey: Self.areaKey)
+        }
+    }
+
+    /// UserDefaults key of the area of interest (design §7.18).
+    nonisolated static let areaKey = "lineScanArea"
+
+    /// The saved area of interest, or the whole picture.
+    nonisolated static func savedArea() -> ScanArea {
+        guard let data = UserDefaults.standard.data(forKey: areaKey),
+              let area = try? JSONDecoder.iso.decode(ScanArea.self, from: data) else { return .whole }
+        return area.normalized
+    }
+
     func setShortShutter(_ enabled: Bool) {
         guard !calibrating else { return }
         shortShutter = enabled
@@ -1064,7 +1174,7 @@ final class LineScanModel {
             onRecordingStart()
             pipeline.startRecording(folder: folder.url, filtered: filteredDepth,
                                     shortShutter: shortShutter, direction: direction, mapMethod: mapMethod,
-                                    notes: notes)
+                                    area: area.isWhole ? nil : area, notes: notes)
         } catch {
             notice = "Recording not started: the scan folder could not be created (\(error.localizedDescription))."
         }

@@ -15,6 +15,11 @@ struct TopoMapView: View {
     @State private var methodChoice: MapMethod?
     /// Method chosen when the recording was made.
     @State private var recordedMethod: MapMethod = .averaged
+    /// Area of interest chosen for the next rebuild (nil = the area of the map on screen; design §17.4).
+    @State private var areaChoice: ScanArea?
+    /// Area of interest stored in the recording (whole picture when it has none).
+    @State private var recordedArea: ScanArea = .whole
+    @State private var showArea = false
     @State private var loaded = false
     @State private var building = false
     /// Progress of a camera-parallax build (0…1), nil otherwise.
@@ -132,6 +137,7 @@ struct TopoMapView: View {
                     row("Cell size", TopoMapBuilder.cellText(stats.cellSize) + " mm")
                     row("Coverage", "%.1f %%", stats.coveragePercent)
                     row("Map method", (stats.mapMethod ?? .averaged).label)
+                    row("Area of interest", (stats.area ?? .whole).text)
                     row("Readings per cell", "%.1f", stats.meanHitsPerCell)
                     row("Frames / duration", String(format: "%ld / %.1f s", stats.frames, stats.duration))
                 }
@@ -147,6 +153,24 @@ struct TopoMapView: View {
                 }
                 .pickerStyle(.segmented)
                 .disabled(building)
+                // Area of interest for the next rebuild (FR-AOI-04).
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Area of interest")
+                        Text(nextArea.text)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        if areaChoice != nil, nextArea != (stats?.area ?? recordedArea) {
+                            Text("Tap Rebuild map to use this area.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    Spacer()
+                    Button("Set area…") { showArea = true }
+                        .buttonStyle(.bordered)
+                }
+                .disabled(building)
                 Button {
                     rebuild()
                 } label: {
@@ -157,12 +181,20 @@ struct TopoMapView: View {
                 Text(footerText)
             }
         }
+        .sheet(isPresented: $showArea) {
+            ScanAreaSheet(folder: folder, initial: nextArea) { area in
+                areaChoice = area.normalized
+            }
+        }
         .navigationTitle("Topographic map")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
     }
 
     private var heightMode: Bool { stats?.heightMode == true }
+
+    /// The area the next rebuild uses: the one chosen here, else that of the map on screen, else the recording's.
+    private var nextArea: ScanArea { areaChoice ?? stats?.area ?? recordedArea }
 
     /// What the heights are measured from, for titles.
     private var referenceName: String {
@@ -171,6 +203,8 @@ struct TopoMapView: View {
 
     private var footerText: String {
         let files = "TopoMap.png, TopoMap.csv, TopoStats.csv and the profile CSV files are in the scan's file list."
+        let area = "Area of interest: only the readings inside it go into the map; the recording keeps the whole "
+            + "picture, so Set area… and Rebuild map can change it at any time. "
         let method = "Averaged: the mean of every LiDAR reading in the cell. Single reading: each cell holds one "
             + "LiDAR reading, nothing is averaged (the reading taken closest to the scan line, ScanLineProfiles.csv). "
             + "Camera parallax: heights from how far each patch of the surface moved in the video, scaled by the "
@@ -187,7 +221,7 @@ struct TopoMapView: View {
                 ? "Values are heights above the flat-surface baseline saved with this recording (Baseline.bin). "
                 : "No height reference was saved with this recording, so values are distances from the camera. "
         }
-        return method + values + files
+        return method + values + area + files
     }
 
     private func row(_ title: String, _ format: String, _ value: Double) -> some View {
@@ -203,6 +237,7 @@ struct TopoMapView: View {
     private struct Loaded {
         var direction: TravelDirection?
         var recordedMethod: MapMethod?
+        var recordedArea: ScanArea?
         var stats: TopoStats?
         var profiles: TopoProfiles?
         var image: UIImage?
@@ -222,6 +257,7 @@ struct TopoMapView: View {
                 }) {
                 out.direction = info.direction
                 out.recordedMethod = info.mapMethod ?? .averaged
+                out.recordedArea = (info.area ?? .whole).normalized
             }
             if let data = try? Data(contentsOf: folder.appendingPathComponent("TopoStats.json")) {
                 out.stats = try? JSONDecoder.iso.decode(TopoStats.self, from: data)
@@ -234,6 +270,7 @@ struct TopoMapView: View {
         }.value
         if let value = result.direction { direction = value }
         if let value = result.recordedMethod { recordedMethod = value }
+        if let value = result.recordedArea { recordedArea = value }
         stats = result.stats
         profiles = result.profiles
         mapImage = result.image
@@ -246,6 +283,7 @@ struct TopoMapView: View {
         message = nil
         let folder = self.folder
         let method = methodChoice ?? stats?.mapMethod ?? recordedMethod
+        let area = nextArea
         buildProgress = method == .cameraParallax ? 0 : nil
         let report: @Sendable (Double) -> Void = { value in
             Task { @MainActor in
@@ -261,7 +299,7 @@ struct TopoMapView: View {
                     }
                     // TopoMap.png is rendered here, off the main thread, and staged with the other files.
                     let output = try await MapRebuild.build(folder: folder, recording: recording, method: method,
-                                                            progress: report)
+                                                            area: area, progress: report)
                     return .success((recording: recording, output: output))
                 } catch {
                     return .failure(error)
@@ -271,6 +309,7 @@ struct TopoMapView: View {
             case .success(let built):
                 message = updateScanRecord(recording: built.recording, mapSummary: built.output.summary)
                 methodChoice = nil
+                areaChoice = nil
             case .failure(let error):
                 message = "Map not rebuilt: \(error.localizedDescription)"
             }

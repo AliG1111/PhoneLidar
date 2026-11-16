@@ -52,6 +52,7 @@ targets:
       - path: PhoneLidar/Line/MapCells.swift
       - path: PhoneLidar/Line/ParallaxMath.swift
       - path: PhoneLidar/Line/ParallaxProcessor.swift
+      - path: PhoneLidar/Line/ScanArea.swift
       - path: PhoneLidar/Line/SpeedEstimator.swift
       - path: PhoneLidar/Line/TopoGridFile.swift
       - path: PhoneLidar/Line/TopoMapBuilder.swift

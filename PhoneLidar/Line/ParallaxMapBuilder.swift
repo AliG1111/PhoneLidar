@@ -6,7 +6,9 @@ import simd
 /// Builds a camera-parallax map (design §15): decodes Video.mov, measures heights with `ParallaxProcessor` and
 /// finishes the map files with `TopoMapBuilder.finish`. Runs off the main thread.
 enum ParallaxMapBuilder {
-    static func build(folder: URL, info: LineRecordingInfo, composite: ((CGImage, TopoStats) throws -> Data)?,
+    /// `area` overrides the recording's area of interest (nil = the recording's, else the whole picture; §17.4).
+    static func build(folder: URL, info: LineRecordingInfo, area: ScanArea? = nil,
+                      composite: ((CGImage, TopoStats) throws -> Data)?,
                       progress: (@Sendable (Double) -> Void)? = nil) async throws -> TopoMapBuilder.Output {
         let videoURL = folder.appendingPathComponent("Video.mov")
         guard FileManager.default.fileExists(atPath: videoURL.path) else {
@@ -32,14 +34,25 @@ enum ParallaxMapBuilder {
         let heightMode = model.isHeight
         let baseValues = model.baselineValues ?? []
         let plane = model.plane
-        let columns = model.columns(width: w, border: border)
+        // Readings only from depth pixels inside the border, the side walls and the area of interest (FR-AOI-03).
+        let area = (area ?? info.area ?? .whole).normalized
+        let pixels = MapPixels.make(width: w, height: h, border: border, keptAcross: model.keptAcross, area: area)
+        guard pixels.isUsable else {
+            throw LineError.configuration(MapPixels.unusableMessage(sideWalls: model.keptAcross != nil))
+        }
+        // Along the travel the readings were never limited by the border, only by the area (its rows of the depth map).
+        let rowLo = max(0, Int((area.alongStart * Double(h)).rounded(.up)))
+        let rowHi = min(h, Int((area.alongEnd * Double(h)).rounded(.down)))
+        let areaRows = rowLo < rowHi ? rowLo..<rowHi : rowLo..<rowLo
+        // The columns without the area: a reading inside these but outside the area was left out by the area.
+        let unlimited = MapPixels.make(width: w, height: h, border: border, keptAcross: model.keptAcross, area: .whole)
         let lens = info.lens.flatMap { $0.isValid ? $0 : nil }
         let normal = ParallaxGeometry.beltNormal(frames: frames,
                                                  reference: model.reference ?? HeightReference.load(from: folder))
         let settings = ParallaxSettings()
 
         // Grid: the LiDAR maps' extent, cells of the patch spacing at the typical distance.
-        guard let extent = TopoMapBuilder.extent(frames: frames, width: w, height: h, border: border,
+        guard let extent = TopoMapBuilder.extent(frames: frames, width: w, height: h, pixels: pixels,
                                                  sign: Double(sign), typicalDepth: zTypical) else {
             throw LineError.notEnoughData
         }
@@ -70,11 +83,18 @@ enum ParallaxMapBuilder {
 
         // Readings → cells: the reading nearest each cell centre is kept (one reading per cell, nothing averaged).
         var added = 0
+        var outside = OutsideArea()
         func addReadings(_ readings: [ParallaxReading]) {
             guard !readings.isEmpty else { return }
             cells.withAccumulator { acc in
                 for r in readings {
-                    guard columns.contains(r.depthU), r.depthV >= 0, r.depthV < h else { continue }
+                    guard r.depthV >= 0, r.depthV < h else { continue }
+                    guard pixels.columns.contains(r.depthU), areaRows.contains(r.depthV) else {
+                        if unlimited.columns.contains(r.depthU) {
+                            outside.add(u: r.depthU, v: r.depthV, width: w, height: h)
+                        }
+                        continue
+                    }
                     let value: Float
                     if let plane {
                         value = Float(plane.height(of: r.point))
@@ -117,6 +137,9 @@ enum ParallaxMapBuilder {
         addReadings(processor.finish())
         progress?(1)
         let counters = processor.counters
+        if added == 0, let message = outside.message() {
+            throw LineError.configuration(message)
+        }
         guard added > 0 else {
             let facts = ParallaxBuildFacts(
                 videoPictures: videoPictures, recordingFrames: frames.count,
@@ -132,12 +155,45 @@ enum ParallaxMapBuilder {
 
         var extraLines: [String] = []
         if let line = model.summaryLine { extraLines.append(line) }
+        if let line = area.summaryLine { extraLines.append(line) }
         extraLines.append(summaryLine(counters: counters, ratio: processor.medianRatio, lens: lens != nil))
         return try TopoMapBuilder.finish(cells: cells, heightMode: heightMode, sensor: .cameraParallax,
                                          speeds: frames.map(\.speed), frameCount: frames.count,
                                          duration: frames.last?.time ?? 0, travel: TopoMapBuilder.travelRange(frames),
                                          extraLines: extraLines, folder: folder, heightReference: model.method,
-                                         composite: composite) { _ in [] }
+                                         area: area, composite: composite) { _ in [] }
+    }
+
+    /// Heights left out only because they lay outside the area of interest, and where they lay in the portrait
+    /// picture, for the message when no height is inside the area (design §17.4).
+    struct OutsideArea {
+        private(set) var count = 0
+        private var left = Double.infinity, right = -Double.infinity
+        private var top = Double.infinity, bottom = -Double.infinity
+
+        init() {}
+
+        /// A reading at depth pixel (u, v) of a `width` × `height` depth map.
+        mutating func add(u: Int, v: Int, width: Int, height: Int) {
+            guard width > 0, height > 0 else { return }
+            count += 1
+            let x = 1 - (Double(v) + 0.5) / Double(height)      // portrait picture, left → right
+            let y = (Double(u) + 0.5) / Double(width)           // top → bottom
+            left = min(left, x)
+            right = max(right, x)
+            top = min(top, y)
+            bottom = max(bottom, y)
+        }
+
+        /// Nil when no reading was left out by the area.
+        func message() -> String? {
+            guard count > 0 else { return nil }
+            return String(format: "No camera-parallax heights inside the area of interest: %ld heights were measured "
+                          + "at %.0f–%.0f %% of the picture from the left and %.0f–%.0f %% from the top, all outside "
+                          + "the area. Camera parallax measures around the middle of the picture along the travel; "
+                          + "move the area's edges to include that part (Area of interest › Set area…), or pick "
+                          + "Averaged or Single reading.", count, left * 100, right * 100, top * 100, bottom * 100)
+        }
     }
 
     /// Summary line of a parallax map (a map line, replaced on rebuild).

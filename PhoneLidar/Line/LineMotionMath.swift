@@ -72,9 +72,16 @@ enum LineMotionMath {
 
     /// Zone with the largest speed magnitude (signed speed returned); the first one wins a tie.
     static func fastest(_ speeds: [Double?]) -> (speed: Double, index: Int)? {
+        fastest(speeds, in: nil)
+    }
+
+    /// The same among the zones whose `mask` entry is true (the area of interest, design §17.2); a nil mask, or one
+    /// whose length does not match, uses every zone.
+    static func fastest(_ speeds: [Double?], in mask: [Bool]?) -> (speed: Double, index: Int)? {
+        let mask = mask.flatMap { $0.count == speeds.count ? $0 : nil }
         var best: (speed: Double, index: Int)?
         for (i, v) in speeds.enumerated() {
-            guard let v else { continue }
+            guard let v, mask?[i] ?? true else { continue }
             if let current = best, abs(v) <= abs(current.speed) { continue }
             best = (v, i)
         }

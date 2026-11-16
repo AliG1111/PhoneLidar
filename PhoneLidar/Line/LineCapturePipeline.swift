@@ -152,6 +152,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     private var overlayStride = 2
     /// The camera was interrupted or failed; the next frame reports that it is running again.
     private var awaitingResume = false
+    /// Zones in the area of interest (nil = all), for the Fastest zone; set by `setArea`.
+    private var zoneMask: [Bool]?
 
     private struct PendingRecording {
         var token: Int
@@ -160,6 +162,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         var shortShutter: Bool
         var direction: TravelDirection
         var mapMethod: MapMethod
+        /// Area of interest stored in Recording.json (nil = the whole picture).
+        var area: ScanArea?
         /// Summary lines from the screen (e.g. the height reference was not copied).
         var notes: [String]
     }
@@ -457,6 +461,17 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
         }
     }
 
+    // MARK: - Area of interest
+
+    /// Limits the Fastest zone (live and recorded) to the zones in `area` (design §17.2).
+    func setArea(_ area: ScanArea) {
+        let mask = area.isWhole
+            ? nil : area.zoneMask(columns: SpeedEstimator.tileColumns, rows: SpeedEstimator.tileRows)
+        dataQueue.async { [self] in
+            zoneMask = mask
+        }
+    }
+
     // MARK: - Belt plane (camera height, side walls)
 
     /// Live heights above a belt plane instead of the baseline (nil = baseline or distances).
@@ -480,7 +495,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
     /// Starts recording into `folder` with the next frame. Reports `.recordingStarted` or
     /// `.recordingStartFailed` (also when no frame arrives within 3 s).
     func startRecording(folder: URL, filtered: Bool, shortShutter: Bool, direction: TravelDirection,
-                        mapMethod: MapMethod = .averaged, notes: [String] = []) {
+                        mapMethod: MapMethod = .averaged, area: ScanArea? = nil, notes: [String] = []) {
         dataQueue.async { [self] in
             guard recorder == nil else {
                 onEvent?(.recordingStartFailed("a recording is already running"))
@@ -490,7 +505,7 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             let token = pendingToken
             pendingRecording = PendingRecording(token: token, folder: folder, filtered: filtered,
                                                 shortShutter: shortShutter, direction: direction,
-                                                mapMethod: mapMethod, notes: notes)
+                                                mapMethod: mapMethod, area: area, notes: notes)
             dataQueue.asyncAfter(deadline: .now() + 3) { [self] in
                 guard pendingRecording?.token == token else { return }
                 pendingRecording = nil
@@ -623,8 +638,9 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
             millimetres: millimetres, width: dw, height: dh, centerDistance: median, focalPixels: fyVideo, dt: dt,
             columns: SpeedEstimator.tileColumns, rows: SpeedEstimator.tileRows)
         let smoothTiles = zoneSmoother.add(rawTiles)
-        let fastest = LineMotionMath.fastest(smoothTiles)
-        var rawFastest = LineMotionMath.fastest(rawTiles)
+        // Fastest among the zones in the area of interest (design §17.2); every zone keeps its own speed.
+        let fastest = LineMotionMath.fastest(smoothTiles, in: zoneMask)
+        var rawFastest = LineMotionMath.fastest(rawTiles, in: zoneMask)
 
         // Travel (held speed through frames without lock) and the half-second rolling average.
         let smoothed = speedTracker.add(rawSpeed: rawSpeed, dt: dt)
@@ -766,7 +782,8 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                                                depthWidth: dw, depthHeight: dh, filteredDepth: pending.filtered,
                                                shortShutter: pending.shortShutter, direction: pending.direction,
                                                travelOffset: travel, mapMethod: pending.mapMethod,
-                                               lens: LineCapturePipeline.lens(depth.cameraCalibrationData))
+                                               lens: LineCapturePipeline.lens(depth.cameraCalibrationData),
+                                               area: pending.area)
                 pending.notes.forEach { created.addNote($0) }
                 // Keep the baseline with the recording so its map and playback use the same reference (a belt-plane
                 // reference was written into the folder by the screen instead).
@@ -830,11 +847,6 @@ final class LineCapturePipeline: NSObject, AVCaptureDataOutputSynchronizerDelega
                              recordingWarning: recorder?.videoProblem.map { "Video not recording: \($0)" },
                              detectedDirection: directionSetting == .auto ? detector.detected : nil,
                              directionGeneration: directionGeneration))
-    }
-
-    /// Zone with the largest speed magnitude (signed speed returned). See `LineMotionMath.fastest`.
-    static func fastest(_ speeds: [Double?]) -> (speed: Double, index: Int)? {
-        LineMotionMath.fastest(speeds)
     }
 
     /// Heights above `plane` of every depth pixel (mm; NaN where there is no reading).

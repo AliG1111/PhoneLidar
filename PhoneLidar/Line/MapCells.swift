@@ -216,8 +216,16 @@ enum ScanLineMath {
     /// The scan line: the depth row nearest the principal point row `cy` (where the view looks straight down),
     /// kept inside the border.
     static func scanRow(cy: Float, height: Int, border: Int) -> Int {
-        let lo = border
-        let hi = max(lo, height - 1 - border)
+        scanRow(cy: cy, lowest: border, highest: max(border, height - 1 - border))
+    }
+
+    /// The scan row kept inside the depth rows a map uses (the area of interest, design §17.4): a centre row outside
+    /// them moves to the nearest used row.
+    static func scanRow(cy: Float, rows: Range<Int>) -> Int {
+        scanRow(cy: cy, lowest: rows.lowerBound, highest: max(rows.lowerBound, rows.upperBound - 1))
+    }
+
+    private static func scanRow(cy: Float, lowest lo: Int, highest hi: Int) -> Int {
         guard cy.isFinite else { return (lo + hi) / 2 }
         return min(hi, max(lo, Int(cy.rounded())))
     }

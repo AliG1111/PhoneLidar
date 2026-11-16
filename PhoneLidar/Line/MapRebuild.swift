@@ -54,10 +54,10 @@ enum MapRebuild {
         return .lidar(loaded.info, repaired: loaded.repaired)
     }
 
-    /// Builds the map (all files incl. TopoMap.png, staged together). `method` nil = the recording's. A camera-
-    /// parallax map is built from Video.mov by `ParallaxMapBuilder` (design §15); `progress` (0…1) is reported by
-    /// that builder only.
-    static func build(folder: URL, recording: MapRecording, method: MapMethod?,
+    /// Builds the map (all files incl. TopoMap.png, staged together). `method` nil = the recording's; `area` nil =
+    /// the recording's area of interest (design §17.4). A camera-parallax map is built from Video.mov by
+    /// `ParallaxMapBuilder` (design §15); `progress` (0…1) is reported by that builder only.
+    static func build(folder: URL, recording: MapRecording, method: MapMethod?, area: ScanArea? = nil,
                       progress: (@Sendable (Double) -> Void)? = nil) async throws -> TopoMapBuilder.Output {
         guard MapBuildRegistry.shared.claim(folder) else {
             throw LineError.configuration(busyMessage)
@@ -72,10 +72,11 @@ enum MapRebuild {
             let resolved = method ?? info.mapMethod ?? .averaged
             var output: TopoMapBuilder.Output
             if resolved == .cameraParallax {
-                output = try await ParallaxMapBuilder.build(folder: folder, info: info, composite: composite,
-                                                            progress: progress)
+                output = try await ParallaxMapBuilder.build(folder: folder, info: info, area: area,
+                                                            composite: composite, progress: progress)
             } else {
-                output = try TopoMapBuilder.build(folder: folder, info: info, method: resolved, composite: composite)
+                output = try TopoMapBuilder.build(folder: folder, info: info, method: resolved, area: area,
+                                                  composite: composite)
             }
             if repaired { output.summary.insert(TopoMapBuilder.recordingRepairedNote, at: 0) }
             return output

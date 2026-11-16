@@ -86,6 +86,8 @@ struct LineRecordingInfo: Codable {
     var mapMethod: MapMethod? = nil
     /// Lens distortion of the video camera at Record (design §15.2); absent in recordings before P16.
     var lens: LensCalibration? = nil
+    /// Area of interest at Record (design §17.3); absent = the whole picture (also in recordings before P22).
+    var area: ScanArea? = nil
 }
 
 extension LineRecordingInfo {
@@ -152,6 +154,8 @@ struct LineRecordingHeader: Encodable {
     var mapMethod: MapMethod? = nil
     /// Lens distortion tables when the camera reported them (design §15.2).
     var lens: LensCalibration? = nil
+    /// Area of interest; written only when it is not the whole picture (design §17.3).
+    var area: ScanArea? = nil
 }
 
 /// What a finished recording produced, for the scan summary.
@@ -602,7 +606,7 @@ final class LineRecorder: @unchecked Sendable {
 
     init(folder: URL, videoWidth: Int, videoHeight: Int, depthWidth: Int, depthHeight: Int,
          filteredDepth: Bool, shortShutter: Bool, direction: TravelDirection, travelOffset: Double,
-         mapMethod: MapMethod = .averaged, lens: LensCalibration? = nil) throws {
+         mapMethod: MapMethod = .averaged, lens: LensCalibration? = nil, area: ScanArea? = nil) throws {
         self.folder = folder
         self.mapMethod = mapMethod
         self.videoWidth = videoWidth
@@ -640,7 +644,8 @@ final class LineRecorder: @unchecked Sendable {
                                         videoWidth: videoWidth, videoHeight: videoHeight,
                                         filteredDepth: filteredDepth, shortShutter: shortShutter,
                                         direction: direction, tileColumns: columns, tileRows: rows,
-                                        mapMethod: mapMethod == .averaged ? nil : mapMethod, lens: lens))
+                                        mapMethod: mapMethod == .averaged ? nil : mapMethod, lens: lens,
+                                        area: area.flatMap { $0.isWhole ? nil : $0.normalized }))
         framesWriter = try TextFileWriter(url: folder.appendingPathComponent("Frames.csv"), flushBytes: 64_000)
         zonesWriter = try TextFileWriter(url: folder.appendingPathComponent("ZoneSpeeds.csv"), flushBytes: 64_000)
         try framesWriter.line(LineRecorder.framesHeader.joined(separator: ","))
