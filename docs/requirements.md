@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Document | Functional and non-functional requirements, constraints, acceptance criteria, traceability |
-| Describes | `main` at `4fa93c7` (PR #9, build #61): build #23 plus the P8 docs, unit tests, CI hardening and the M1 review fixes (cycles 1–3, the final review and the re-reviews), verified against the source code; plus the remote link (P11, §5.13), added 2026-11-12; P16 (camera parallax, height references, laser removed), 2026-11-13 |
-| Date | 2026-11-13 |
+| Describes | `main` at `4fa93c7` (PR #9, build #61): build #23 plus the P8 docs, unit tests, CI hardening and the M1 review fixes (cycles 1–3, the final review and the re-reviews), verified against the source code; plus the remote link (P11, §5.13), added 2026-11-12; P16 (camera parallax, height references, laser removed), 2026-11-13; P22 (area of interest, §5.19), 2026-11-16 |
+| Date | 2026-11-16 |
 | Companion documents | [design.md](design.md) (architecture, algorithms, file formats), [implementation-plan.md](implementation-plan.md) (phases, change log), [../CLAUDE.md](../CLAUDE.md) (agent rules), the user guide [`../README.md`](../README.md) |
 
 Requirements describe the system as built. Where the user guide (`README.md`) and the code disagree, the code is described here and the difference is listed in [design.md §12](design.md#12-guide-vs-code-discrepancies). Requirements that the code does not meet are kept with status **Not implemented** so they trace to the backlog and the review findings. Review IDs (`A-2`, `B-4`, `C-1`, `P-1`, `F-6`, …) refer to the M1 review ([reviews/2026-11-10-M1.md](reviews/2026-11-10-M1.md)); every requirement that cycle 1 and 2 found missing is now implemented and listed as *Implemented – not verified on device*. The user guide is `README.md`; the owner's local copy and the claude.ai project copy are synced by the orchestrator.
@@ -159,7 +159,7 @@ Source paths in this section are relative to `PhoneLidar/`.
 | FR-SPD-02 | Displayed speed = mean of the valid readings among the last 15 frames (needs ≥ 3; otherwise the current reading), in mm/s, m/min and ft/min; "no texture lock" when there is no reading; sparkline of the last 300 displayed values. | A blank surface shows "no texture lock". |
 | FR-SPD-03 | Travel is integrated every frame from the current reading, else the last valid reading (0 if none since the session started or the last direction change; at Record a held speed and smoothing readings at most 2.0 s old are kept and older ones cleared, Z-1/Y-1); recorded travel is relative to the recording start. | `travel_mm` in `Frames.csv` starts at 0 and increases with the material. |
 | FR-SPD-04 | Zone speeds: a 6 × 4 grid (6 across, 4 along the travel), 128 × 128 px templates, up to 320 px per frame, zones near the downstream edge matched backwards; zone quality ≥ 0.12; each zone scaled by its own median LiDAR distance. Live values are the mean of the last 15 frames (needs ≥ 4 readings). | On a uniform conveyor the 24 zone means agree with the main speed (P9 V10). |
-| FR-SPD-05 | Fastest zone (largest absolute speed; the signed value is shown) is marked with an orange box; tapping the picture selects a point and shows "At point" speed for the zone under it; ✕ clears the point. | The marker follows the fastest object. |
+| FR-SPD-05 | Fastest zone (largest absolute speed among the zones in the area of interest, FR-AOI-05; the signed value is shown) is marked with an orange box; tapping the picture selects a point and shows "At point" speed for the zone under it; ✕ clears the point. | The marker follows the fastest object. |
 | FR-SPD-06 | Changing the direction by hand flips the tracking sign and resets the tracker, the zone history, the last valid speed, the smoothing buffer and the sparkline (travel keeps its value). A new direction from the automatic detection (FR-DIR-03) does the same except that the tracker keeps its picture levels. | After switching to left → right, material moving right reads positive. |
 | FR-SPD-07 | Each recorded frame stores the raw speed, along and across shift (px), quality, the 24 raw zone speeds and the fastest zone (`Recording.json`, `Frames.csv`, `ZoneSpeeds.csv`). | Columns are filled whenever the live view shows a reading. |
 | FR-SPD-08 | Apply a user-entered scale correction (derived from a known speed or a measured length) to speeds and travel. | After entering a factor, recorded speeds and travel change by that factor. |
@@ -333,6 +333,19 @@ Owner's decision (2026-11-13): offer both references that need no empty belt and
 | FR-HREF-06 | Every Line scan map (averaged, single reading, camera parallax) uses, in order: a ready camera-height or side-wall `HeightReference.json`, a matching `Baseline.bin`, else distances. `TopoStats.heightReference` records which; summary, `TopoStats.csv` (`height_above_belt_camera_height` / `_side_walls`) and the map screen say "above the belt"; summary line `Height reference: …` (replaced on rebuild). | Unit tests for both plane references and the baseline fallback. |
 | FR-HREF-07 | Side walls: maps keep only the depth columns between the inner edges of the calibrated wall bands. | Unit test: map width halves with bands covering the outer quarters. |
 | FR-HREF-08 | Accuracy (analysis, design §16.5): camera height ±5 mm tape → ±5 mm plus the LiDAR distance bias at the mat; side walls cancel most of the LiDAR bias (wall tops and mat measured by the same sensor): wall height ±1 mm + wall-top distance (averaged) ±1–2 mm + fixed-pattern difference between the edges and the middle of the view. | P9 V20/V21 on the line. |
+
+### 5.19 Area of interest (FR-AOI)
+
+Owner's request (2026-11-16): select the area of interest to record within the viewing area of a line scan. Owner's decisions: full frames keep being recorded and the area limits the map; the area is a rectangle with four edges. Design: [design §17](design.md#17-area-of-interest).
+
+| ID | Requirement | Acceptance criteria |
+|---|---|---|
+| FR-AOI-01 | Line scan settings row **Area: …** with **Set area…**: the panels make way for the picture, and a yellow frame with handles can be changed with one finger (an edge or corner follows the finger, a drag inside moves the frame); each side at least 10 % of the picture; **Whole picture** resets, **Done** returns. Outside the area the picture is dimmed and the frame stays visible. The area is kept between visits; it cannot be changed while recording, saving or calibrating, and editing ends when a recording starts (also from the remote phone). | Area survives closing the screen; the frame cannot be made smaller than 10 % either way. |
+| FR-AOI-02 | Recordings keep full frames (`Video.mov`, `Depth.bin` unchanged); the area at Record is stored in `Recording.json` (`area`, only when it is not the whole picture). | Recording files the same size with and without an area; `area` key present only with an area. |
+| FR-AOI-03 | Every Line scan map (averaged, single reading, camera parallax), its statistics, profiles, CSV files, `TopoGrid.bin` and the replay use only depth readings inside the area (and between the side walls when that reference is used). Single reading: the scan row moves into the area's rows. A whole-picture area gives the same map as before. `TopoStats.area`, `TopoStats.csv` rows `area_left/right/top/bottom` (% of the picture) and the summary line `Area of interest: …` (replaced on rebuild) record it. | Unit tests: width halves for half the picture across; a stationary object outside the area along the travel is not in the map; whole-picture areas give an identical grid. |
+| FR-AOI-04 | Topographic map screen: row **Area of interest** with **Set area…** opens the same editor over a picture of the recording (the camera picture at the middle of the recording, else the depth picture); **Rebuild map** uses it. Order for a build: the area chosen there › `Recording.json` › whole picture. | Rebuilding with a new area changes the map and its statistics; reopening shows the map's area. |
+| FR-AOI-05 | The Fastest zone (live readout and marker, `fastestSpeed`/`fastestTile` in recordings, playback) is chosen among the zones whose centre lies in the area (the zone holding the area's centre when none does); every zone still records its own speed. | Unit test of the zone mask and the masked fastest zone. |
+| FR-AOI-06 | A map that cannot use the area fails with a reason: the area does not overlap the part between the side walls; every camera-parallax height lay outside the area (with where they lay, in % of the picture). | Unit test of the side-wall refusal. |
 
 ## 6. Non-functional requirements
 
@@ -590,11 +603,18 @@ Paths are relative to `PhoneLidar/`. Status legend in §4. Review IDs name the M
 | FR-DIR-04 | Line/LineCapturePipeline.swift | Implemented – not verified on device |
 | FR-DIR-05 | Line/LineScanView.swift (`startRecording`, `remoteStart`) | Implemented – not verified on device |
 | FR-DIR-06 | Line/LineCapturePipeline.swift (recorder creation) | Implemented – not verified on device |
+| FR-AOI-01 | Line/ScanArea.swift (`ScanArea`, `grab`, `dragged`; unit tests); Line/ScanAreaEditor.swift (`ScanAreaOverlay`, `ScanAreaDragLayer`); Line/LineScanView.swift (`setArea`, `areaEditingPanels`) | Implemented – not verified on device |
+| FR-AOI-02 | Line/LineRecording.swift (`LineRecordingHeader.area`, `LineRecordingInfo.area`; unit tests); Line/LineCapturePipeline.swift (`startRecording`) | Implemented – not verified on device |
+| FR-AOI-03 | Line/ScanArea.swift (`MapPixels`); Line/TopoMapBuilder.swift; Line/ParallaxMapBuilder.swift; Line/MapCells.swift (`scanRow(cy:rows:)`); Tests/AreaOfInterestMapTests.swift | Implemented |
+| FR-AOI-04 | Line/TopoMapView.swift; Line/ScanAreaEditor.swift (`ScanAreaSheet`, `RecordingPicture`); Line/MapRebuild.swift | Implemented – not verified on device |
+| FR-AOI-05 | Line/ScanArea.swift (`zoneMask`); Line/LineMotionMath.swift (`fastest(_:in:)`); Line/LineCapturePipeline.swift (`setArea`); Line/LinePlaybackView.swift | Implemented – not verified on device |
+| FR-AOI-06 | Line/ScanArea.swift (`MapPixels.unusableMessage`); Line/ParallaxMapBuilder.swift (`OutsideArea`) | Implemented |
 
 ## 9. Document history
 
 | Date | Change |
 |---|---|
+| 2026-11-16 | P22: area of interest (FR-AOI-01…06) — owner's request; full frames kept, rectangle with four edges. FR-SPD-05 refers to FR-AOI-05. |
 | 2026-11-14 | P21: FR-PAR-06 lists the no-pair causes; FR-PAR-07 replay falls back to the Averaged map (owner's screenshot: "Cannot replay this recording"). |
 | 2026-11-14 | P20: FR-RMT-01 and UC-10 — one Home button, *Connect to the other phone*, for both roles (allow the other phone to connect, or connect to it). |
 | 2026-11-13 | P16: Laser line scan removed (FR-LAS withdrawn); camera-parallax map (FR-PAR-01…06); height references camera height and side walls (FR-HREF-01…08). |
