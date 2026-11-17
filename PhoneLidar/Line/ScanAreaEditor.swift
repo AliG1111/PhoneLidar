@@ -64,6 +64,7 @@ struct ScanAreaDragLayer: View {
     static let reach: CGFloat = 28
     /// Edge step of one accessibility action, fraction of the picture.
     static let accessibilityStep = 0.05
+    private static let hint = "Drag an edge or corner of the yellow frame to resize it, or inside it to move it."
 
     /// True while a finger is down; SwiftUI resets it when the drag ends or is cancelled.
     @GestureState private var dragging = false
@@ -71,30 +72,39 @@ struct ScanAreaDragLayer: View {
     var body: some View {
         Color.clear
             .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0)
-                .updating($dragging) { _, state, _ in state = true }
-                .onChanged { value in
-                    if let moved = moved(value) { onChange(moved) }
-                }
-                .onEnded { value in
-                    if let moved = moved(value) { onEnd(moved) }
-                })
+            .gesture(dragGesture)
             // Any order of onEnded and this reset works: the result does not depend on the draft.
             .onChange(of: dragging) { _, isDragging in
                 if !isDragging { onCancel() }
             }
             .accessibilityElement()
-            .accessibilityLabel("Area of interest")
-            .accessibilityValue(area.text)
-            .accessibilityHint("Drag an edge or corner of the yellow frame to resize it, or inside it to move it.")
-            .accessibilityAction(named: "Left edge to the left") { step(.left, dx: -1, dy: 0) }
-            .accessibilityAction(named: "Left edge to the right") { step(.left, dx: 1, dy: 0) }
-            .accessibilityAction(named: "Right edge to the left") { step(.right, dx: -1, dy: 0) }
-            .accessibilityAction(named: "Right edge to the right") { step(.right, dx: 1, dy: 0) }
-            .accessibilityAction(named: "Top edge up") { step(.top, dx: 0, dy: -1) }
-            .accessibilityAction(named: "Top edge down") { step(.top, dx: 0, dy: 1) }
-            .accessibilityAction(named: "Bottom edge up") { step(.bottom, dx: 0, dy: -1) }
-            .accessibilityAction(named: "Bottom edge down") { step(.bottom, dx: 0, dy: 1) }
+            .accessibilityLabel(Text("Area of interest"))
+            .accessibilityValue(Text(area.text))
+            .accessibilityHint(Text(Self.hint))
+            .accessibilityActions { edgeActions }
+    }
+
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .updating($dragging) { _, state, _ in state = true }
+            .onChanged { value in
+                if let moved = moved(value) { onChange(moved) }
+            }
+            .onEnded { value in
+                if let moved = moved(value) { onEnd(moved) }
+            }
+    }
+
+    /// VoiceOver actions: each moves one edge by `accessibilityStep`.
+    @ViewBuilder private var edgeActions: some View {
+        Button("Left edge to the left") { step(.left, dx: -1, dy: 0) }
+        Button("Left edge to the right") { step(.left, dx: 1, dy: 0) }
+        Button("Right edge to the left") { step(.right, dx: -1, dy: 0) }
+        Button("Right edge to the right") { step(.right, dx: 1, dy: 0) }
+        Button("Top edge up") { step(.top, dx: 0, dy: -1) }
+        Button("Top edge down") { step(.top, dx: 0, dy: 1) }
+        Button("Bottom edge up") { step(.bottom, dx: 0, dy: -1) }
+        Button("Bottom edge down") { step(.bottom, dx: 0, dy: 1) }
     }
 
     /// The area for this drag: what the touch first grabbed on the saved `area`, moved by the translation. Worked out
