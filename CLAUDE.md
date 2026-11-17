@@ -4,8 +4,9 @@ iPhone LiDAR scanner (SwiftUI, iOS 17+, iPhone only; target iPhone 17 Pro Max). 
 Equipment mesh (ARKit), Object capture (RealityKit), and Line scan: a fixed phone above moving material (OSB mat or
 board) recording LiDAR depth + video, measuring speed, and building a topographic map, statistics and a real-time replay.
 Map methods: averaged, single reading (LiDAR) and camera parallax (strand heights from the video, scaled by the LiDAR).
-Height references: empty-belt baseline, camera height + tilt, or side-wall tops measured by the LiDAR. The Laser line
-scan was removed in P16 (no line laser available).
+Height references: empty-belt baseline, camera height + tilt, or side-wall tops measured by the LiDAR. An area of
+interest (a rectangle on the picture) limits the map; recordings keep full frames (P22). The Laser line scan was removed
+in P16 (no line laser available).
 Remote link (Line scan only): a second iPhone controls the scanner over direct peer-to-peer Wi-Fi and copies its scans.
 
 ## Hard constraints
@@ -40,7 +41,9 @@ PhoneLidar/Line/             Line scan: LineCapturePipeline, LineMotionMath (pur
                              (Auto/manual direction setting and detection), HeightReference (pure: belt plane, wall
                              capture, MapHeightModel; design §16), HeightReferenceSheet (UI + LineScanModel actions),
                              ParallaxMath / ParallaxProcessor (pure: lens, triangulation, matching, LiDAR scale;
-                             design §15), ParallaxMapBuilder (AVAssetReader decode → map)
+                             design §15), ParallaxMapBuilder (AVAssetReader decode → map), ScanArea (pure: area of
+                             interest, editing maths, MapPixels; design §17), ScanAreaEditor (overlay, drag layer,
+                             map-screen sheet)
 PhoneLidar/Remote/           Remote link: RemoteProtocol/RemoteCrypto/RemoteTransfer (pure, tested), RemoteConnection
                              (NWConnection, handshake, channel, file sender/receiver; loopback-tested), RemoteDiscovery
                              (listener, permission probe, browser), RemoteKeychain, RemoteLink (@MainActor service in
@@ -139,6 +142,8 @@ Full matrix: docs/implementation-plan.md §2. Every plan task names its assignme
   main actor through `DispatchQueue.main.async` + `MainActor.assumeIsolated` (ordered). Values from the other phone are
   untrusted: check sizes, offsets and plain file names; frame limits before reading; no traps on peer input. Network
   code stays in `Remote/`, talks only to the paired phone and never runs file sends while the scanner is busy.
+- Map pixels: map builders take their depth pixels from `MapPixels` (border ∩ side walls ∩ area of interest); a
+  whole-picture area must leave a map exactly as before. Area for a build: map-screen choice › `Recording.json` › whole.
 - Map builds: `MapRebuild.build` is async (the parallax builder awaits `AVURLAsset.loadTracks`); call it from a
   `Task.detached` closure with `await`. A new map method adds a `MapMethod` case (older builds read unknown values as
   averaged) and is dispatched in `MapRebuild`.

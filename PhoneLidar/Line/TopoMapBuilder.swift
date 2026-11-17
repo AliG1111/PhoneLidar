@@ -74,6 +74,9 @@ struct TopoStats: Codable {
     var sensor: MapSensor? = nil
     /// What the heights are measured from (design §16); absent in maps before P16 (baseline when `heightMode`).
     var heightReference: HeightReferenceMethod? = nil
+    /// Area of interest the map was built from (design §17.4); written by every map from P22 on, also for the whole
+    /// picture; absent in older maps (= the whole picture).
+    var area: ScanArea? = nil
 }
 
 extension TopoStats {
@@ -106,10 +109,12 @@ enum TopoMapBuilder {
     /// Builds the map and writes its files. `composite` encodes TopoMap.png (title, legend, statistics) from the
     /// map image; when given, TopoMap.png is staged with the other files, so it never pairs an old picture with
     /// new statistics.
-    /// `method` overrides the recording's `mapMethod` (nil = the recording's, else averaged; design §13.2).
-    static func build(folder: URL, info: LineRecordingInfo, method: MapMethod? = nil,
+    /// `method` overrides the recording's `mapMethod` (nil = the recording's, else averaged; design §13.2);
+    /// `area` overrides the recording's area of interest (nil = the recording's, else the whole picture; §17.4).
+    static func build(folder: URL, info: LineRecordingInfo, method: MapMethod? = nil, area: ScanArea? = nil,
                       composite: ((CGImage, TopoStats) throws -> Data)? = nil) throws -> Output {
         let method = method ?? info.mapMethod ?? .averaged
+        let area = (area ?? info.area ?? .whole).normalized
         guard method != .cameraParallax else {
             throw LineError.configuration("A camera-parallax map is built by the parallax builder.")
         }
@@ -130,15 +135,22 @@ enum TopoMapBuilder {
         let border = Self.border(width: w, height: h)
         guard w > 2 * border + 4, h > 2 * border + 4 else { throw LineError.badFile }
         let sign = Double(info.direction.bufferSign)
+        // Depth pixels used: inside the border, between the side walls (FR-HREF-07) and in the area (FR-AOI-03).
+        let pixels = MapPixels.make(width: w, height: h, border: border, keptAcross: model.keptAcross, area: area)
+        guard pixels.isUsable else {
+            throw LineError.configuration(MapPixels.unusableMessage(sideWalls: model.keptAcross != nil,
+                                                                    wholeArea: area.isWhole))
+        }
+        let columns = pixels.columns
 
-        guard let extent = Self.extent(frames: frames, width: w, height: h, border: border, sign: sign,
+        guard let extent = Self.extent(frames: frames, width: w, height: h, pixels: pixels, sign: sign,
                                        typicalDepth: zTypical) else { throw LineError.notEnoughData }
         let qMin = extent.q.lowerBound, qMax = extent.q.upperBound
         let xMin = extent.x.lowerBound, xMax = extent.x.upperBound
 
         // At least one depth-pixel footprint everywhere in the frame (rounded up to whole mm), so neighbouring
         // pixels of one frame never skip a cell: no empty stripes and full coverage of stationary material.
-        let footprint = Self.pixelFootprint(reader: reader, frames: frames, border: border, sign: sign,
+        let footprint = Self.pixelFootprint(reader: reader, frames: frames, pixels: pixels, sign: sign,
                                             qRange: qMin...qMax, xRange: xMin...xMax, typicalDepth: zTypical)
         // The 1 µm tolerance keeps an exact footprint (e.g. 10.000000000000002 from rounding) at 10 mm.
         var cell = max(2.0, (footprint - 1e-6).rounded(.up))
@@ -151,8 +163,6 @@ enum TopoMapBuilder {
         }
         let zRef: Float = heightMode ? 0 : Float(zTypical)
         let single = method == .singleReading
-        // Side walls: only the columns between the wall bands (FR-HREF-07).
-        let columns = model.columns(width: w, border: border)
         var cells = MapCells(method: method, columns: cols, rows: rows, cell: cell, qMin: qMin, xMin: xMin, zRef: zRef)
 
         // Single reading: each cell keeps the reading whose depth row was closest to the scan line (design §13.3);
@@ -170,7 +180,7 @@ enum TopoMapBuilder {
                     let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
                     guard fx > 0, fy > 0 else { continue }
                     let offset = sign * f.travel
-                    let scanRow = ScanLineMath.scanRow(cy: f.cy, height: h, border: border)
+                    let scanRow = ScanLineMath.scanRow(cy: f.cy, rows: pixels.rows)
                     if single {
                         var sample = ScanRowSample(frame: f.index, time: f.time, travel: f.travel, repeated: repeated)
                         let rowBase = scanRow * w
@@ -198,7 +208,7 @@ enum TopoMapBuilder {
                     }
                     usedFrames += 1
                     depth.withUnsafeBufferPointer { zBuf in
-                        for v in border..<(h - border) {
+                        for v in pixels.rows {
                             let yFactor = (Double(v) - cy) / fy
                             let rowBase = v * w
                             let score = Float(abs(v - scanRow))
@@ -228,6 +238,7 @@ enum TopoMapBuilder {
 
         var extraLines: [String] = []
         if let line = model.summaryLine { extraLines.append(line) }
+        if let line = area.summaryLine { extraLines.append(line) }
         if single {
             extraLines.append(Self.singleReadingLine(used: usedFrames, total: frames.count, repeated: repeatedFrames))
         }
@@ -236,7 +247,7 @@ enum TopoMapBuilder {
         let output = try finish(cells: cells, heightMode: heightMode, sensor: .lidar, speeds: frames.map(\.speed),
                                 frameCount: frames.count, duration: frames.last?.time ?? 0,
                                 travel: Self.travelRange(frames), extraLines: extraLines, folder: folder,
-                                heightReference: model.method, composite: composite) { geometry in
+                                heightReference: model.method, area: area, composite: composite) { geometry in
             guard single else { return [] }
             return [(ScanLineProfiles.fileName, { url in
                 try ScanLineProfiles.write(samples, geometry: geometry, to: url)
@@ -251,31 +262,40 @@ enum TopoMapBuilder {
         return output
     }
 
-    /// Map coordinates (mm) covered by the frames' depth views, padded by 6 % of the width for relief nearer or
-    /// farther than the typical distance: q runs left → right as seen on the portrait screen and stays fixed to the
-    /// material (q = sign·travel − y); x runs top → bottom of the screen (across the material). Nil without a frame
-    /// with valid intrinsics.
-    static func extent(frames: [LineFrameInfo], width w: Int, height h: Int, border: Int, sign: Double,
+    /// Map coordinates (mm) covered by the frames' depth views (the `pixels` used), padded by 6 % of the width for
+    /// relief nearer or farther than the typical distance: q runs left → right as seen on the portrait screen and
+    /// stays fixed to the material (q = sign·travel − y); x runs top → bottom of the screen (across the material).
+    /// Nil without a frame with valid intrinsics or without pixels.
+    static func extent(frames: [LineFrameInfo], width w: Int, height h: Int, pixels: MapPixels, sign: Double,
                        typicalDepth zTypical: Double) -> (q: ClosedRange<Double>, x: ClosedRange<Double>)? {
+        guard !pixels.gridColumns.isEmpty, !pixels.rows.isEmpty else { return nil }
+        let uLo = Double(pixels.gridColumns.lowerBound), uHi = Double(pixels.gridColumns.upperBound - 1)
+        let vLo = Double(pixels.rows.lowerBound), vHi = Double(pixels.rows.upperBound - 1)
         var qMin = Double.infinity
         var qMax = -Double.infinity
         var xMin = Double.infinity
         var xMax = -Double.infinity
+        var reach = 0.0
         for f in frames {
             let z = f.medianDepth > 0 ? f.medianDepth : zTypical
             let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
             guard fx > 0, fy > 0 else { continue }
-            let yLo = (Double(border) - cy) * z / fy
-            let yHi = (Double(h - 1 - border) - cy) * z / fy
-            let xLo = (Double(border) - cx) * z / fx
-            let xHi = (Double(w - 1 - border) - cx) * z / fx
+            let yLo = (vLo - cy) * z / fy
+            let yHi = (vHi - cy) * z / fy
+            let xLo = (uLo - cx) * z / fx
+            let xHi = (uHi - cx) * z / fx
             qMin = min(qMin, sign * f.travel - yHi)
             qMax = max(qMax, sign * f.travel - yLo)
             xMin = min(xMin, xLo)
             xMax = max(xMax, xHi)
+            reach = max(reach, abs(xLo), abs(xHi), abs(yLo), abs(yHi))
         }
         guard qMin.isFinite, qMax > qMin, xMin.isFinite, xMax > xMin else { return nil }
-        let pad = (xMax - xMin) * 0.06
+        // A reading at offset r from the optical axis moves by r·Δz/z with relief Δz. The whole picture keeps the
+        // 6 % of the width (≈ 12 % of the farthest offset); a smaller area also gets at least 12 % of its farthest
+        // offset, so relief within ±12 % of the distance stays on the grid however narrow the area is (P22).
+        let widthPad = (xMax - xMin) * 0.06
+        let pad = pixels.wholePicture ? widthPad : max(widthPad, reach * 0.12)
         return ((qMin - pad)...(qMax + pad), (xMin - pad)...(xMax + pad))
     }
 
@@ -300,7 +320,7 @@ enum TopoMapBuilder {
     /// depend on the trimmed grid, written in the same staged set.
     static func finish(cells: MapCells, heightMode: Bool, sensor: MapSensor, speeds: [Double?], frameCount: Int,
                        duration: Double, travel: Double, extraLines: [String], folder: URL,
-                       heightReference: HeightReferenceMethod? = nil,
+                       heightReference: HeightReferenceMethod? = nil, area: ScanArea? = nil,
                        composite: ((CGImage, TopoStats) throws -> Data)?,
                        extraFiles: (Geometry) -> [(name: String, write: (URL) throws -> Void)] = { _ in [] })
         throws -> Output {
@@ -487,7 +507,7 @@ enum TopoMapBuilder {
             colorNear: near, colorFar: far,
             frames: frameCount, duration: duration,
             heightMode: heightMode, mapMethod: cells.method, sensor: sensor,
-            heightReference: heightMode ? heightReference : nil)
+            heightReference: heightMode ? heightReference : nil, area: area?.normalized)
         let profiles = TopoProfiles(across: across, along: along)
         let gridFile = TopoGridFile(columns: cols, rows: rows, cell: cell, qMin: qMin, xMin: xMin,
                                     heightMode: heightMode, values: grid)
@@ -576,12 +596,14 @@ enum TopoMapBuilder {
     /// - a: the outermost pixel edge used (inside the border), per axis and frame, taken as |a|;
     /// - θ: the 95th percentile of the per-frame phone-to-surface tilt from the LiDAR plane fit, capped at 20°;
     ///   frames without a tilt (older recordings) count as level.
-    static func pixelFootprint(reader: DepthFileReader, frames: [LineFrameInfo], border: Int, sign: Double,
+    static func pixelFootprint(reader: DepthFileReader, frames: [LineFrameInfo], pixels: MapPixels, sign: Double,
                                qRange: ClosedRange<Double>, xRange: ClosedRange<Double>,
                                typicalDepth: Double) -> Double {
         let w = reader.width
-        let h = reader.height
-        guard w > 2 * border, h > 2 * border else { return 0 }
+        let columns = pixels.gridColumns
+        let rows = pixels.rows
+        guard !columns.isEmpty, !rows.isEmpty, columns.lowerBound >= 0, columns.upperBound <= w,
+              rows.lowerBound >= 0, rows.upperBound <= reader.height else { return 0 }
 
         // Depth.bin stores 0.1 mm steps (UInt16), so a 0.1 mm histogram gives exact percentiles.
         let maxBin = Int(UInt16.max)
@@ -594,10 +616,10 @@ enum TopoMapBuilder {
             guard fx > 0, fy > 0, let depth = reader.frame(i) else { continue }
             let offset = sign * f.travel
             depth.withUnsafeBufferPointer { zBuf in
-                for v in border..<(h - border) {
+                for v in rows {
                     let yFactor = (Double(v) - cy) / fy
                     let rowBase = v * w
-                    for u in border..<(w - border) {
+                    for u in columns {
                         let z = zBuf[rowBase + u]
                         if z <= 0 { continue }
                         let zd = Double(z)
@@ -631,8 +653,8 @@ enum TopoMapBuilder {
         for f in frames {
             let fx = Double(f.fx), fy = Double(f.fy), cx = Double(f.cx), cy = Double(f.cy)
             guard fx > 0, fy > 0 else { continue }
-            let a = max(abs(Double(border) - cx), abs(Double(w - border) - cx)) / fx
-            let b = max(abs(Double(border) - cy), abs(Double(h - border) - cy)) / fy
+            let a = max(abs(Double(columns.lowerBound) - cx), abs(Double(columns.upperBound) - cx)) / fx
+            let b = max(abs(Double(rows.lowerBound) - cy), abs(Double(rows.upperBound) - cy)) / fy
             perDepth = max(perDepth, 1 / fx / max(0.5, 1 - a * tanTilt), 1 / fy / max(0.5, 1 - b * tanTilt))
         }
         return farDepth * perDepth
@@ -728,7 +750,7 @@ enum TopoMapBuilder {
     private static let mapSummaryPrefixes = [
         "Scanned ", "Height above baseline mean", "Height above the belt mean", "Distance mean", "Range ",
         "Across-width profile", "Along-travel profile", "Local residual", "Speed mean", "Speed: no texture lock",
-        "Colours:", "Map not built", "Map method:", "Height reference:", "Camera parallax:",
+        "Colours:", "Map not built", "Map method:", "Height reference:", "Camera parallax:", "Area of interest:",
         // Lines of maps from the removed Laser line scan (P16), replaced when such a scan is rebuilt.
         "Laser line:", "Wall re-zero:",
         // Written by Line scan when Recording.json could not be read; obsolete once a map builds from it.
@@ -769,7 +791,7 @@ enum TopoMapBuilder {
             return String(format: "%.\(digits)f", v)
         }
         let p = s.heightMode == true ? "height" : "distance"
-        let rows: [[String]] = [
+        var rows: [[String]] = [
             ["metric", "value", "unit"],
             ["values", s.heightAboveBelt
                 ? (s.heightReference == .sideWalls ? "height_above_belt_side_walls" : "height_above_belt_camera_height")
@@ -808,6 +830,12 @@ enum TopoMapBuilder {
             ["colour_dark_red", f(s.colorNear, 1), "mm"],
             ["colour_dark_blue", f(s.colorFar, 1), "mm"]
         ]
+        // Area of interest (design §17.4): edges in % of the portrait picture, only when not the whole picture.
+        if let area = s.area, !area.isWhole {
+            let e = area.pictureEdgesPercent
+            rows += [["area_left", f(e.left, 1), "%"], ["area_right", f(e.right, 1), "%"],
+                     ["area_top", f(e.top, 1), "%"], ["area_bottom", f(e.bottom, 1), "%"]]
+        }
         return CSV.make(rows)
     }
 

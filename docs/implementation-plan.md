@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Document | Process, model delegation, review protocol, phased checklists, change log |
-| State | P11 remote link merged (PR #12, `cf7fbbc`, build #83; milestone M2, [reviews/2026-11-12-M2.md](reviews/2026-11-12-M2.md)). P12 flake topography (single-reading LiDAR map, laser line scan) and P13 side-wall calibration merged (PR #13, `df07d43`, build #85; milestone M3, [reviews/2026-11-12-M3.md](reviews/2026-11-12-M3.md)). Both review cycles ran until a review yielded no new findings. P14 automatic travel direction and free replay rotation merged (PR #15, `447f2a6`, build #91; review [reviews/2026-11-13-P14.md](reviews/2026-11-13-P14.md), no new findings at the end). P15 laser calibration watchdog merged (PR #17, `5449242`, build #96; review [reviews/2026-11-13-P15.md](reviews/2026-11-13-P15.md)). P16 (owner, 2026-11-13: no external line laser): Laser line scan removed, camera-parallax map and the camera-height / side-wall height references merged (PR #19, `5993798`, build #107; review [reviews/2026-11-13-P16.md](reviews/2026-11-13-P16.md), no new findings at the end). Next: P9 on-device validation (V1–V13, V16, V18–V21). |
-| Date | 2026-11-13 |
+| State | P11 remote link merged (PR #12, `cf7fbbc`, build #83; milestone M2, [reviews/2026-11-12-M2.md](reviews/2026-11-12-M2.md)). P12 flake topography (single-reading LiDAR map, laser line scan) and P13 side-wall calibration merged (PR #13, `df07d43`, build #85; milestone M3, [reviews/2026-11-12-M3.md](reviews/2026-11-12-M3.md)). Both review cycles ran until a review yielded no new findings. P14 automatic travel direction and free replay rotation merged (PR #15, `447f2a6`, build #91; review [reviews/2026-11-13-P14.md](reviews/2026-11-13-P14.md), no new findings at the end). P15 laser calibration watchdog merged (PR #17, `5449242`, build #96; review [reviews/2026-11-13-P15.md](reviews/2026-11-13-P15.md)). P16 (owner, 2026-11-13: no external line laser): Laser line scan removed, camera-parallax map and the camera-height / side-wall height references merged (PR #19, `5993798`, build #107; review [reviews/2026-11-13-P16.md](reviews/2026-11-13-P16.md), no new findings at the end). P22 area of interest (owner, 2026-11-16) on branch `area-of-interest`, in review. Next: P9 on-device validation (V1–V13, V16, V18–V22). |
+| Date | 2026-11-16 |
 | Related | [requirements.md](requirements.md), [design.md](design.md), [../CLAUDE.md](../CLAUDE.md), [reviews/](reviews/) |
 
 Agents keep this file current: tick a task when its PR is merged, add a change-log entry for every merged PR or revision, and add newly found work to P10.
@@ -32,6 +32,8 @@ Agents keep this file current: tick a task when its PR is merged, add a change-l
 | P14 | Automatic travel direction with manual override; unlimited rotation of the replay's 3D strip | Done (PR #15, build #91) |
 | P15 | Laser calibration watchdog, Cancel/Close while calibrating, camera format restore after the LiDAR probe | Done (PR #17, build #96); superseded by P16 (mode removed) |
 | P16 | Laser line scan removed; camera-parallax map; height references camera height and side walls | Done (PR #19, build #107) |
+| P17–P21 | Replay Reset view and file sizes; Line scan layout; multi-delete; Home phone link; parallax no-pair diagnosis | Done (builds #113–#136) |
+| P22 | Area of interest: a rectangle on the Line scan picture limits the map (full frames kept) | In review |
 
 Build numbers are GitHub Actions run numbers of the `Build iOS app` workflow on `main` (artifact `PhoneLidar-unsigned-ipa-<n>`).
 
@@ -413,6 +415,26 @@ every time it opened.
 - [x] P21.5 Change review of the PR diff and its callers (fresh Opus 5.5 / high): P21-1 (Medium), P21-2…P21-4 (Low) fixed; re-review 1: P21-5 (Medium), P21-6 (Low) fixed; re-review 2: no new findings. Record in [reviews/2026-11-14-P21.md](reviews/2026-11-14-P21.md)
 - [x] P21.6 Build guide (`README.md`), design §15.9, requirements FR-PAR-06/07 (orchestrator)
 - [x] P21.7 PR #28 merged (`dc55929`, build #136); change-log row, project guide copy (orchestrator)
+
+### P22 — Area of interest (owner, 2026-11-16)
+
+Owner's request: "Allow the user to select the area of interest to record within the viewing area of a line scan."
+Owner's decisions (asked before building): recordings keep full frames and the area limits the map; the area is a
+rectangle with four edges. FR-AOI-01…06, FR-SPD-05; design §17, §6.8, §7.9, §7.15, §7.18. Branch `area-of-interest`,
+one PR. One session: the orchestrator (Opus 5.5) writes code, tests and docs (capture + UI → the higher assignment);
+one fresh change reviewer.
+
+- [x] P22.1 Requirements FR-AOI, design §17, this phase (Opus 5.5 / max; done by the orchestrator)
+- [x] P22.2 `ScanArea`, `MapPixels`, zone mask, `LineMotionMath.fastest(_:in:)`; `Recording.json` `area`; area in `TopoMapBuilder` (readings, extent, footprint, scan row) and `ParallaxMapBuilder` (reading filter, outside-area message); `TopoStats.area`, CSV rows, summary line; pipeline zone mask (Opus 5.5 / high; done by the orchestrator)
+- [x] P22.3 Line scan **Set area…** edit mode, overlay and saved setting; map screen **Area of interest** sheet over a recording picture; playback Fastest in area (capture + UI → Opus 5.5 / high; done by the orchestrator)
+- [x] P22.4 Unit tests `ScanAreaTests`, `AreaOfInterestMapTests` (Sonnet 5.5 / high; written with the code)
+- [x] P22.5 CI green: app build and unit tests, 0 warnings (branch run 43981233787; PR runs 43983871161 failed: type-check time limit, fixed; 43985091927 green, 648 unit tests, artifact `PhoneLidar-unsigned-ipa-140`)
+- [x] P22.6 Change review of the PR diff and its callers (fresh Opus 5.5 / high): AOI-1, AOI-2 (Medium), AOI-3…AOI-8 (Low) fixed; re-review 1: no new findings; re-review 2 (type-check split): no new findings. Record in [reviews/2026-11-16-P22.md](reviews/2026-11-16-P22.md)
+- [x] P22.7 Build guide (`README.md`), `CLAUDE.md` repo map (orchestrator)
+- [ ] P22.8 PR #32 merged; change-log row, project guide copy (orchestrator); owner's local folder and `REVISIONS.md` need the desktop link (not connected in this session)
+
+P9 addition (owner runs on the device; analysis assignment in brackets):
+- [ ] **V22 Area of interest** — on the line, set an area that leaves out the side walls and anything stationary in the view; record. Pass: the map width matches the area's width at the belt (tape), the Fastest marker stays inside the area, the files are as large as without an area, and a rebuild with another area on the map screen changes the map (FR-AOI-01…05) (Opus 5.5 / high)
 
 ## 7. Change log
 

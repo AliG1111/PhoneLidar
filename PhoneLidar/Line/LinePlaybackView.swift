@@ -145,7 +145,8 @@ private struct PlaybackContent: View {
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
-                Label("Fastest on screen " + SpeedText.short(model.fastestNow), systemImage: "hare.fill")
+                Label((model.hasArea ? "Fastest in area " : "Fastest on screen ") + SpeedText.short(model.fastestNow),
+                      systemImage: "hare.fill")
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(.orange)
             }
@@ -447,6 +448,10 @@ final class PlaybackModel {
     var probeSpeed: Double?
     let zoneColumns: Int
     let zoneRows: Int
+    /// Zones in the recording's area of interest (nil = all), for the Fastest zone (design §17.3).
+    let zoneMask: [Bool]?
+    /// The recording has an area of interest smaller than the picture.
+    var hasArea: Bool { zoneMask != nil }
 
     /// Probe position in the portrait picture, 0…1 (x left → right, y top → bottom).
     var probe: CGPoint?
@@ -556,6 +561,11 @@ final class PlaybackModel {
         graphPoints = setup.graphPoints
         zoneColumns = info.tileColumns ?? 0
         zoneRows = info.tileRows ?? 0
+        if let area = info.area, !area.isWhole, zoneColumns > 0, zoneRows > 0 {
+            zoneMask = area.zoneMask(columns: zoneColumns, rows: zoneRows)
+        } else {
+            zoneMask = nil
+        }
         zoneSmoothed = setup.zoneSmoothed
         speedMax = setup.speedMax
         colorRange = setup.colorRange
@@ -772,7 +782,7 @@ final class PlaybackModel {
         frame = info.frames[index]
         smoothedSpeed = smoothed[index]
         let zones = index < zoneSmoothed.count ? zoneSmoothed[index] : []
-        let fastest = LineCapturePipeline.fastest(zones)
+        let fastest = LineMotionMath.fastest(zones, in: zoneMask)
         fastestNow = fastest?.speed
         fastestTileNow = fastest?.index
         guard let reader, let depth = reader.frame(index) else {
