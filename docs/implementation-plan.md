@@ -428,10 +428,10 @@ one fresh change reviewer.
 - [x] P22.2 `ScanArea`, `MapPixels`, zone mask, `LineMotionMath.fastest(_:in:)`; `Recording.json` `area`; area in `TopoMapBuilder` (readings, extent, footprint, scan row) and `ParallaxMapBuilder` (reading filter, outside-area message); `TopoStats.area`, CSV rows, summary line; pipeline zone mask (Opus 5.5 / high; done by the orchestrator)
 - [x] P22.3 Line scan **Set area…** edit mode, overlay and saved setting; map screen **Area of interest** sheet over a recording picture; playback Fastest in area (capture + UI → Opus 5.5 / high; done by the orchestrator)
 - [x] P22.4 Unit tests `ScanAreaTests`, `AreaOfInterestMapTests` (Sonnet 5.5 / high; written with the code)
-- [ ] P22.5 CI green: app build and unit tests, 0 warnings
-- [ ] P22.6 Change review of the PR diff and its callers (fresh Opus 5.5 / high) until a review yields no new findings; record in [reviews/2026-11-16-P22.md](reviews/2026-11-16-P22.md)
-- [ ] P22.7 Build guide (`README.md`), `CLAUDE.md` repo map (orchestrator)
-- [ ] P22.8 PR merged; change-log row, project guide copy (orchestrator)
+- [x] P22.5 CI green: app build and unit tests, 0 warnings (branch run 43981233787; PR runs 43983871161 failed: type-check time limit, fixed; 43985091927 green, 648 unit tests, artifact `PhoneLidar-unsigned-ipa-140`)
+- [x] P22.6 Change review of the PR diff and its callers (fresh Opus 5.5 / high): AOI-1, AOI-2 (Medium), AOI-3…AOI-8 (Low) fixed; re-review 1: no new findings; re-review 2 (type-check split): no new findings. Record in [reviews/2026-11-16-P22.md](reviews/2026-11-16-P22.md)
+- [x] P22.7 Build guide (`README.md`), `CLAUDE.md` repo map (orchestrator)
+- [ ] P22.8 PR #32 merged; change-log row, project guide copy (orchestrator); owner's local folder and `REVISIONS.md` need the desktop link (not connected in this session)
 
 P9 addition (owner runs on the device; analysis assignment in brackets):
 - [ ] **V22 Area of interest** — on the line, set an area that leaves out the side walls and anything stationary in the view; record. Pass: the map width matches the area's width at the belt (tape), the Fastest marker stays inside the area, the files are as large as without an area, and a rebuild with another area on the map screen changes the map (FR-AOI-01…05) (Opus 5.5 / high)
